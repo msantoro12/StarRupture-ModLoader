@@ -90,6 +90,25 @@
   </ItemDefinitionGroup>
 
   <!-- ============================================================
+       ModLoaderVersion -> ModLoaderBuildTag
+       A version-stamped local build (/p:ModLoaderVersion=1.21.2, see
+       the PatchModLoaderVersionRc target below) otherwise still shows
+       "local-build" in the title bar right next to a real-looking file
+       version, which reads as a build that forgot to stamp itself
+       rather than one that was never meant to look like CI's. The
+       loader's own self-update check doesn't read MODLOADER_BUILD_TAG
+       at all when the Core DLL's file version parses (the normal
+       case for a build using ModLoaderVersion); see updater.cpp's
+       ParseVersion/CompareVersions, so "vX.Y.Z-gss" here is purely
+       cosmetic, not something that could make this build compare as
+       a different release than it is. Only applies when the caller
+       didn't already set ModLoaderBuildTag explicitly.
+       ============================================================ -->
+  <PropertyGroup Condition="'$(ModLoaderBuildTag)' == '' And '$(ModLoaderVersion)' != ''">
+    <ModLoaderBuildTag>v$(ModLoaderVersion)-gss</ModLoaderBuildTag>
+  </PropertyGroup>
+
+  <!-- ============================================================
        MODLOADER_BUILD_TAG
        Injected by CI via /p:ModLoaderBuildTag="release-YYYY.MM.DD-HHmmss".
        Plugins embed this in PluginInfo.version so the auto-updater
@@ -113,6 +132,44 @@
       <PreprocessorDefinitions>AUTOUPDATE_MANIFEST_URL="$(AutoUpdateManifestUrl)";%(PreprocessorDefinitions)</PreprocessorDefinitions>
     </ClCompile>
   </ItemDefinitionGroup>
+
+  <!-- ============================================================
+       ModLoaderVersion
+       Optional. Stamps version.rc's FILEVERSION/PRODUCTVERSION the
+       same way .github/workflows/release.yml's "Patch version.rc
+       with release tag" step does (tools/patch-version-rc.ps1
+       mirrors that step's own regexes), so a local build reads as
+       a real, comparable version to the auto-updater instead of the
+       checked-in 1.0.0.0 placeholder. See updater.cpp RunUpdater,
+       which reads the Core DLL's file version as its primary signal
+       for "installed version":
+         msbuild /p:ModLoaderVersion=1.21.2
+       Unset (the default) leaves both version.rc files untouched,
+       invisible to CI, which patches them itself before ever
+       invoking MSBuild, and to anyone who builds without it.
+
+       version.rc is tracked/checked in, so the patch step backs each one
+       up to a "*.modloader-orig" sidecar before stamping it, and the
+       paired RestoreModLoaderVersionRc target below puts it back right
+       after ResourceCompile runs; the compiled .res already has the
+       stamped values by then, so the working tree ends the build exactly
+       as git already has it, never left modified for a commit or a
+       rebase to trip over. See patch-version-rc.ps1's own comment for the
+       sidecar mechanics.
+       ============================================================ -->
+  <Target Name="PatchModLoaderVersionRc" BeforeTargets="ResourceCompile"
+          Condition="'$(ModLoaderVersion)' != ''">
+    <!-- TrimEnd('\'): a trailing backslash right before the closing quote
+         of a shell-quoted argument escapes that quote instead of closing
+         it (cmd/PowerShell argv parsing, not an MSBuild quirk), and
+         $(SolutionDir) always ends in one. -->
+    <Exec Command="powershell -NoProfile -ExecutionPolicy Bypass -File &quot;$(SolutionDir)tools\patch-version-rc.ps1&quot; -Version &quot;$(ModLoaderVersion)&quot; -SolutionDir &quot;$(SolutionDir.TrimEnd('\'))&quot;" />
+  </Target>
+
+  <Target Name="RestoreModLoaderVersionRc" AfterTargets="ResourceCompile"
+          Condition="'$(ModLoaderVersion)' != ''">
+    <Exec Command="powershell -NoProfile -ExecutionPolicy Bypass -File &quot;$(SolutionDir)tools\patch-version-rc.ps1&quot; -Restore -SolutionDir &quot;$(SolutionDir.TrimEnd('\'))&quot;" />
+  </Target>
 
   <!-- ============================================================
        VerifyLocalStarRuptureSDK

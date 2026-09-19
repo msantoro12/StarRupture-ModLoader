@@ -418,7 +418,7 @@ namespace UI::ModLoaderWindow
     // Block toggle and reset always sit level with the label, whether or
     // not this row also has a description line underneath.
     static void RenderConfigEntry(ConfigKV& kv, const ConfigEntry* e, const char* pluginName,
-                                   float labelColWidth, float actionsW)
+                                   float labelColWidth, float actionsW, float sliderMaxW)
     {
         ImGui::TableNextRow();
 
@@ -472,6 +472,10 @@ namespace UI::ModLoaderWindow
             bool hasRange = e->rangeMax > e->rangeMin;
             if (hasRange)
             {
+                // Cap the slider's own width instead of letting it fill the
+                // column -- Col 2 still starts at the same x right after it.
+                const float avail = ImGui::GetContentRegionAvail().x;
+                ImGui::SetNextItemWidth(avail < sliderMaxW ? avail : sliderMaxW);
                 if (ImGui::SliderInt(id, &ival, (int)e->rangeMin, (int)e->rangeMax))
                 {
                     snprintf(kv.value, sizeof(kv.value), "%d", ival);
@@ -503,7 +507,11 @@ namespace UI::ModLoaderWindow
             bool hasRange = e->rangeMax > e->rangeMin;
             if (hasRange)
             {
-                if (ImGui::SliderFloat(id, &fval, e->rangeMin, e->rangeMax, "%.6f"))
+                // Cap the slider's own width instead of letting it fill the
+                // column -- Col 2 still starts at the same x right after it.
+                const float avail = ImGui::GetContentRegionAvail().x;
+                ImGui::SetNextItemWidth(avail < sliderMaxW ? avail : sliderMaxW);
+                if (ImGui::SliderFloat(id, &fval, e->rangeMin, e->rangeMax, "%.2f"))
                 {
                     FormatFloat(kv.value, sizeof(kv.value), fval);
                     NotifyConfigChangedLive(pluginName, kv);
@@ -513,7 +521,7 @@ namespace UI::ModLoaderWindow
             }
             else
             {
-                if (ImGui::InputFloat(id, &fval, 0.0f, 0.0f, "%.6f"))
+                if (ImGui::InputFloat(id, &fval, 0.0f, 0.0f, "%.2f"))
                 {
                     FormatFloat(kv.value, sizeof(kv.value), fval);
                     NotifyConfigChangedLive(pluginName, kv);
@@ -957,6 +965,11 @@ namespace UI::ModLoaderWindow
                 if (labelColWidth > maxLabelColWidth && maxLabelColWidth > kLabelColMin)
                     labelColWidth = maxLabelColWidth;
 
+                // Sliders stop growing past this width instead of filling
+                // the whole column -- 240px at 1x font scale (360px read as
+                // ~540px at the owner's font scale -- still too wide).
+                const float sliderMaxW = 240.0f * ImGui::GetStyle().FontScaleMain;
+
                 // One cell padding for every section table on this page.
                 const ImVec2 kCellPadding(8.0f, 8.0f);
 
@@ -1022,7 +1035,7 @@ namespace UI::ModLoaderWindow
                     if (tableOpen)
                     {
                         const ConfigEntry* entry = FindSchemaEntry(schema, kv.section, kv.key);
-                        RenderConfigEntry(kv, entry, info->name, labelColWidth, actionsW);
+                        RenderConfigEntry(kv, entry, info->name, labelColWidth, actionsW, sliderMaxW);
                     }
                 }
 

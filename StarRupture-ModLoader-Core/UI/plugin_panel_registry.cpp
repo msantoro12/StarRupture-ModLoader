@@ -417,18 +417,47 @@ namespace UI::PluginPanelRegistry
         for (PanelEntry* entry : toRender)
         {
             ImGui::SetNextWindowSize(ImVec2(480, 360), ImGuiCond_FirstUseEver);
-            bool open = entry->isOpen;
+
+            bool open;
+            {
+                std::lock_guard<std::mutex> lock(s_mutex);
+                open = entry->isOpen;
+            }
+
             // Subtitle shows which plugin owns the panel -- nullptr (omitted)
             // for panels registered without a recorded owner.
             const char* subtitle = entry->pluginName[0] ? entry->pluginName : nullptr;
             if (UI::Theme::BeginChamferedWindow(entry->desc->windowTitle, entry->desc->windowTitle,
                                                  &open, subtitle))
             {
+                // Not held across renderFn: a plugin's own render callback is
+                // free to call back into this registry (SetPanelClose on
+                // itself, RegisterPanel, etc.), and locking here would either
+                // deadlock that or block whatever else is waiting on s_mutex
+                // for the length of a plugin's render.
                 entry->desc->renderFn(imgui);
                 UI::Theme::EndChamferedWindow();
             }
-            entry->isOpen = open;
-            if (!open)
+
+            // Re-read isOpen rather than trusting `open`, which was captured
+            // before renderFn ran: if the plugin called SetPanelClose on its
+            // own handle during render, isOpen is already false and
+            // FirePanelClosed has already fired for it there -- writing
+            // `open`'s pre-render value back over that would silently reopen
+            // the panel one statement later (the flicker this fixes), and
+            // firing the callback again here would double-fire it. Only this
+            // window's own close button (reflected in `open`, not yet
+            // applied to isOpen) still needs to be reconciled and reported.
+            bool closedHere = false;
+            {
+                std::lock_guard<std::mutex> lock(s_mutex);
+                if (entry->isOpen && !open)
+                {
+                    entry->isOpen = false;
+                    closedHere = true;
+                }
+            }
+            if (closedHere)
                 FirePanelClosed(static_cast<PanelHandle>(entry));
         }
     }

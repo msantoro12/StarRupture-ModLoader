@@ -27,6 +27,7 @@ Every change is its own commit, and the commit messages go into more detail than
 - Escape closes the ModLoader window
 - Rebind picker can capture a bare modifier key
 - Named presets for a plugin's config page, with save, rename and delete
+- Companion Blocking key now shows only as the keybind row's Block toggle
 
 **Loader: fixes**
 - Bare Shift/Ctrl/Alt keybinds now reach plugins (fix)
@@ -65,7 +66,7 @@ The UI work, roughly in the order you'd run into it:
 ![Config page, after](docs/config-after.png)
 *After: label column sized to content, wrapped description line, rows centered on their tallest content.*
 
-- Config page: the label column was a fixed 160px, and a longer label would run past it. Descriptions displayed as a hover-only marquee. The column now sizes to the widest label on the page (up to whatever width is left) and only wraps when needed. The row keeps its three columns (label, control, actions), with descriptions wrapping across the row's full width beneath the label. Rows center vertically on their tallest content instead of aligning to the top.
+- Config page: the label column was a fixed 160px, and a longer label would run past it. Descriptions displayed as a hover-only marquee. The column now sizes to the widest label on the page (up to whatever width is left) and only wraps when needed. The row keeps its three columns (label, control, actions), with descriptions wrapping across the row's full width beneath the label. Rows center vertically on their tallest content instead of aligning to the top. A keybind row's companion Blocking key now shows only as that row's Block toggle, instead of also rendering as its own separate entry.
 - Sliders now have a maximum width (240px, scaled with UI font size) instead of filling the whole widget column, and float sliders/inputs format to 2 decimals instead of 6. Stored precision is unchanged either way.
 - The reset button (a plain "R" before) and the Logging tab's "Reset All To Default" (no icon before) both now draw the `replay` glyph (U+E042) from the Material Icons font the sidebar already uses, styled the same as your other link-style text.
 - Named themes: the Theme tab held a single custom palette. A Theme dropdown now offers two built-ins, Default and a new "Star Rupture" theme matching the game's own value/hover/structure colors, plus any user theme saved to `ModLoader\Themes\<name>.ini`, shareable as a file. This also splits `Highlight` and `PanelBorder` out as their own color roles instead of reusing `Accent` for both "this is a value" and "this is hover/selected," which the game itself keeps visually distinct.

@@ -24,6 +24,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <algorithm>
 #include <vector>
 #include <string>
 #include <functional>
@@ -161,6 +162,31 @@ namespace UI::ModLoaderWindow
                 bool blocking = (GetPrivateProfileIntW(wsec, wblkKey, 0, iniPath) != 0);
                 Hooks::Input::SetComboBlocking(kv.value, blocking);
             }
+
+            // <KeybindKey>Blocking is the Block toggle's own on-disk state
+            // (RenderConfigEntry writes it straight to the ini, not through
+            // the schema -- see its blocking-toggle block below), so it has
+            // no ConfigEntry of its own. Left in s_configEntries, it would
+            // render as an unlabeled second row under the keybind row that
+            // already shows it as the "Block" toggle. Drop it once its
+            // paired keybind is confirmed to actually be one.
+            s_configEntries.erase(
+                std::remove_if(s_configEntries.begin(), s_configEntries.end(),
+                    [&](const ConfigKV& kv)
+                    {
+                        if (FindSchemaEntry(schema, kv.section, kv.key)) return false;
+                        constexpr size_t kSuffixLen = 8; // strlen("Blocking")
+                        const size_t keyLen = strlen(kv.key);
+                        if (keyLen <= kSuffixLen ||
+                            strcmp(kv.key + keyLen - kSuffixLen, "Blocking") != 0)
+                            return false;
+
+                        char baseKey[64];
+                        snprintf(baseKey, sizeof(baseKey), "%.*s", (int)(keyLen - kSuffixLen), kv.key);
+                        const ConfigEntry* base = FindSchemaEntry(schema, kv.section, baseKey);
+                        return base && base->type == ConfigValueType::Keybind;
+                    }),
+                s_configEntries.end());
         }
     }
 
@@ -695,17 +721,43 @@ namespace UI::ModLoaderWindow
         }
 
         // ---- Description: its own line under the label, spanning Col 0 +
-        // Col 1 (Col 0 is NoClip -- see RenderConfigTab) instead of being
-        // squeezed into the label column alone, so a short description
-        // stays on one line and only a genuinely long one wraps.
+        // Col 1 instead of being squeezed into the label column alone, so a
+        // short description stays on one line and only a genuinely long one
+        // wraps.
+        //
+        // Col 0's NoClip (RenderConfigTab) only changes draw-channel-merge
+        // bookkeeping, not the clip rect table cells actually draw with --
+        // TableBeginCell sets that from column->ClipRect regardless of a
+        // per-column NoClip flag (see imgui_tables.cpp; table-wide
+        // ImGuiTableFlags_NoClip is the one that would skip it, and this
+        // table doesn't set that). Left alone, the text still wraps to
+        // descWrapWidth as intended but then gets drawn-clipped back down to
+        // Col 0's own width, cutting it off mid-word one line early. Pushing
+        // an explicit clip rect widened to descWrapWidth (intersect=false,
+        // so it replaces Col 0's rect instead of narrowing further) is what
+        // actually lets it draw the full span. Only the X bound is widened --
+        // Y reuses whatever the ambient (pre-override) clip rect already had,
+        // rather than a separately-computed text height that isn't
+        // guaranteed to agree, pixel for pixel, with how PushTextWrapPos
+        // itself wraps the same string (a mismatch there previously cut the
+        // last line short instead of one word early, same visible symptom).
         if (hasDesc)
         {
             ImGui::TableSetColumnIndex(0);
             ImGui::SetCursorPosY(rowTopY + topRowH + spacingY);
             ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + descWrapWidth);
+
+            const ImVec2 cursorScreen = ImGui::GetCursorScreenPos();
+            const ImVec2 ambientClipMax = ImGui::GetWindowDrawList()->GetClipRectMax();
+            ImGui::PushClipRect(ImVec2(cursorScreen.x, ImGui::GetWindowDrawList()->GetClipRectMin().y),
+                                 ImVec2(cursorScreen.x + descWrapWidth, ambientClipMax.y),
+                                 false);
+
             ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyle().Colors[ImGuiCol_TextDisabled]);
             ImGui::TextUnformatted(e->description);
             ImGui::PopStyleColor();
+
+            ImGui::PopClipRect();
             ImGui::PopTextWrapPos();
         }
     }

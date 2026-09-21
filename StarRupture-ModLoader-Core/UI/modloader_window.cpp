@@ -1077,19 +1077,18 @@ namespace UI::ModLoaderWindow
                 // on one row.
                 const float kMaxLabelShare = 0.20f;  // past this, a label is an outlier: it wraps, and stops setting the column's width
 
-                // One 3-column table per section -- but the label column's
-                // own width is computed ONCE, from every entry across the
-                // WHOLE page, not per section: sections used to size their
-                // label column independently, which meant "Enabled"
-                // (General) and "Max Speed" (Drone) didn't share a column
-                // edge, so descriptions started at a different x from one
-                // section to the next and the page read as several
-                // unrelated tables rather than one. Control still varies
-                // per section below (a section with no ranged slider
-                // doesn't pay for sliderMaxW's worth of control column and
-                // starve its own description over it; only a section that
-                // actually has one does) -- only Label needed to be shared
-                // for every column edge to line up top to bottom.
+                // One 3-column table per section -- but BOTH Label's and
+                // Control's own widths are computed ONCE, from every entry
+                // across the WHOLE page, not per section: sections used to
+                // size each independently, which meant "Enabled" (General)
+                // and "Max Speed" (Drone) didn't share a column edge (Label
+                // fixed first), and separately a section with a ranged
+                // slider ("Max Speed", Drone) sized Control wider than a
+                // section without one (General), so Description ended at a
+                // different x too even after Label matched. Every column
+                // edge -- Label's, Description's start AND end, Control's,
+                // the reset's -- now lines up top to bottom regardless of
+                // section.
                 //   Col 0  Label       -- content-bound: the page's widest
                 //                         label that ISN'T an outlier (past
                 //                         kMaxLabelShare of the page), own
@@ -1111,16 +1110,21 @@ namespace UI::ModLoaderWindow
                 //                         spaced by ItemInnerSpacing -- the
                 //                         same gap RenderConfigEntry puts
                 //                         between a control and its reset,
-                //                         so the column and each row agree).
-                //                         A ranged slider is the only part
-                //                         of this that ever shrinks, and
-                //                         only after Description has
-                //                         already hit kMinDescColW -- see
-                //                         below. Precedence when space runs
-                //                         out: Label keeps its content
-                //                         width, Control keeps at least its
-                //                         own floor, Description absorbs
-                //                         the rest.
+                //                         so the column and each row agree),
+                //                         sized to whichever entry anywhere
+                //                         on the page needs the most room
+                //                         (the slider cap, a keybind row's
+                //                         Rebind+Block, or the plain-input
+                //                         floor). A ranged slider is the
+                //                         only part of this that ever
+                //                         shrinks, and only after
+                //                         Description has already hit
+                //                         kMinDescColW -- see below.
+                //                         Precedence when space runs out:
+                //                         Label keeps its content width,
+                //                         Control keeps at least its own
+                //                         floor, Description absorbs the
+                //                         rest.
                 // CellPadding is theme.cpp's own (Apply()), not overridden
                 // here -- no reason for these tables to use different cell
                 // padding than every other table/frame in the UI.
@@ -1138,8 +1142,14 @@ namespace UI::ModLoaderWindow
                 float pageOutlierThreshold = pageAvail * kMaxLabelShare;
                 if (pageOutlierThreshold < kLabelColMin) pageOutlierThreshold = kLabelColMin;
 
-                float labelColWidth = 0.0f;
-                float pageMaxWordW  = 0.0f;
+                // One pass over every entry on the page, gathering what
+                // both Label and Control need -- same per-entry scan an
+                // earlier, per-section version of this ran once per
+                // section; now it runs once, page-wide.
+                float labelColWidth   = 0.0f;
+                float pageMaxWordW    = 0.0f;
+                float keybindRowW     = 0.0f;
+                bool  hasRangedSlider = false;
                 for (const ConfigKV& kv : s_configEntries)
                 {
                     const float lw = ImGui::CalcTextSize(kv.key).x + cellPadX;
@@ -1147,26 +1157,84 @@ namespace UI::ModLoaderWindow
                         labelColWidth = lw;
                     const float ww = WidestWordWidth(kv.key);
                     if (ww > pageMaxWordW) pageMaxWordW = ww;
+
+                    const ConfigEntry* se = FindSchemaEntry(schema, kv.section, kv.key);
+                    if (!se) continue;
+                    if (se->type == ConfigValueType::Keybind)
+                    {
+                        const char* bindLabel  = kv.value[0] ? kv.value : "(none)";
+                        const float rebindBtnW = ImGui::CalcTextSize("Rebind").x + framePadX * 2.0f;
+                        const float w = ImGui::CalcTextSize(bindLabel).x + itemSpacing + rebindBtnW;
+                        if (w > keybindRowW) keybindRowW = w;
+                    }
+                    else if ((se->type == ConfigValueType::Integer || se->type == ConfigValueType::Float) &&
+                             se->rangeMax > se->rangeMin)
+                    {
+                        hasRangedSlider = true;
+                    }
                 }
                 if (labelColWidth <= 0.0f) labelColWidth = pageOutlierThreshold; // every label on the page was an outlier
                 if (labelColWidth < kLabelColMin) labelColWidth = kLabelColMin;
+                if (keybindRowW > 0.0f)
+                    keybindRowW += itemSpacing + blockLabelW + innerSpacing + toggleW;
+
+                // controlFloor: what Control needs regardless of the
+                // slider -- a keybind row's own full width (bind label +
+                // Rebind + Block + toggle) or a lone toggle, whichever is
+                // larger anywhere on the page, or the plain-input floor if
+                // neither applies. The slider (if the page has one) is
+                // layered on top of this, and is the only part allowed to
+                // shrink below its own max.
+                float controlFloor = kMinControlW;
+                if (toggleW     > controlFloor) controlFloor = toggleW;
+                if (keybindRowW > controlFloor) controlFloor = keybindRowW;
+
                 if (pageMaxWordW > 0.0f)
                 {
-                    // Same word floor as before, just page-wide now -- still
-                    // capped so a pathological single word can't blow the
-                    // column out for every section, but the cap can't know
-                    // each section's own control requirement yet (that's
-                    // computed per section below), so it uses kMinControlW,
-                    // the smallest any section ever asks for, as a
-                    // conservative stand-in. Only matters for a word wider
-                    // than any real label in this set gets close to.
+                    // Same word floor as before -- still capped so a
+                    // pathological single word can't blow the column out
+                    // for every section, now against the page's real
+                    // controlFloor (known at this point, unlike before
+                    // Control also became page-wide) instead of the
+                    // kMinControlW stand-in that used. Only matters for a
+                    // word wider than any real label in this set gets
+                    // close to.
                     float wordFloor = pageMaxWordW + cellPadX;
-                    const float maxLabelFloor = pageAvail - kMinDescColW - kMinControlW - innerSpacing - resetW;
+                    const float minControlEver = (hasRangedSlider && sliderMinW > controlFloor) ? sliderMinW : controlFloor;
+                    const float maxLabelFloor = pageAvail - kMinDescColW - minControlEver - innerSpacing - resetW;
                     if (wordFloor > maxLabelFloor)
                         wordFloor = maxLabelFloor;
                     if (wordFloor > labelColWidth)
                         labelColWidth = wordFloor;
                 }
+
+                float controlW = hasRangedSlider ? sliderMaxW : controlFloor;
+                if (controlFloor > controlW) controlW = controlFloor;
+
+                // If Label + Control (at the slider's max) would leave
+                // Description under its own floor, shrink the slider's
+                // portion of Control toward sliderMinW first -- Control
+                // never gives up the non-slider floor computed above, so a
+                // keybind/toggle row anywhere on the page still has room
+                // regardless of how far the slider itself shrinks. Decided
+                // once here, page-wide, same as Label/Control themselves --
+                // deciding it per section again would let one section
+                // shrink its Control while another didn't, breaking the
+                // very alignment this change exists for.
+                if (hasRangedSlider)
+                {
+                    const float wouldBeDescW = pageAvail - labelColWidth - (controlW + innerSpacing + resetW);
+                    if (wouldBeDescW < kMinDescColW)
+                    {
+                        const float shrinkNeeded = kMinDescColW - wouldBeDescW;
+                        const float sliderFloor  = sliderMinW > controlFloor ? sliderMinW : controlFloor;
+                        const float shrinkable   = controlW - sliderFloor;
+                        if (shrinkable > 0.0f)
+                            controlW -= (shrinkNeeded < shrinkable ? shrinkNeeded : shrinkable);
+                    }
+                }
+
+                const float controlColWidth = controlW + innerSpacing + resetW;
 
                 bool firstSection = true;
                 size_t i = 0;
@@ -1178,75 +1246,10 @@ namespace UI::ModLoaderWindow
                         ++i;
                     const size_t sectionEnd = i;
 
-                    // Indented first (before anything below reads available
-                    // width) so sectionAvail reflects this section's actual
-                    // usable width, same as before -- numerically the same
-                    // as pageAvail above (same window, same constant
-                    // indent), still needed here for the per-section
-                    // description-shrink check below.
+                    // Indented first, same as before -- purely for the
+                    // visual indent now, since neither Label nor Control is
+                    // computed per section anymore (both page-wide above).
                     ImGui::Indent(kSectionIndent);
-                    const float sectionAvail = ImGui::GetContentRegionAvail().x;
-
-                    // Control still varies per section -- see the comment
-                    // above the page-wide label computation for why Label
-                    // doesn't anymore.
-                    float keybindRowW     = 0.0f;
-                    bool  hasRangedSlider = false;
-                    for (size_t j = sectionStart; j < sectionEnd; ++j)
-                    {
-                        const ConfigKV& kv = s_configEntries[j];
-                        const ConfigEntry* se = FindSchemaEntry(schema, kv.section, kv.key);
-                        if (!se) continue;
-                        if (se->type == ConfigValueType::Keybind)
-                        {
-                            const char* bindLabel  = kv.value[0] ? kv.value : "(none)";
-                            const float rebindBtnW = ImGui::CalcTextSize("Rebind").x + framePadX * 2.0f;
-                            const float w = ImGui::CalcTextSize(bindLabel).x + itemSpacing + rebindBtnW;
-                            if (w > keybindRowW) keybindRowW = w;
-                        }
-                        else if ((se->type == ConfigValueType::Integer || se->type == ConfigValueType::Float) &&
-                                 se->rangeMax > se->rangeMin)
-                        {
-                            hasRangedSlider = true;
-                        }
-                    }
-                    if (keybindRowW > 0.0f)
-                        keybindRowW += itemSpacing + blockLabelW + innerSpacing + toggleW;
-
-                    // controlFloor: what Control needs regardless of the
-                    // slider -- a keybind row's own full width (bind label +
-                    // Rebind + Block + toggle) or a lone toggle, whichever
-                    // is larger, or the plain-input floor if neither
-                    // applies. The slider (if this section has one) is
-                    // layered on top of this, and is the only part allowed
-                    // to shrink below its own max.
-                    float controlFloor = kMinControlW;
-                    if (toggleW     > controlFloor) controlFloor = toggleW;
-                    if (keybindRowW > controlFloor) controlFloor = keybindRowW;
-
-                    float controlW = hasRangedSlider ? sliderMaxW : controlFloor;
-                    if (controlFloor > controlW) controlW = controlFloor;
-
-                    // If Label + Control (at the slider's max) would leave
-                    // Description under its own floor, shrink the slider's
-                    // portion of Control toward sliderMinW first -- Control
-                    // never gives up the non-slider floor computed above,
-                    // so a keybind/toggle row in the same section still has
-                    // room regardless of how far the slider itself shrinks.
-                    if (hasRangedSlider)
-                    {
-                        const float wouldBeDescW = sectionAvail - labelColWidth - (controlW + innerSpacing + resetW);
-                        if (wouldBeDescW < kMinDescColW)
-                        {
-                            const float shrinkNeeded = kMinDescColW - wouldBeDescW;
-                            const float sliderFloor  = sliderMinW > controlFloor ? sliderMinW : controlFloor;
-                            const float shrinkable   = controlW - sliderFloor;
-                            if (shrinkable > 0.0f)
-                                controlW -= (shrinkNeeded < shrinkable ? shrinkNeeded : shrinkable);
-                        }
-                    }
-
-                    const float controlColWidth = controlW + innerSpacing + resetW;
 
                     if (!firstSection) ImGui::Spacing();
                     firstSection = false;

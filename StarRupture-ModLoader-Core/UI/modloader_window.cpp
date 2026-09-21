@@ -461,8 +461,12 @@ namespace UI::ModLoaderWindow
 
     // Render one config row inside an already-open 3-column table:
     //   Col 0 (Label)   -- setting name, wrapped to labelColWidth
-    //   Col 1 (Widget)  -- the editable control (empty for booleans -- their
-    //                      toggle lives in Col 2, see below)
+    //   Col 1 (Widget)  -- the editable control, every entry type including
+    //                      booleans (a ToggleSwitch, same as everything
+    //                      else here), always starting at Col 1's own left
+    //                      edge -- so a boolean row's control shares an x
+    //                      with a slider/text/keybind row's instead of
+    //                      sitting off in the actions column by itself
     //   Col 2 (Actions) -- blocking toggle (keybind only) + reset button,
     //                      reset always anchored to the column's right edge
     //                      so it lines up on every row regardless of what
@@ -524,8 +528,31 @@ namespace UI::ModLoaderWindow
 
         if (isBool)
         {
-            // Nothing here -- the toggle lives in Col 2 next to the reset
-            // button, and the description already moved under the label.
+            // Drawn at Col 1's own left edge, same as every other control
+            // type below -- previously lived in Col 2 next to the reset
+            // button instead, which put a boolean row's control at a
+            // different x than a slider/text/keybind row's, so nothing in
+            // the "control" column actually shared a left edge.
+            //
+            // Accept the same spellings ConfigReadBool does, but always
+            // write back "1"/"0": that is what ConfigWriteBool and the
+            // schema default writer emit, and plugins that read booleans
+            // via ReadInt/ReadString and compare against "1" break when
+            // this toggle is the one path that writes "true"/"false".
+            bool bval = (_stricmp(kv.value, "true") == 0 ||
+                         _stricmp(kv.value, "yes") == 0 ||
+                         strcmp(kv.value, "1") == 0);
+            char lbl[128];
+            snprintf(lbl, sizeof(lbl), "##chk%s", id);
+            if (UI::Theme::ToggleSwitch(lbl, &bval))
+            {
+                strncpy_s(kv.value, bval ? "1" : "0", _TRUNCATE);
+                NotifyConfigChangedLive(pluginName, kv);
+                CommitConfigChange(pluginName, kv);
+            }
+            // widgetHovered deliberately left false: the description is
+            // already always visible on its own line for every entry type
+            // now, not hover-only, so a tooltip here would just repeat it.
         }
         else if (e && e->type == ConfigValueType::Integer)
         {
@@ -639,30 +666,14 @@ namespace UI::ModLoaderWindow
             ImGui::SetTooltip("%s", e->description);
 
         // ---- Col 2: actions ------------------------------------------------
+        // Every control now lives in Col 1 (above), booleans included --
+        // this column is purely actions: the Block toggle on a keybind row,
+        // then reset, both right-aligned/consistent regardless of what
+        // (if anything) came before them here.
         ImGui::TableSetColumnIndex(2);
         const float colStartX = col2X;
         const float colY      = rowTopY + (topRowH - fh) * 0.5f;
         ImGui::SetCursorPosY(colY);
-
-        // Boolean toggle lives here (not in Col 1) so Col 1 can stay empty.
-        if (isBool)
-        {
-            // Accept the same spellings ConfigReadBool does, but always write back
-            // "1"/"0": that is what ConfigWriteBool and the schema default writer emit,
-            // and plugins that read booleans via ReadInt/ReadString and compare against
-            // "1" break when this toggle is the one path that writes "true"/"false".
-            bool bval = (_stricmp(kv.value, "true") == 0 ||
-                         _stricmp(kv.value, "yes") == 0 ||
-                         strcmp(kv.value, "1") == 0);
-            char lbl[128];
-            snprintf(lbl, sizeof(lbl), "##chk%s", id);
-            if (UI::Theme::ToggleSwitch(lbl, &bval))
-            {
-                strncpy_s(kv.value, bval ? "1" : "0", _TRUNCATE);
-                NotifyConfigChangedLive(pluginName, kv);
-                CommitConfigChange(pluginName, kv);
-            }
-        }
 
         // Blocking toggle (keybind rows only) -- given a short visible label,
         // not just a hover tooltip: unlabeled, it previously gave no visible

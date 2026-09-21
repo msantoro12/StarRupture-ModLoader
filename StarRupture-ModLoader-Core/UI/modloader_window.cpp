@@ -1026,16 +1026,19 @@ namespace UI::ModLoaderWindow
                 const float kLabelColMin   = 130.0f; // floor for a very short label
                 const float kMinControlW   = 160.0f; // floor for a plain text/int/float input
                 const float kMinDescColW   = 150.0f; // below this, shrink the slider toward sliderMinW instead
-                // 30% of the section's own available width, not a fixed
+                // 20% of the section's own available width, not a fixed
                 // pixel budget -- scales with whatever room there actually
                 // is instead of being proportionally too generous on a
                 // narrow window (or needlessly tight on a wide one), which
                 // an absolute cap in px, even scaled by FontScaleMain,
-                // wouldn't do on its own. 45% (the first pass at this) was
-                // still wide enough that one long label ("Max Concurrent
-                // Beacons") squeezed its section's description column back
-                // down to a sliver.
-                const float kMaxLabelShare = 0.30f;  // past this, a label wraps rather than push the column wider
+                // wouldn't do on its own. This is now purely the outlier
+                // *threshold* (see labelColWidth's own loop below), not the
+                // resulting column width, so its exact value matters less
+                // than it used to -- 30% (the prior pass) was still fine
+                // here, but 20% draws the "is this label huge" line closer
+                // to where a real label actually gets uncomfortable to read
+                // on one row.
+                const float kMaxLabelShare = 0.20f;  // past this, a label is an outlier: it wraps, and stops setting the column's width
 
                 // One 3-column table per section, label/control widths
                 // computed from just THAT section's own entries -- not the
@@ -1043,14 +1046,20 @@ namespace UI::ModLoaderWindow
                 // pay for sliderMaxW's worth of control column and starve
                 // its own description column over it; only a section that
                 // actually has one does.
-                //   Col 0  Label       -- content-bound: the widest label's
-                //                         own text width plus CellPadding,
-                //                         nothing more. Never stretches and
-                //                         never gives up width to the other
-                //                         two columns; only capped (letting
-                //                         that one label wrap) if it alone
-                //                         would exceed kMaxLabelShare of
-                //                         what the section actually has.
+                //   Col 0  Label       -- content-bound: the widest label
+                //                         that ISN'T an outlier (past
+                //                         kMaxLabelShare of the section),
+                //                         own text width plus CellPadding.
+                //                         Never stretches and never gives up
+                //                         width to the other two columns. A
+                //                         single huge label -- a plugin
+                //                         author's long setting name, or the
+                //                         harness's own deliberate stress
+                //                         case -- wraps onto a second line
+                //                         in place instead of dragging this
+                //                         column, and every ordinary label
+                //                         in it, out wider than any of them
+                //                         actually need.
                 //   Col 1  Description -- stretches to fill whatever Label
                 //                         and Control don't need; the first
                 //                         to shrink when space is tight.
@@ -1085,14 +1094,44 @@ namespace UI::ModLoaderWindow
                         ++i;
                     const size_t sectionEnd = i;
 
-                    float labelColWidth      = kLabelColMin;
-                    float keybindRowW        = 0.0f;
-                    bool  hasRangedSlider    = false;
+                    // Indented first (before anything below reads available
+                    // width) so sectionAvail/the outlier threshold reflect
+                    // this section's actual usable width, same as before.
+                    ImGui::Indent(kSectionIndent);
+                    const float sectionAvail     = ImGui::GetContentRegionAvail().x;
+                    const float cellPadX         = ImGui::GetStyle().CellPadding.x;
+                    // A label past this is treated as an outlier: it still
+                    // gets to wrap onto its own second (or third) line, but
+                    // it no longer gets a say in how wide the column is --
+                    // see the loop below. Floored at kLabelColMin so a
+                    // narrow window (where kMaxLabelShare's own share would
+                    // be smaller than the floor) doesn't turn every label
+                    // into an "outlier" and collapse the column to nothing.
+                    float outlierThreshold = sectionAvail * kMaxLabelShare;
+                    if (outlierThreshold < kLabelColMin) outlierThreshold = kLabelColMin;
+
+                    // Sized off the widest label that ISN'T an outlier, not
+                    // the section's overall widest -- a single huge label
+                    // (a stress case like "Interact With Containers While
+                    // Piloting The Drone") used to set the column for every
+                    // ordinary row in its section too, leaving "Max Speed"
+                    // and "Camera FOV" with a wide dead gap before their
+                    // description starts. Now it just wraps in place and
+                    // the column stays sized to what the section's normal
+                    // labels actually need. If every label in a section is
+                    // an outlier (never seen in practice, but possible),
+                    // labelColWidth stays 0 through the loop below and the
+                    // fallback after it uses the threshold itself, so they
+                    // still share one width.
+                    float labelColWidth   = 0.0f;
+                    float keybindRowW     = 0.0f;
+                    bool  hasRangedSlider = false;
                     for (size_t j = sectionStart; j < sectionEnd; ++j)
                     {
                         const ConfigKV& kv = s_configEntries[j];
-                        const float lw = ImGui::CalcTextSize(kv.key).x;
-                        if (lw > labelColWidth) labelColWidth = lw;
+                        const float lw = ImGui::CalcTextSize(kv.key).x + cellPadX;
+                        if (lw <= outlierThreshold && lw > labelColWidth)
+                            labelColWidth = lw;
 
                         const ConfigEntry* se = FindSchemaEntry(schema, kv.section, kv.key);
                         if (!se) continue;
@@ -1109,7 +1148,8 @@ namespace UI::ModLoaderWindow
                             hasRangedSlider = true;
                         }
                     }
-                    labelColWidth += ImGui::GetStyle().CellPadding.x; // breathing room
+                    if (labelColWidth <= 0.0f) labelColWidth = outlierThreshold; // every label this section has was an outlier
+                    if (labelColWidth < kLabelColMin) labelColWidth = kLabelColMin;
                     if (keybindRowW > 0.0f)
                         keybindRowW += itemSpacing + blockLabelW + innerSpacing + toggleW;
 
@@ -1126,18 +1166,6 @@ namespace UI::ModLoaderWindow
 
                     float controlW = hasRangedSlider ? sliderMaxW : controlFloor;
                     if (controlFloor > controlW) controlW = controlFloor;
-
-                    ImGui::Indent(kSectionIndent);
-
-                    // Cap the label only if it alone would eat more than
-                    // kMaxLabelShare of what this section has to work with
-                    // -- a normal label never hits this. Measured after
-                    // Indent() so it reflects this section's actual usable
-                    // width.
-                    const float sectionAvail = ImGui::GetContentRegionAvail().x;
-                    const float maxLabelColWidth = sectionAvail * kMaxLabelShare;
-                    if (labelColWidth > maxLabelColWidth && maxLabelColWidth > kLabelColMin)
-                        labelColWidth = maxLabelColWidth;
 
                     // If Label + Control (at the slider's max) would leave
                     // Description under its own floor, shrink the slider's

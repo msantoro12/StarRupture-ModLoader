@@ -1063,7 +1063,7 @@ namespace UI::ModLoaderWindow
                 const float kLabelColMin   = 130.0f; // floor for a very short label
                 const float kMinControlW   = 160.0f; // floor for a plain text/int/float input
                 const float kMinDescColW   = 150.0f; // below this, shrink the slider toward sliderMinW instead
-                // 20% of the section's own available width, not a fixed
+                // 20% of the page's own available width, not a fixed
                 // pixel budget -- scales with whatever room there actually
                 // is instead of being proportionally too generous on a
                 // narrow window (or needlessly tight on a wide one), which
@@ -1077,16 +1077,23 @@ namespace UI::ModLoaderWindow
                 // on one row.
                 const float kMaxLabelShare = 0.20f;  // past this, a label is an outlier: it wraps, and stops setting the column's width
 
-                // One 3-column table per section, label/control widths
-                // computed from just THAT section's own entries -- not the
-                // whole page -- so a section with no ranged slider doesn't
-                // pay for sliderMaxW's worth of control column and starve
-                // its own description column over it; only a section that
-                // actually has one does.
-                //   Col 0  Label       -- content-bound: the widest label
-                //                         that ISN'T an outlier (past
-                //                         kMaxLabelShare of the section),
-                //                         own text width plus CellPadding.
+                // One 3-column table per section -- but the label column's
+                // own width is computed ONCE, from every entry across the
+                // WHOLE page, not per section: sections used to size their
+                // label column independently, which meant "Enabled"
+                // (General) and "Max Speed" (Drone) didn't share a column
+                // edge, so descriptions started at a different x from one
+                // section to the next and the page read as several
+                // unrelated tables rather than one. Control still varies
+                // per section below (a section with no ranged slider
+                // doesn't pay for sliderMaxW's worth of control column and
+                // starve its own description over it; only a section that
+                // actually has one does) -- only Label needed to be shared
+                // for every column edge to line up top to bottom.
+                //   Col 0  Label       -- content-bound: the page's widest
+                //                         label that ISN'T an outlier (past
+                //                         kMaxLabelShare of the page), own
+                //                         text width plus CellPadding.
                 //                         Never stretches and never gives up
                 //                         width to the other two columns. A
                 //                         single huge label -- a plugin
@@ -1095,8 +1102,8 @@ namespace UI::ModLoaderWindow
                 //                         case -- wraps onto a second line
                 //                         in place instead of dragging this
                 //                         column, and every ordinary label
-                //                         in it, out wider than any of them
-                //                         actually need.
+                //                         on the page, out wider than any of
+                //                         them actually need.
                 //   Col 1  Description -- stretches to fill whatever Label
                 //                         and Control don't need; the first
                 //                         to shrink when space is tight.
@@ -1121,6 +1128,46 @@ namespace UI::ModLoaderWindow
                     ImGuiTableFlags_BordersInnerH |
                     ImGuiTableFlags_PadOuterX;
 
+                // pageAvail mirrors what each section's own
+                // GetContentRegionAvail().x reads after Indent(kSectionIndent)
+                // below -- same window, same constant indent, every section
+                // -- computed the same way (subtracting the indent directly)
+                // rather than indenting/unindenting here just to measure it.
+                const float pageAvail = ImGui::GetContentRegionAvail().x - kSectionIndent;
+                const float cellPadX  = ImGui::GetStyle().CellPadding.x;
+                float pageOutlierThreshold = pageAvail * kMaxLabelShare;
+                if (pageOutlierThreshold < kLabelColMin) pageOutlierThreshold = kLabelColMin;
+
+                float labelColWidth = 0.0f;
+                float pageMaxWordW  = 0.0f;
+                for (const ConfigKV& kv : s_configEntries)
+                {
+                    const float lw = ImGui::CalcTextSize(kv.key).x + cellPadX;
+                    if (lw <= pageOutlierThreshold && lw > labelColWidth)
+                        labelColWidth = lw;
+                    const float ww = WidestWordWidth(kv.key);
+                    if (ww > pageMaxWordW) pageMaxWordW = ww;
+                }
+                if (labelColWidth <= 0.0f) labelColWidth = pageOutlierThreshold; // every label on the page was an outlier
+                if (labelColWidth < kLabelColMin) labelColWidth = kLabelColMin;
+                if (pageMaxWordW > 0.0f)
+                {
+                    // Same word floor as before, just page-wide now -- still
+                    // capped so a pathological single word can't blow the
+                    // column out for every section, but the cap can't know
+                    // each section's own control requirement yet (that's
+                    // computed per section below), so it uses kMinControlW,
+                    // the smallest any section ever asks for, as a
+                    // conservative stand-in. Only matters for a word wider
+                    // than any real label in this set gets close to.
+                    float wordFloor = pageMaxWordW + cellPadX;
+                    const float maxLabelFloor = pageAvail - kMinDescColW - kMinControlW - innerSpacing - resetW;
+                    if (wordFloor > maxLabelFloor)
+                        wordFloor = maxLabelFloor;
+                    if (wordFloor > labelColWidth)
+                        labelColWidth = wordFloor;
+                }
+
                 bool firstSection = true;
                 size_t i = 0;
                 while (i < s_configEntries.size())
@@ -1132,47 +1179,22 @@ namespace UI::ModLoaderWindow
                     const size_t sectionEnd = i;
 
                     // Indented first (before anything below reads available
-                    // width) so sectionAvail/the outlier threshold reflect
-                    // this section's actual usable width, same as before.
+                    // width) so sectionAvail reflects this section's actual
+                    // usable width, same as before -- numerically the same
+                    // as pageAvail above (same window, same constant
+                    // indent), still needed here for the per-section
+                    // description-shrink check below.
                     ImGui::Indent(kSectionIndent);
-                    const float sectionAvail     = ImGui::GetContentRegionAvail().x;
-                    const float cellPadX         = ImGui::GetStyle().CellPadding.x;
-                    // A label past this is treated as an outlier: it still
-                    // gets to wrap onto its own second (or third) line, but
-                    // it no longer gets a say in how wide the column is --
-                    // see the loop below. Floored at kLabelColMin so a
-                    // narrow window (where kMaxLabelShare's own share would
-                    // be smaller than the floor) doesn't turn every label
-                    // into an "outlier" and collapse the column to nothing.
-                    float outlierThreshold = sectionAvail * kMaxLabelShare;
-                    if (outlierThreshold < kLabelColMin) outlierThreshold = kLabelColMin;
+                    const float sectionAvail = ImGui::GetContentRegionAvail().x;
 
-                    // Sized off the widest label that ISN'T an outlier, not
-                    // the section's overall widest -- a single huge label
-                    // (a stress case like "Interact With Containers While
-                    // Piloting The Drone") used to set the column for every
-                    // ordinary row in its section too, leaving "Max Speed"
-                    // and "Camera FOV" with a wide dead gap before their
-                    // description starts. Now it just wraps in place and
-                    // the column stays sized to what the section's normal
-                    // labels actually need. If every label in a section is
-                    // an outlier (never seen in practice, but possible),
-                    // labelColWidth stays 0 through the loop below and the
-                    // fallback after it uses the threshold itself, so they
-                    // still share one width.
-                    float labelColWidth   = 0.0f;
-                    float maxWordW        = 0.0f; // widest single word among this section's labels
+                    // Control still varies per section -- see the comment
+                    // above the page-wide label computation for why Label
+                    // doesn't anymore.
                     float keybindRowW     = 0.0f;
                     bool  hasRangedSlider = false;
                     for (size_t j = sectionStart; j < sectionEnd; ++j)
                     {
                         const ConfigKV& kv = s_configEntries[j];
-                        const float lw = ImGui::CalcTextSize(kv.key).x + cellPadX;
-                        if (lw <= outlierThreshold && lw > labelColWidth)
-                            labelColWidth = lw;
-                        const float ww = WidestWordWidth(kv.key);
-                        if (ww > maxWordW) maxWordW = ww;
-
                         const ConfigEntry* se = FindSchemaEntry(schema, kv.section, kv.key);
                         if (!se) continue;
                         if (se->type == ConfigValueType::Keybind)
@@ -1188,8 +1210,6 @@ namespace UI::ModLoaderWindow
                             hasRangedSlider = true;
                         }
                     }
-                    if (labelColWidth <= 0.0f) labelColWidth = outlierThreshold; // every label this section has was an outlier
-                    if (labelColWidth < kLabelColMin) labelColWidth = kLabelColMin;
                     if (keybindRowW > 0.0f)
                         keybindRowW += itemSpacing + blockLabelW + innerSpacing + toggleW;
 
@@ -1203,31 +1223,6 @@ namespace UI::ModLoaderWindow
                     float controlFloor = kMinControlW;
                     if (toggleW     > controlFloor) controlFloor = toggleW;
                     if (keybindRowW > controlFloor) controlFloor = keybindRowW;
-
-                    // Word floor -- takes precedence over the outlier
-                    // threshold above: a section with one long WORD (not
-                    // just one long label) still deserves a wider column,
-                    // so TextWrapped never has to break a word mid-
-                    // character to fit it (only ever raises labelColWidth,
-                    // consistent with the outlier fallback above never
-                    // reaching this small either). Capped at how wide the
-                    // column could ever get before Description/Control
-                    // have nowhere left to go -- past that, the word is
-                    // genuinely wider than the column could ever be, and
-                    // RenderConfigEntry's own fallback (an unwrapped,
-                    // clipped line for that one row) takes over instead of
-                    // this growing the whole section's column to a
-                    // pathological width.
-                    if (maxWordW > 0.0f)
-                    {
-                        float wordFloor = maxWordW + cellPadX;
-                        const float minControlEver = (hasRangedSlider && sliderMinW > controlFloor) ? sliderMinW : controlFloor;
-                        const float maxLabelFloor = sectionAvail - kMinDescColW - minControlEver - innerSpacing - resetW;
-                        if (wordFloor > maxLabelFloor)
-                            wordFloor = maxLabelFloor;
-                        if (wordFloor > labelColWidth)
-                            labelColWidth = wordFloor;
-                    }
 
                     float controlW = hasRangedSlider ? sliderMaxW : controlFloor;
                     if (controlFloor > controlW) controlW = controlFloor;

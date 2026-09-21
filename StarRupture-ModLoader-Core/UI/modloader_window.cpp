@@ -1316,7 +1316,16 @@ namespace UI::ModLoaderWindow
                 const float kLabelColMin   = 130.0f; // floor for a very short label
                 const float kMinControlW   = 160.0f; // floor for a plain text/int/float input
                 const float kMinDescColW   = 150.0f; // below this, shrink the slider toward sliderMinW instead
-                const float kMaxLabelShare = 0.45f;  // a single huge label wraps rather than push this further
+                // 30% of the section's own available width, not a fixed
+                // pixel budget -- scales with whatever room there actually
+                // is instead of being proportionally too generous on a
+                // narrow window (or needlessly tight on a wide one), which
+                // an absolute cap in px, even scaled by FontScaleMain,
+                // wouldn't do on its own. 45% (the first pass at this) was
+                // still wide enough that one long label ("Max Concurrent
+                // Beacons") squeezed its section's description column back
+                // down to a sliver.
+                const float kMaxLabelShare = 0.30f;  // past this, a label wraps rather than push the column wider
 
                 // One 3-column table per section, label/control widths
                 // computed from just THAT section's own entries -- not the

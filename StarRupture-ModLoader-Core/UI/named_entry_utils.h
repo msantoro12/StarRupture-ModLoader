@@ -5,13 +5,12 @@
 // ---------------------------------------------------------------------------
 // UI::NamedEntryUtils
 //
-// The loader now has three places a user picks a name for something saved
-// to disk -- a user theme file (theme.cpp), a plugin config preset
-// (plugin_preset_store.cpp), and each plugin's own preset store (BetterDrone/
-// BetterCheats' preset_store.h/.cpp, not part of this repo) -- and the first
-// two used to each hand-roll the same two small rules: which characters are
-// safe in a name, and how to turn "<base>" into a name nothing already has.
-// Pulled out here so a fourth caller doesn't grow a fourth copy.
+// Small, shared rule for anything the user names and saves to disk in this
+// UI: which characters are safe in a name, and how to turn "<base>" into a
+// name nothing already has. Pulled out of theme.cpp's Save-As flow (its only
+// caller today) so a second in-UI caller wouldn't hand-roll the same two
+// rules a plugin's own preset store already has (BetterDrone/BetterCheats'
+// preset_store.h/.cpp, not part of this repo).
 // ---------------------------------------------------------------------------
 namespace UI::NamedEntryUtils
 {

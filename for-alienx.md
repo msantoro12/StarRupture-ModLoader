@@ -11,12 +11,13 @@ Every change is its own commit, and the commit messages go into more detail than
 - Live-values readout to see the composition actually holding
 - Grenade charge/capacity controls, plus global fuse/blast-radius/throw-force tuning
 - Three-tier item stack size overrides (global, category, per item)
-- Saved presets for Movement and each weapon type
+- Saved presets in every section with adjustable settings
 
 **BetterDrone**
 - Boost follows the player's Sprint binding by default
 - Four independent audio volume sliders
 - Separate speed and range presets, pick either independently
+- Saved presets for the speed and range groups
 - New in-game panel with live sliders and unit choices
 
 **Loader: UI**
@@ -26,7 +27,6 @@ Every change is its own commit, and the commit messages go into more detail than
 - Named themes, with save/rename/delete and a Star Rupture theme
 - Escape closes the ModLoader window
 - Rebind picker can capture a bare modifier key
-- Named presets for a plugin's config page, with save, rename and delete
 - Companion Blocking key now shows only as the keybind row's Block toggle
 
 **Loader: fixes**
@@ -48,9 +48,9 @@ This covers three branches, all pushed to forks under `msantoro12` so you can lo
 
 Briefer, since these are ours to begin with.
 
-**BetterCheats.** Weapon and movement attribute overrides now compose onto the game's own values instead of overwriting them, so LEMs, buffs, and attachments keep layering on top correctly. A live-values readout (hover any row for a base/buffed/change/result breakdown, plus a `+buff`/`+mods` tag when something else is contributing) was added mainly to prove that in-game. Magazine Size got repointed to the field the equipped-weapon getter actually reads, after tracing why the old target wasn't moving the clip. Grenades got their own tab: charge cost, max/min charge, and infinite charges compose the same way weapons do, and fuse time, blast radius, and throw force are new global controls resolved by property name against classes that only exist in the game's Server-side SDK headers. Item stacks got a three-tier size override: global multiplier, then per-category, then per-item, most specific wins. And there are now saved presets (name it, save it, it follows you across worlds) for Movement and each weapon type, backed by a small INI-based store.
+**BetterCheats.** Weapon and movement attribute overrides now compose onto the game's own values instead of overwriting them, so LEMs, buffs, and attachments keep layering on top correctly. A live-values readout (hover any row for a base/buffed/change/result breakdown, plus a `+buff`/`+mods` tag when something else is contributing) was added mainly to prove that in-game. Magazine Size got repointed to the field the equipped-weapon getter actually reads, after tracing why the old target wasn't moving the clip. Grenades got their own tab: charge cost, max/min charge, and infinite charges compose the same way weapons do, and fuse time, blast radius, and throw force are new global controls resolved by property name against classes that only exist in the game's Server-side SDK headers. Item stacks got a three-tier size override: global multiplier, then per-category, then per-item, most specific wins. And saved presets (name it, save it, it follows you across worlds) are now available in every section with adjustable settings, backed by a small INI-based store.
 
-**BetterDrone.** Boost now defaults to following whatever key the game has bound to Sprint, so there's no separate default to remember. It's still rebindable to something else if you want. It ramps via configurable acceleration/deceleration instead of snapping, and clamps to the drone's configured max speed. Four independent volume sliders for the drone's own sounds (idle, movement, rotation, station) were added, plus a "master volume" convenience slider that drives all four together. Speed and range presets are now separate axes. There are five speed presets and four range presets, and you can pick either independently, so a faster preset doesn't force a specific range on you (two of them are explicitly credited to CrazyCovin's "Better Construction Drone," NexusMods #27). There's a new in-game panel (default toggle key F8, closes on Escape or Q) with live sliders, unit choices (km/h or mph for speed, m/ft/cm for range), and a reset button per field. Panel values are cached in memory and only written to disk when you finish editing a field, not on every tick.
+**BetterDrone.** Boost now defaults to following whatever key the game has bound to Sprint, so there's no separate default to remember. It's still rebindable to something else if you want. It ramps via configurable acceleration/deceleration instead of snapping, and clamps to the drone's configured max speed. Four independent volume sliders for the drone's own sounds (idle, movement, rotation, station) were added, plus a "master volume" convenience slider that drives all four together. Speed and range presets are now separate axes. There are five speed presets and four range presets, and you can pick either independently, so a faster preset doesn't force a specific range on you (two of them are explicitly credited to CrazyCovin's "Better Construction Drone," NexusMods #27). Both groups also take saved presets of your own, alongside those built-ins. There's a new in-game panel (default toggle key F8, closes on Escape or Q) with live sliders, unit choices (km/h or mph for speed, m/ft/cm for range), and a reset button per field. Panel values are cached in memory and only written to disk when you finish editing a field, not on every tick.
 
 Both plugins also picked up saved presets, the panel-flicker-on-close fix, and the slider/reset-icon changes as matching pairs. Same shape, same fix, applied to our own code in both places once we'd worked it out in one.
 
@@ -72,7 +72,6 @@ The UI work, roughly in the order you'd run into it:
 - Named themes: the Theme tab held a single custom palette. A Theme dropdown now offers two built-ins, Default and a new "Star Rupture" theme matching the game's own value/hover/structure colors, plus any user theme saved to `ModLoader\Themes\<name>.ini`, shareable as a file. This also splits `Highlight` and `PanelBorder` out as their own color roles instead of reusing `Accent` for both "this is a value" and "this is hover/selected," which the game itself keeps visually distinct.
 - Escape now closes the ModLoader window, same as every plugin panel already does. It's deferred a frame so it doesn't collide with the rebind picker's own Escape-cancels-capture handling.
 - The rebind picker previously skipped every modifier VK outright. It now tracks a held modifier and commits it alone if released with nothing else pressed in between, so a plugin's key can be rebound to a bare modifier like "LeftShift" directly from the picker, matching the dispatch change below.
-- Named presets for a plugin's config page: a dropdown per plugin with Save, Rename, and Delete. A new save defaults to "<current> Custom", numbered on repeat saves. Presets are stored per plugin next to its config, and applying one runs through the loader's normal commit path, so the plugin still gets its config-changed callback.
 
 Three fixes, same level of detail:
 
@@ -86,7 +85,7 @@ One more commit stamps a real file version into local builds (`/p:ModLoaderVersi
 
 ## Two things worth your opinion
 
-**A shared preset store in the SDK.** The loader now has the same named-collection shape in three places on its own: `theme.cpp` for named themes, the new per-plugin config presets described above, and the plugin-side stores BetterDrone and BetterCheats each carry (BetterDrone's `preset_store.h/.cpp` came first, and BetterCheats copied it almost verbatim, per its own header comment). Each is its own copy of the same thing: a named collection of settings, backed by one INI, with list/save/load/delete against it. Wrote up a proposal for pulling that into `IPluginHooks` as `IPluginPresetStore` instead. It's additive only, and it doesn't touch `PLUGIN_INTERFACE_VERSION_MIN`. It's `sdk-preset-proposal.md`, not attached as a patch since whether it's worth the SDK surface is your call.
+**A shared preset store in the SDK.** The same named-collection shape shows up in three places already: the loader's own `theme.cpp` for named themes, and our BetterDrone and BetterCheats preset stores (BetterDrone's `preset_store.h/.cpp` came first, and BetterCheats copied it almost verbatim, per its own header comment). Each is its own copy of the same thing: a named collection of settings, backed by one INI, with list/save/load/delete against it. Wrote up a proposal for pulling that into `IPluginHooks` as `IPluginPresetStore` instead. It's additive only, and it doesn't touch `PLUGIN_INTERFACE_VERSION_MIN`. It's `sdk-preset-proposal.md`, not attached as a patch since whether it's worth the SDK surface is your call.
 
 **Enumerating an object's properties.** `IPluginObjectProperties::FindPropertyByName` resolves a property a plugin already knows the name of. Discovering names on an object without a header for it (a modded Blueprint, an unknown GameplayEffect, whatever else shows up later) isn't covered yet. The loader already does exactly this walk internally, for its own debug dump (`ExportKnownProperties` in `object_properties.cpp`). It's scoped to every class in `GObjects` at once and writes to a file instead of a buffer, but the walk itself already exists. An `EnumeratePropertiesInto(object, outArray, capacity)` scoped to one object looks like a small, additive extension of what's already written. Covered as a secondary note in the same proposal doc.
 

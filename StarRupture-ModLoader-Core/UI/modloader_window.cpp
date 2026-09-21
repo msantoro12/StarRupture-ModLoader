@@ -9,6 +9,8 @@
 #include "config/config_manager.h"
 #include "global_settings.h"
 #include "theme.h"
+#include "named_entry_utils.h"
+#include "plugin_preset_store.h"
 #include "update_notice_window.h"
 #include "hook_failure_window.h"
 #include "hooks/input/keybind_registry.h"
@@ -237,6 +239,109 @@ namespace UI::ModLoaderWindow
             }
 
             Hooks::Input::UpdateKeybindByName(pluginName, oldValue, kv.value);
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Config presets -- captures/restores everything RenderConfigTab shows
+    // for a plugin (s_configEntries plus each keybind's own "<key>Blocking"
+    // companion, which RenderConfigEntry's Block toggle already reads/writes
+    // straight to the plugin's own ini rather than through s_configEntries --
+    // see LoadConfigEntries' own comment on why that companion isn't in the
+    // list itself). Pure translation between UI::PluginPresetStore::Field
+    // and the live config state; the actual ini I/O lives in
+    // plugin_preset_store.cpp, same split as theme.cpp's SaveColors/
+    // LoadColors vs. ApplyColorByName.
+    // -----------------------------------------------------------------------
+
+    // Fills out (cap entries) from the current s_configEntries plus every
+    // keybind's "<key>Blocking" companion (read fresh from the plugin's own
+    // ini, since s_configEntries itself no longer carries those). Returns
+    // the count written.
+    static int BuildPresetFieldsFromCurrent(const char* pluginName, const ConfigSchema* schema,
+                                             UI::PluginPresetStore::Field* out, int cap)
+    {
+        int n = 0;
+        wchar_t iniPath[MAX_PATH];
+        const bool haveIni = GetPluginIniPath(pluginName, iniPath, MAX_PATH);
+
+        for (const auto& kv : s_configEntries)
+        {
+            if (n >= cap) break;
+            strncpy_s(out[n].section, kv.section, _TRUNCATE);
+            strncpy_s(out[n].key,     kv.key,     _TRUNCATE);
+            strncpy_s(out[n].value,   kv.value,   _TRUNCATE);
+            ++n;
+
+            const ConfigEntry* e = FindSchemaEntry(schema, kv.section, kv.key);
+            if (e && e->type == ConfigValueType::Keybind && haveIni && n < cap)
+            {
+                wchar_t wsec[64], wblkKey[128];
+                swprintf_s(wsec,    L"%S",        kv.section);
+                swprintf_s(wblkKey, L"%SBlocking", kv.key);
+                bool blocking = (GetPrivateProfileIntW(wsec, wblkKey, 0, iniPath) != 0);
+
+                char blkKeyNarrow[128];
+                snprintf(blkKeyNarrow, sizeof(blkKeyNarrow), "%sBlocking", kv.key);
+                strncpy_s(out[n].section, kv.section, _TRUNCATE);
+                strncpy_s(out[n].key,     blkKeyNarrow, _TRUNCATE);
+                strncpy_s(out[n].value,   blocking ? "1" : "0", _TRUNCATE);
+                ++n;
+            }
+        }
+        return n;
+    }
+
+    // Applies each field back through the same commit path a manual edit
+    // uses (NotifyConfigChangedLive/CommitConfigChange), so the plugin still
+    // gets its OnConfigChanged callback -- same as ApplyTheme leaves ImGui
+    // style state through the normal Apply()/ResetColors() path rather than
+    // poking ImGuiStyle.Colors[] from outside. A field with no matching live
+    // entry is a "<key>Blocking" companion: written straight to the
+    // plugin's own ini plus Hooks::Input::SetComboBlocking, matching
+    // RenderConfigEntry's own Block toggle.
+    static void ApplyPresetFields(const char* pluginName, const UI::PluginPresetStore::Field* fields, int count)
+    {
+        wchar_t iniPath[MAX_PATH];
+        const bool haveIni = GetPluginIniPath(pluginName, iniPath, MAX_PATH);
+
+        for (int i = 0; i < count; ++i)
+        {
+            ConfigKV* match = nullptr;
+            for (auto& kv : s_configEntries)
+                if (strcmp(kv.section, fields[i].section) == 0 && strcmp(kv.key, fields[i].key) == 0)
+                { match = &kv; break; }
+
+            if (match)
+            {
+                strncpy_s(match->value, fields[i].value, _TRUNCATE);
+                NotifyConfigChangedLive(pluginName, *match);
+                CommitConfigChange(pluginName, *match);
+                continue;
+            }
+
+            const size_t keyLen = strlen(fields[i].key);
+            constexpr size_t kSuffixLen = 8; // strlen("Blocking")
+            if (keyLen <= kSuffixLen || strcmp(fields[i].key + keyLen - kSuffixLen, "Blocking") != 0)
+                continue; // schema-less and not a Blocking companion -- nothing to apply it to
+
+            if (haveIni)
+            {
+                wchar_t wsec[64], wkey[128], wval[256];
+                swprintf_s(wsec, L"%S", fields[i].section);
+                swprintf_s(wkey, L"%S", fields[i].key);
+                swprintf_s(wval, L"%S", fields[i].value);
+                WritePrivateProfileStringW(wsec, wkey, wval, iniPath);
+            }
+
+            char baseKey[64];
+            snprintf(baseKey, sizeof(baseKey), "%.*s", (int)(keyLen - kSuffixLen), fields[i].key);
+            for (const auto& kv2 : s_configEntries)
+                if (strcmp(kv2.section, fields[i].section) == 0 && strcmp(kv2.key, baseKey) == 0)
+                {
+                    Hooks::Input::SetComboBlocking(kv2.value, strcmp(fields[i].value, "0") != 0);
+                    break;
+                }
         }
     }
 
@@ -1030,6 +1135,173 @@ namespace UI::ModLoaderWindow
                 ImGui::TextDisabled("Changes are saved immediately.");
                 ImGui::Spacing();
 
+                // ---- Presets ---------------------------------------------
+                // Same shape as the Theme tab's own dropdown (RenderThemeTab):
+                // a cached name list (not re-scanned every frame this section
+                // is open -- only on first render, the combo popup opening, or
+                // right after Save/Rename/Delete below), applied immediately
+                // on selection. Cache is per plugin, invalidated on switch.
+                {
+                    static char s_presetPlugin[64]  = {};
+                    static char s_presetNames[64][64];
+                    static int  s_presetCount        = -1;
+                    static int  s_presetSelectedIdx  = -1; // -1 = no preset currently active
+
+                    auto rescanPresets = [&]() { s_presetCount = UI::PluginPresetStore::ListNames(info->name, s_presetNames, 64); };
+                    if (strcmp(s_presetPlugin, info->name) != 0)
+                    {
+                        strncpy_s(s_presetPlugin, info->name, _TRUNCATE);
+                        s_presetSelectedIdx = -1;
+                        rescanPresets();
+                    }
+
+                    ImGui::SeparatorText("Presets");
+
+                    const char* curPresetLabel = (s_presetSelectedIdx >= 0 && s_presetSelectedIdx < s_presetCount)
+                        ? s_presetNames[s_presetSelectedIdx] : "(none)";
+                    if (ImGui::BeginCombo("Active Preset", curPresetLabel))
+                    {
+                        if (ImGui::IsWindowAppearing())
+                            rescanPresets(); // popup just opened -- pick up any change since last time
+
+                        for (int i = 0; i < s_presetCount; ++i)
+                        {
+                            bool selected = (i == s_presetSelectedIdx);
+                            if (ImGui::Selectable(s_presetNames[i], selected))
+                            {
+                                UI::PluginPresetStore::Field fields[128];
+                                int n = UI::PluginPresetStore::Load(info->name, s_presetNames[i], fields, 128);
+                                if (n >= 0)
+                                {
+                                    s_presetSelectedIdx = i;
+                                    ApplyPresetFields(info->name, fields, n);
+                                }
+                            }
+                            if (selected) ImGui::SetItemDefaultFocus();
+                        }
+                        ImGui::EndCombo();
+                    }
+
+                    static char s_presetSaveAsName[64] = {};
+                    if (ImGui::Button("Save", ImVec2(90.0f, 0.0f)))
+                    {
+                        const char* base = (s_presetSelectedIdx >= 0) ? s_presetNames[s_presetSelectedIdx] : "Custom";
+                        char suggestedBase[80];
+                        snprintf(suggestedBase, sizeof(suggestedBase), "%s Custom", base);
+
+                        const char* existing[64];
+                        for (int i = 0; i < s_presetCount; ++i) existing[i] = s_presetNames[i];
+                        UI::NamedEntryUtils::SuggestUniqueName(suggestedBase, existing, s_presetCount,
+                                                               s_presetSaveAsName, sizeof(s_presetSaveAsName));
+                        ImGui::OpenPopup("Save Preset As");
+                    }
+                    ImGui::SameLine();
+
+                    static char s_presetRenameTo[64] = {};
+                    ImGui::BeginDisabled(s_presetSelectedIdx < 0);
+                    if (ImGui::Button("Rename", ImVec2(90.0f, 0.0f)))
+                    {
+                        strncpy_s(s_presetRenameTo, s_presetNames[s_presetSelectedIdx], _TRUNCATE);
+                        ImGui::OpenPopup("Rename Preset");
+                    }
+                    ImGui::EndDisabled();
+                    ImGui::SameLine();
+
+                    ImGui::BeginDisabled(s_presetSelectedIdx < 0);
+                    if (ImGui::Button("Delete", ImVec2(90.0f, 0.0f)))
+                        ImGui::OpenPopup("Delete Preset?");
+                    ImGui::EndDisabled();
+
+                    if (ImGui::BeginPopupModal("Save Preset As", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
+                    {
+                        ImGui::TextUnformatted("Save the current config values as a new preset:");
+                        ImGui::SetNextItemWidth(240.0f);
+                        bool enter = ImGui::InputText("##preset_save_as_name", s_presetSaveAsName, sizeof(s_presetSaveAsName),
+                                                      ImGuiInputTextFlags_EnterReturnsTrue);
+
+                        bool nameTaken = false;
+                        for (int i = 0; i < s_presetCount; ++i)
+                            if (_stricmp(s_presetNames[i], s_presetSaveAsName) == 0) { nameTaken = true; break; }
+                        const bool validName = UI::NamedEntryUtils::IsValidEntryName(s_presetSaveAsName) && !nameTaken;
+                        if (s_presetSaveAsName[0] && !validName)
+                            ImGui::TextColored(ImVec4(1.0f, 0.45f, 0.45f, 1.0f),
+                                               nameTaken ? "A preset with that name already exists."
+                                                         : "Name can't be empty or contain \\ / : * ? \" < > |");
+
+                        ImGui::Spacing();
+                        ImGui::BeginDisabled(!validName);
+                        if ((ImGui::Button("Save", ImVec2(100.0f, 0.0f)) || (enter && validName)) && validName)
+                        {
+                            UI::PluginPresetStore::Field fields[128];
+                            int n = BuildPresetFieldsFromCurrent(info->name, schema, fields, 128);
+                            UI::PluginPresetStore::Save(info->name, s_presetSaveAsName, fields, n);
+                            rescanPresets();
+                            for (int i = 0; i < s_presetCount; ++i)
+                                if (strcmp(s_presetNames[i], s_presetSaveAsName) == 0) { s_presetSelectedIdx = i; break; }
+                            ImGui::CloseCurrentPopup();
+                        }
+                        ImGui::EndDisabled();
+                        ImGui::SameLine();
+                        if (ImGui::Button("Cancel", ImVec2(100.0f, 0.0f)))
+                            ImGui::CloseCurrentPopup();
+                        ImGui::EndPopup();
+                    }
+
+                    if (s_presetSelectedIdx >= 0 && ImGui::BeginPopupModal("Rename Preset", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
+                    {
+                        ImGui::Text("Rename \"%s\" to:", s_presetNames[s_presetSelectedIdx]);
+                        ImGui::SetNextItemWidth(240.0f);
+                        bool enter = ImGui::InputText("##preset_rename_to", s_presetRenameTo, sizeof(s_presetRenameTo),
+                                                      ImGuiInputTextFlags_EnterReturnsTrue);
+
+                        bool nameTaken = false;
+                        for (int i = 0; i < s_presetCount; ++i)
+                            if (i != s_presetSelectedIdx && _stricmp(s_presetNames[i], s_presetRenameTo) == 0) { nameTaken = true; break; }
+                        const bool validName = UI::NamedEntryUtils::IsValidEntryName(s_presetRenameTo) && !nameTaken;
+                        if (s_presetRenameTo[0] && !validName)
+                            ImGui::TextColored(ImVec4(1.0f, 0.45f, 0.45f, 1.0f),
+                                               nameTaken ? "A preset with that name already exists."
+                                                         : "Name can't be empty or contain \\ / : * ? \" < > |");
+
+                        ImGui::Spacing();
+                        ImGui::BeginDisabled(!validName);
+                        if ((ImGui::Button("Rename", ImVec2(100.0f, 0.0f)) || (enter && validName)) && validName)
+                        {
+                            if (UI::PluginPresetStore::Rename(info->name, s_presetNames[s_presetSelectedIdx], s_presetRenameTo))
+                            {
+                                rescanPresets();
+                                for (int i = 0; i < s_presetCount; ++i)
+                                    if (strcmp(s_presetNames[i], s_presetRenameTo) == 0) { s_presetSelectedIdx = i; break; }
+                            }
+                            ImGui::CloseCurrentPopup();
+                        }
+                        ImGui::EndDisabled();
+                        ImGui::SameLine();
+                        if (ImGui::Button("Cancel", ImVec2(100.0f, 0.0f)))
+                            ImGui::CloseCurrentPopup();
+                        ImGui::EndPopup();
+                    }
+
+                    if (s_presetSelectedIdx >= 0 && ImGui::BeginPopupModal("Delete Preset?", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
+                    {
+                        ImGui::Text("Delete preset \"%s\"? This cannot be undone.", s_presetNames[s_presetSelectedIdx]);
+                        ImGui::Spacing();
+                        if (ImGui::Button("Delete", ImVec2(100.0f, 0.0f)))
+                        {
+                            UI::PluginPresetStore::Delete(info->name, s_presetNames[s_presetSelectedIdx]);
+                            s_presetSelectedIdx = -1;
+                            rescanPresets();
+                            ImGui::CloseCurrentPopup();
+                        }
+                        ImGui::SameLine();
+                        if (ImGui::Button("Cancel", ImVec2(100.0f, 0.0f)))
+                            ImGui::CloseCurrentPopup();
+                        ImGui::EndPopup();
+                    }
+                }
+                ImGui::Spacing();
+                // -------------------------------------------------------------
+
                 const float fh      = ImGui::GetFrameHeight();
                 const float spacing = ImGui::GetStyle().ItemSpacing.x;
 
@@ -1391,14 +1663,12 @@ namespace UI::ModLoaderWindow
     // True if `name` is safe to use as a Themes\<name>.ini file name -- no
     // path separators or other characters Windows rejects in a file name,
     // and not empty. Deliberately permissive otherwise: this is a local,
-    // single-user text field, not untrusted input.
+    // single-user text field, not untrusted input. Thin wrapper: the actual
+    // rule is UI::NamedEntryUtils::IsValidEntryName, shared with the config
+    // preset name field below (RenderConfigTab).
     static bool IsValidThemeFileName(const char* name)
     {
-        if (!name || !name[0]) return false;
-        if (strcmp(name, ".") == 0 || strcmp(name, "..") == 0) return false;
-        for (const char* p = name; *p; ++p)
-            if (strchr("\\/:*?\"<>|", *p)) return false;
-        return true;
+        return UI::NamedEntryUtils::IsValidEntryName(name);
     }
 
     static void RenderThemeTab()

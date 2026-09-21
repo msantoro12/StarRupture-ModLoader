@@ -426,6 +426,12 @@
     <ClInclude Include="UI\theme.h">
       <Filter>Source Files\UI</Filter>
     </ClInclude>
+    <ClInclude Include="UI\named_entry_utils.h">
+      <Filter>Source Files\UI</Filter>
+    </ClInclude>
+    <ClInclude Include="UI\plugin_preset_store.h">
+      <Filter>Source Files\UI</Filter>
+    </ClInclude>
     <ClInclude Include="network_channel\net_timeout.h">
       <Filter>Source Files\network_channel</Filter>
     </ClInclude>
@@ -732,6 +738,12 @@
       <Filter>Source Files\UI</Filter>
     </ClCompile>
     <ClCompile Include="UI\theme.cpp">
+      <Filter>Source Files\UI</Filter>
+    </ClCompile>
+    <ClCompile Include="UI\named_entry_utils.cpp">
+      <Filter>Source Files\UI</Filter>
+    </ClCompile>
+    <ClCompile Include="UI\plugin_preset_store.cpp">
       <Filter>Source Files\UI</Filter>
     </ClCompile>
     <ClCompile Include="hooks\game\game_instance_init\game_instance_init.cpp">

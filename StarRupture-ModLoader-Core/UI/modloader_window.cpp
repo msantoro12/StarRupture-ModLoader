@@ -460,6 +460,32 @@ namespace UI::ModLoaderWindow
         }
     }
 
+    // Widest single space-delimited word in text, at the current font.
+    // RenderConfigTab uses this to floor a section's label column so
+    // TextWrapped never has to break a word mid-character to fit it;
+    // RenderConfigEntry uses the same measurement to fall back to an
+    // unwrapped (clipped, not broken) line for a row whose own widest word
+    // still doesn't fit -- see both call sites for why.
+    static float WidestWordWidth(const char* text)
+    {
+        float maxW = 0.0f;
+        const char* wordStart = text;
+        for (const char* p = text; ; ++p)
+        {
+            if (*p == ' ' || *p == '\0')
+            {
+                if (p > wordStart)
+                {
+                    const float w = ImGui::CalcTextSize(wordStart, p).x;
+                    if (w > maxW) maxW = w;
+                }
+                wordStart = p + 1;
+                if (*p == '\0') break;
+            }
+        }
+        return maxW;
+    }
+
     // Render one config row inside an already-open 3-column table:
     //   Col 0 (Label)       -- setting name, wraps to this column's own
     //                          Fixed width (sized in RenderConfigTab to the
@@ -517,7 +543,18 @@ namespace UI::ModLoaderWindow
         // ---- Col 0: label -----------------------------------------------
         ImGui::TableSetColumnIndex(0);
         ImGui::AlignTextToFramePadding();
-        ImGui::TextWrapped("%s", kv.key);
+        // RenderConfigTab's word floor sizes this section's label column to
+        // fit every one of its labels' own widest word, so this ordinarily
+        // never has to break one -- the one exception is a single word
+        // genuinely wider than that floor was allowed to grow the column
+        // (capped so it doesn't eat the whole row): TextWrapped would still
+        // break it mid-character to fit, so fall back to a single
+        // unwrapped line instead, clipped by the column's own bounds
+        // (ImGui's table columns clip by default) rather than broken.
+        if (WidestWordWidth(kv.key) > ImGui::GetContentRegionAvail().x)
+            ImGui::TextUnformatted(kv.key);
+        else
+            ImGui::TextWrapped("%s", kv.key);
 
         // ---- Col 1: description -------------------------------------------
         ImGui::TableSetColumnIndex(1);
@@ -1124,6 +1161,7 @@ namespace UI::ModLoaderWindow
                     // fallback after it uses the threshold itself, so they
                     // still share one width.
                     float labelColWidth   = 0.0f;
+                    float maxWordW        = 0.0f; // widest single word among this section's labels
                     float keybindRowW     = 0.0f;
                     bool  hasRangedSlider = false;
                     for (size_t j = sectionStart; j < sectionEnd; ++j)
@@ -1132,6 +1170,8 @@ namespace UI::ModLoaderWindow
                         const float lw = ImGui::CalcTextSize(kv.key).x + cellPadX;
                         if (lw <= outlierThreshold && lw > labelColWidth)
                             labelColWidth = lw;
+                        const float ww = WidestWordWidth(kv.key);
+                        if (ww > maxWordW) maxWordW = ww;
 
                         const ConfigEntry* se = FindSchemaEntry(schema, kv.section, kv.key);
                         if (!se) continue;
@@ -1163,6 +1203,31 @@ namespace UI::ModLoaderWindow
                     float controlFloor = kMinControlW;
                     if (toggleW     > controlFloor) controlFloor = toggleW;
                     if (keybindRowW > controlFloor) controlFloor = keybindRowW;
+
+                    // Word floor -- takes precedence over the outlier
+                    // threshold above: a section with one long WORD (not
+                    // just one long label) still deserves a wider column,
+                    // so TextWrapped never has to break a word mid-
+                    // character to fit it (only ever raises labelColWidth,
+                    // consistent with the outlier fallback above never
+                    // reaching this small either). Capped at how wide the
+                    // column could ever get before Description/Control
+                    // have nowhere left to go -- past that, the word is
+                    // genuinely wider than the column could ever be, and
+                    // RenderConfigEntry's own fallback (an unwrapped,
+                    // clipped line for that one row) takes over instead of
+                    // this growing the whole section's column to a
+                    // pathological width.
+                    if (maxWordW > 0.0f)
+                    {
+                        float wordFloor = maxWordW + cellPadX;
+                        const float minControlEver = (hasRangedSlider && sliderMinW > controlFloor) ? sliderMinW : controlFloor;
+                        const float maxLabelFloor = sectionAvail - kMinDescColW - minControlEver - innerSpacing - resetW;
+                        if (wordFloor > maxLabelFloor)
+                            wordFloor = maxLabelFloor;
+                        if (wordFloor > labelColWidth)
+                            labelColWidth = wordFloor;
+                    }
 
                     float controlW = hasRangedSlider ? sliderMaxW : controlFloor;
                     if (controlFloor > controlW) controlW = controlFloor;

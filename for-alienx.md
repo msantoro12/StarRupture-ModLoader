@@ -50,7 +50,13 @@ Briefer, since these are ours to begin with.
 
 **BetterCheats.** Weapon and movement attribute overrides now compose onto the game's own values instead of overwriting them, so LEMs, buffs, and attachments keep layering on top correctly. A live-values readout (hover any row for a base/buffed/change/result breakdown, plus a `+buff`/`+mods` tag when something else is contributing) was added mainly to prove that in-game. Magazine Size got repointed to the field the equipped-weapon getter actually reads, after tracing why the old target wasn't moving the clip. Grenades got their own tab: charge cost, max/min charge, and infinite charges compose the same way weapons do, and fuse time, blast radius, and throw force are new global controls resolved by property name against classes that only exist in the game's Server-side SDK headers. Item stacks got a three-tier size override: global multiplier, then per-category, then per-item, most specific wins. And saved presets (name it, save it, it follows you across worlds) are now available in every section with adjustable settings, backed by a small INI-based store.
 
+![BetterCheats panel](docs/bettercheats-narrow.png)
+*BetterCheats at 900x700. The panel is rendered outside the game for this capture, so the numbers on screen are placeholders, not real values.*
+
 **BetterDrone.** Boost now defaults to following whatever key the game has bound to Sprint, so there's no separate default to remember. It's still rebindable to something else if you want. It ramps via configurable acceleration/deceleration instead of snapping, and clamps to the drone's configured max speed. Four independent volume sliders for the drone's own sounds (idle, movement, rotation, station) were added, plus a "master volume" convenience slider that drives all four together. Speed and range presets are now separate axes. There are five speed presets and four range presets, and you can pick either independently, so a faster preset doesn't force a specific range on you (two of them are explicitly credited to CrazyCovin's "Better Construction Drone," NexusMods #27). Both groups also take saved presets of your own, alongside those built-ins. There's a new in-game panel (default toggle key F8, closes on Escape or Q) with live sliders, unit choices (km/h or mph for speed, m/ft/cm for range), and a reset button per field. Panel values are cached in memory and only written to disk when you finish editing a field, not on every tick.
+
+![BetterDrone panel](docs/betterdrone-narrow.png)
+*BetterDrone at 900x700. The panel is rendered outside the game for this capture, so the numbers on screen are placeholders, not real values.*
 
 Both plugins also picked up saved presets, the panel-flicker-on-close fix, and the slider/reset-icon changes as matching pairs. Same shape, same fix, applied to our own code in both places once we'd worked it out in one.
 
@@ -65,6 +71,9 @@ The UI work, roughly in the order you'd run into it:
 
 ![Config page, after](docs/config-after.png)
 *After: label column sized to content, wrapped description line, rows centered on their tallest content.*
+
+![Config page, narrow window](docs/config-narrow.png)
+*The same config page at a narrow window, showing how the layout reflows.*
 
 - Config page: the label column was a fixed 160px, and a longer label would run past it. Descriptions displayed as a hover-only marquee. The column now sizes to the widest label on the page (up to whatever width is left) and only wraps when needed. The row keeps its three columns (label, control, actions), with descriptions wrapping across the row's full width beneath the label. Rows center vertically on their tallest content instead of aligning to the top. A keybind row's companion Blocking key now shows only as that row's Block toggle, instead of also rendering as its own separate entry.
 - Sliders now have a maximum width (240px, scaled with UI font size) instead of filling the whole widget column, and float sliders/inputs format to 2 decimals instead of 6. Stored precision is unchanged either way.

@@ -23,6 +23,7 @@ Every change is its own commit, and the commit messages go into more detail than
 **Loader: UI**
 - Config page labels and descriptions layout adjustments
 - Sliders now have a maximum width, and floats show 2 decimals
+- Ranged sliders get +/- step buttons, 1% of the range per click, 10% with Ctrl held
 - Material Icons reset glyph on every reset button
 - Named themes, with save/rename/delete and a Star Rupture theme
 - Escape closes the ModLoader window
@@ -66,17 +67,22 @@ The UI additions, then three fixes, plus one bit of local build plumbing you pro
 
 The UI work, roughly in the order you'd run into it:
 
+These four config page captures come from a small preview harness that renders the page outside the game, with a synthetic settings schema built to exercise every row type, including a deliberately long label and description. The plugin shown is labeled BetterDrone, but settings like Max Speed, Camera FOV, and Beacon Label are made up for the test and don't exist in the real plugin.
+
 ![Config page, before](docs/config-before.png)
-*Before: fixed-width label column, long names run past it, description only visible as a hover marquee.*
+*Before: fixed-width label column, long names run past it. Descriptions lived in a hover tooltip, except boolean rows, which also ran them inline as a scrolling marquee.*
 
 ![Config page, after](docs/config-after.png)
 *After: label column sized to content, wrapped description line, rows centered on their tallest content.*
 
-![Config page, narrow window](docs/config-narrow.png)
-*The same config page at a narrow window, showing how the layout reflows.*
+![Config page, before, narrow window](docs/config-before-narrow.png)
+*Before at 900x700: the fixed 160px label column breaks down even faster with less room, same hover tooltip and boolean marquee as the wide version.*
 
-- Config page: the label column was a fixed 160px, and a longer label would run past it. Descriptions displayed as a hover-only marquee. The column now sizes to the widest label on the page (up to whatever width is left) and only wraps when needed. The row keeps its three columns (label, control, actions), with descriptions wrapping across the row's full width beneath the label. Rows center vertically on their tallest content instead of aligning to the top. A keybind row's companion Blocking key now shows only as that row's Block toggle, instead of also rendering as its own separate entry.
-- Sliders now have a maximum width (240px, scaled with UI font size) instead of filling the whole widget column, and float sliders/inputs format to 2 decimals instead of 6. Stored precision is unchanged either way.
+![Config page, after, narrow window](docs/config-narrow.png)
+*After at 900x700: the description wraps and row heights adapt, so it still reads cleanly.*
+
+- Config page: the label column was a fixed 160px, and a longer label would run past it. Descriptions lived in a hover tooltip, except on boolean rows, where they also ran inline in the control column as a clipped, scrolling marquee. The column now sizes to the widest label on the page (up to whatever width is left) and only wraps when needed. The row keeps its three columns (label, control, actions), with descriptions wrapping across the row's full width beneath the label. Rows center vertically on their tallest content instead of aligning to the top. A keybind row's companion Blocking key now shows only as that row's Block toggle, instead of also rendering as its own separate entry.
+- Sliders now have a maximum width (240px, scaled with UI font size) instead of filling the whole widget column, and float sliders/inputs format to 2 decimals instead of 6. Stored precision is unchanged either way. A ranged Int or Float slider now also gets a minus and plus button beside it, for precise adjustment without dragging. Each click steps 1% of the range, or 10% with Ctrl held. Ctrl was the choice there rather than Shift because ImGui already uses Shift on a drag for fine adjustment, so Shift was taken.
 - The reset button (a plain "R" before) and the Logging tab's "Reset All To Default" (no icon before) both now draw the `replay` glyph (U+E042) from the Material Icons font the sidebar already uses, styled the same as your other link-style text.
 - Named themes: the Theme tab held a single custom palette. A Theme dropdown now offers two built-ins, Default and a new "Star Rupture" theme matching the game's own value/hover/structure colors, plus any user theme saved to `ModLoader\Themes\<name>.ini`, shareable as a file. This also splits `Highlight` and `PanelBorder` out as their own color roles instead of reusing `Accent` for both "this is a value" and "this is hover/selected," which the game itself keeps visually distinct.
 - Escape now closes the ModLoader window, same as every plugin panel already does. It's deferred a frame so it doesn't collide with the rebind picker's own Escape-cancels-capture handling.

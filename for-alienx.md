@@ -22,13 +22,14 @@ Every change is its own commit, and the commit messages go into more detail than
 
 **Loader: UI**
 - Config page labels and descriptions layout adjustments
-- Sliders now have a maximum width, and floats show 2 decimals
+- Sliders now have a maximum width, and float decimals scale to the slider's range
 - Ranged sliders get +/- step buttons, 1% of the range per click, 10% with Ctrl held
 - Material Icons reset glyph on every reset button
 - Named themes, with save/rename/delete and a Star Rupture theme
 - Escape closes the ModLoader window
 - Rebind picker can capture a bare modifier key
 - Companion Blocking key now shows only as the keybind row's Block toggle
+- Keybind rows now align their key name, Rebind button, and Block toggle down the page
 
 **Loader: fixes**
 - Bare Shift/Ctrl/Alt keybinds now reach plugins (fix)
@@ -82,11 +83,12 @@ These four config page captures come from a small preview harness that renders t
 *After at 900x700: the description wraps and row heights adapt, so it still reads cleanly.*
 
 - Config page: the label column was a fixed 160px, and a longer label would run past it. Descriptions lived in a hover tooltip, except on boolean rows, where they also ran inline in the control column as a clipped, scrolling marquee. The column now sizes to the widest label on the page (up to whatever width is left) and only wraps when needed. The row keeps its three columns (label, control, actions), with descriptions wrapping across the row's full width beneath the label. Rows center vertically on their tallest content instead of aligning to the top. A keybind row's companion Blocking key now shows only as that row's Block toggle, instead of also rendering as its own separate entry.
-- Sliders now have a maximum width (240px, scaled with UI font size) instead of filling the whole widget column, and float sliders/inputs format to 2 decimals instead of 6. Stored precision is unchanged either way. A ranged Int or Float slider now also gets a minus and plus button beside it, for precise adjustment without dragging. Each click steps 1% of the range, or 10% with Ctrl held. Ctrl was the choice there rather than Shift because ImGui already uses Shift on a drag for fine adjustment, so Shift was taken.
+- Sliders now have a maximum width (240px, scaled with UI font size) instead of filling the whole widget column. A ranged float's display decimals now come from its own range: no range shown means 2 decimals, a span of 2.0 or less also shows 2, a span of 100.0 or less shows 1, and anything wider shows 0. A 0 to 500 slider reading 250.00 was noise, while a 0 to 1 slider needs that precision to mean anything. Stored precision is unchanged either way. A ranged Int or Float slider now also gets a minus and plus button beside it, for precise adjustment without dragging. Each click steps 1% of the range, or 10% with Ctrl held. Ctrl was the choice there rather than Shift because ImGui already uses Shift on a drag for fine adjustment, so Shift was taken. Clicking a slider to type an exact value was already ImGui's own default behavior. It needed no code from us. It just wasn't documented anywhere.
 - The reset button (a plain "R" before) and the Logging tab's "Reset All To Default" (no icon before) both now draw the `replay` glyph (U+E042) from the Material Icons font the sidebar already uses, styled the same as your other link-style text.
 - Named themes: the Theme tab held a single custom palette. A Theme dropdown now offers two built-ins, Default and a new "Star Rupture" theme matching the game's own value/hover/structure colors, plus any user theme saved to `ModLoader\Themes\<name>.ini`, shareable as a file. This also splits `Highlight` and `PanelBorder` out as their own color roles instead of reusing `Accent` for both "this is a value" and "this is hover/selected," which the game itself keeps visually distinct.
 - Escape now closes the ModLoader window, same as every plugin panel already does. It's deferred a frame so it doesn't collide with the rebind picker's own Escape-cancels-capture handling.
 - The rebind picker previously skipped every modifier VK outright. It now tracks a held modifier and commits it alone if released with nothing else pressed in between, so a plugin's key can be rebound to a bare modifier like "LeftShift" directly from the picker, matching the dispatch change below.
+- Keybind rows now align their sub-columns page-wide. The key name, the Rebind button, and the Block toggle line up down the page instead of each row placing them wherever its own key name happened to end.
 
 Three fixes, same level of detail:
 

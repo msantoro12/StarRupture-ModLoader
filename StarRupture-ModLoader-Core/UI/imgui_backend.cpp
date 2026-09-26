@@ -1151,6 +1151,96 @@ static void STDMETHODCALLTYPE HookedECL(ID3D12CommandQueue* pQueue,
 }
 
 // ---------------------------------------------------------------------------
+// TEMPORARY DIAGNOSTIC -- framegen overlay flicker investigation.
+// Tracks per-thread HookedPresent activity while Streamline is active and
+// logs a summary line every ~10s (counts are since the last report, not
+// cumulative). In-memory only, no per-frame file I/O -- LogToFile is only
+// hit from MaybeReport(), which self-throttles to once per ~10s.
+// REMOVE once the reentrancy-guard race is confirmed or ruled out.
+// ---------------------------------------------------------------------------
+namespace FramegenDiag
+{
+	struct ThreadStats
+	{
+		std::atomic<DWORD> tid{ 0 };
+		std::atomic<UINT64> presentCount{ 0 };
+		std::atomic<UINT64> drawsDone{ 0 };
+		std::atomic<UINT64> drawsSkipped{ 0 };
+		std::atomic<UINT64> spinWaits{ 0 };
+		std::atomic<UINT64> timeouts{ 0 };
+	};
+
+	static const int kMaxThreads = 8;
+	static ThreadStats s_stats[kMaxThreads];
+
+	// Finds (or claims) this thread's slot. At most a couple of distinct
+	// threads ever call Present (render thread + Streamline's SL Pacer
+	// thread), so 8 slots is a large margin.
+	static ThreadStats& SlotFor(DWORD tid)
+	{
+		for (int i = 0; i < kMaxThreads; ++i)
+		{
+			DWORD expected = 0;
+			if (s_stats[i].tid.compare_exchange_strong(expected, tid) || expected == tid)
+				return s_stats[i];
+		}
+		return s_stats[0]; // slots exhausted -- shouldn't happen, keep counts rather than crash
+	}
+
+	static void RecordPresent(DWORD tid) { SlotFor(tid).presentCount.fetch_add(1, std::memory_order_relaxed); }
+	static void RecordDraw(DWORD tid) { SlotFor(tid).drawsDone.fetch_add(1, std::memory_order_relaxed); }
+	static void RecordSkip(DWORD tid) { SlotFor(tid).drawsSkipped.fetch_add(1, std::memory_order_relaxed); }
+	static void RecordSpinWait(DWORD tid) { SlotFor(tid).spinWaits.fetch_add(1, std::memory_order_relaxed); }
+	static void RecordTimeout(DWORD tid) { SlotFor(tid).timeouts.fetch_add(1, std::memory_order_relaxed); }
+
+	// Call once per HookedPresent. Throttles itself to ~10s and only logs
+	// while Streamline is active -- this is the diagnostic's whole purpose.
+	static void MaybeReport()
+	{
+		if (!g_streamlineActive)
+			return;
+
+		static std::atomic<bool> s_reporting{ false };
+		bool expected = false;
+		if (!s_reporting.compare_exchange_strong(expected, true))
+			return; // another thread is already inside the throttle check/report
+		struct Unlock { std::atomic<bool>* f; ~Unlock() { f->store(false, std::memory_order_release); } } unlock{ &s_reporting };
+
+		static LARGE_INTEGER s_qpcFrequency{};
+		static LARGE_INTEGER s_lastReport{};
+		if (s_qpcFrequency.QuadPart == 0)
+		{
+			QueryPerformanceFrequency(&s_qpcFrequency);
+			QueryPerformanceCounter(&s_lastReport);
+			return;
+		}
+
+		LARGE_INTEGER now{};
+		QueryPerformanceCounter(&now);
+		double elapsedMs = double(now.QuadPart - s_lastReport.QuadPart) * 1000.0 / double(s_qpcFrequency.QuadPart);
+		if (elapsedMs < 10000.0)
+			return;
+		s_lastReport = now;
+
+		for (int i = 0; i < kMaxThreads; ++i)
+		{
+			DWORD tid = s_stats[i].tid.load(std::memory_order_relaxed);
+			if (tid == 0)
+				continue;
+			UINT64 presents = s_stats[i].presentCount.exchange(0, std::memory_order_relaxed);
+			UINT64 draws = s_stats[i].drawsDone.exchange(0, std::memory_order_relaxed);
+			UINT64 skipped = s_stats[i].drawsSkipped.exchange(0, std::memory_order_relaxed);
+			UINT64 spins = s_stats[i].spinWaits.exchange(0, std::memory_order_relaxed);
+			UINT64 timeouts = s_stats[i].timeouts.exchange(0, std::memory_order_relaxed);
+			if (presents == 0 && draws == 0 && skipped == 0 && spins == 0 && timeouts == 0)
+				continue;
+			IMGUI_LOG_INFO("[ImGuiBackend][FramegenDiag] tid=%lu presents=%llu draws=%llu skipped=%llu spinWaits=%llu timeouts=%llu (last ~10s)",
+				tid, presents, draws, skipped, spins, timeouts);
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
 // IDXGISwapChain::Present hook
 // ---------------------------------------------------------------------------
 static HRESULT STDMETHODCALLTYPE HookedPresent(IDXGISwapChain* swapChain, UINT syncInterval, UINT flags)
@@ -1172,10 +1262,14 @@ static HRESULT STDMETHODCALLTYPE HookedPresent(IDXGISwapChain* swapChain, UINT s
 	// which reads as flicker. Wait briefly for the owner to clear instead of
 	// skipping immediately; if it never does, skip exactly as before.
 	DWORD tid = GetCurrentThreadId();
+	FramegenDiag::RecordPresent(tid);   // TEMPORARY DIAGNOSTIC -- see FramegenDiag above
+	FramegenDiag::MaybeReport();        // TEMPORARY DIAGNOSTIC -- see FramegenDiag above
 	DWORD expected = 0;
 	bool ownPresent = g_presentOwnerThread.compare_exchange_strong(expected, tid);
 	if (!ownPresent && expected != tid)
 	{
+		FramegenDiag::RecordSpinWait(tid); // TEMPORARY DIAGNOSTIC -- see FramegenDiag above
+
 		static LARGE_INTEGER s_qpcFrequency{};
 		if (s_qpcFrequency.QuadPart == 0)
 			QueryPerformanceFrequency(&s_qpcFrequency);
@@ -1197,11 +1291,17 @@ static HRESULT STDMETHODCALLTYPE HookedPresent(IDXGISwapChain* swapChain, UINT s
 			LARGE_INTEGER now{};
 			QueryPerformanceCounter(&now);
 			if (now.QuadPart - waitStart.QuadPart >= waitLimitTicks)
+			{
+				FramegenDiag::RecordTimeout(tid); // TEMPORARY DIAGNOSTIC -- see FramegenDiag above
 				break; // timed out -- skip as today, no deadlock
+			}
 		}
 	}
 	if (!ownPresent)
+	{
+		FramegenDiag::RecordSkip(tid); // TEMPORARY DIAGNOSTIC -- see FramegenDiag above
 		return g_originalPresent(swapChain, syncInterval, flags);
+	}
 
 	// Wait for WorldBeginPlay before touching D3D12.
 	// Streamline and the UE5 viewport finish their setup only after the first world loads.
@@ -1365,6 +1465,7 @@ static HRESULT STDMETHODCALLTYPE HookedPresent(IDXGISwapChain* swapChain, UINT s
 			g_callbacks.RenderFrame(&g_imguiAPI);
 
 		ImGui::Render();
+		FramegenDiag::RecordDraw(tid); // TEMPORARY DIAGNOSTIC -- see FramegenDiag above
 
 		g_cmdList->OMSetRenderTargets(1, &rtvHandle, FALSE, nullptr);
 		g_cmdList->SetDescriptorHeaps(1, &g_srvHeap);

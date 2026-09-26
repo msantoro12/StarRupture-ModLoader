@@ -197,6 +197,13 @@ namespace
 	// Used by LoadFromUTexture2D to detect (and warn about) render-thread calls.
 	std::atomic<DWORD> g_presentOwnerThread{ 0 };
 
+	// Bounded wait for a different thread's HookedPresent to finish (see the
+	// reentrancy guard below). Time-bounded via QueryPerformanceCounter --
+	// Sleep(0) is yield-only (no blocking wait), and the QPC check caps total
+	// wait time regardless of scheduler quantum, so a stuck owner can never
+	// deadlock the present path.
+	static const double kPresentOwnerWaitMs = 4.0;
+
 	// IDXGIFactory2::CreateSwapChainForHwnd vtable patch (slot 15).
 	// Typed as void* for parameters we don't inspect -- avoids dxgi1_2.h type
 	// availability issues at namespace scope; ABI is identical (all pointer-sized).
@@ -1156,9 +1163,44 @@ static HRESULT STDMETHODCALLTYPE HookedPresent(IDXGISwapChain* swapChain, UINT s
 	// multiple threads (some middleware and overlay SDKs call Present off the
 	// render thread).  An atomic owner-thread check handles both cases.
 	// Also used by LoadFromUTexture2D to warn if called from the render thread.
+	//
+	// Same-thread re-entry is always a real recursive call and must still skip.
+	// A different thread arriving here is expected with DLSS Frame Generation
+	// active -- Streamline's SL Pacer thread presents generated frames
+	// concurrently with the render thread's own Present calls, and unconditionally
+	// skipping on that race drops the overlay draw on whichever call loses,
+	// which reads as flicker. Wait briefly for the owner to clear instead of
+	// skipping immediately; if it never does, skip exactly as before.
 	DWORD tid = GetCurrentThreadId();
 	DWORD expected = 0;
-	if (!g_presentOwnerThread.compare_exchange_strong(expected, tid))
+	bool ownPresent = g_presentOwnerThread.compare_exchange_strong(expected, tid);
+	if (!ownPresent && expected != tid)
+	{
+		static LARGE_INTEGER s_qpcFrequency{};
+		if (s_qpcFrequency.QuadPart == 0)
+			QueryPerformanceFrequency(&s_qpcFrequency);
+
+		LARGE_INTEGER waitStart{};
+		QueryPerformanceCounter(&waitStart);
+		const LONGLONG waitLimitTicks =
+			static_cast<LONGLONG>(kPresentOwnerWaitMs * s_qpcFrequency.QuadPart / 1000.0);
+
+		for (;;)
+		{
+			Sleep(0);
+			expected = 0;
+			if (g_presentOwnerThread.compare_exchange_strong(expected, tid))
+			{
+				ownPresent = true;
+				break;
+			}
+			LARGE_INTEGER now{};
+			QueryPerformanceCounter(&now);
+			if (now.QuadPart - waitStart.QuadPart >= waitLimitTicks)
+				break; // timed out -- skip as today, no deadlock
+		}
+	}
+	if (!ownPresent)
 		return g_originalPresent(swapChain, syncInterval, flags);
 
 	// Wait for WorldBeginPlay before touching D3D12.

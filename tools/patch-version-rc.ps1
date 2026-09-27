@@ -44,6 +44,20 @@
   quad, e.g. "1.21" becomes 1,21,0,0). Ignored (and not required) with
   -Restore.
 
+.PARAMETER BuildNumber
+  Optional. Our own per-install counter (sr-update-state.json's
+  "loaderGssBuild"), not part of any upstream release tag. When set, it
+  replaces the 4th FILEVERSION/PRODUCTVERSION quad part instead of the
+  padded "0" -- e.g. Version "1.21.4" + BuildNumber "3" stamps the numeric
+  quad 1,21,4,3 -- and the StringFileInfo "ProductVersion" value becomes
+  the display string "1.21.4-gss.3" instead of the plain dotted quad (the
+  numeric quad can't hold a "-gss" suffix; VS_FIXEDFILEINFO is integers
+  only). "FileVersion" stays the plain dotted quad either way, since
+  updater.cpp's GetDllFileVersion reads the numeric VS_FIXEDFILEINFO
+  fields, never this string. Left unset (CI's case), behavior is
+  unchanged from before this parameter existed: 4th part pads to "0",
+  both strings read the same plain dotted quad.
+
 .PARAMETER SolutionDir
   Directory containing both projects' version.rc files. Defaults to this
   script's own repo root (tools\..\).
@@ -62,6 +76,8 @@
 #>
 param(
     [string] $Version,
+
+    [string] $BuildNumber = '',
 
     [string] $SolutionDir = (Split-Path -Parent (Split-Path -Parent $PSCommandPath)),
 
@@ -95,8 +111,10 @@ if ($Restore) {
 $tag = $Version -replace '^v', '' -replace '[-+].*$', ''
 $parts = $tag -split '\.'
 while ($parts.Count -lt 4) { $parts += '0' }
+if ($BuildNumber) { $parts[3] = $BuildNumber }
 $commas = $parts[0..3] -join ','
 $dots   = $parts[0..3] -join '.'
+$productDisplay = if ($BuildNumber) { "$($parts[0..2] -join '.')-gss.$BuildNumber" } else { $dots }
 
 foreach ($rcPath in $rcPaths) {
     if (-not (Test-Path $rcPath)) {
@@ -113,12 +131,12 @@ foreach ($rcPath in $rcPaths) {
     $rc = $rc -replace 'FILEVERSION\s+[\d,]+',    "FILEVERSION     $commas"
     $rc = $rc -replace 'PRODUCTVERSION\s+[\d,]+', "PRODUCTVERSION  $commas"
     $rc = $rc -replace '"FileVersion",\s+"[^"]*"',    "`"FileVersion`",      `"$dots`""
-    $rc = $rc -replace '"ProductVersion",\s+"[^"]*"', "`"ProductVersion`",   `"$dots`""
+    $rc = $rc -replace '"ProductVersion",\s+"[^"]*"', "`"ProductVersion`",   `"$productDisplay`""
 
     # CI's own step (a pwsh/PS7 runner) writes -Encoding UTF8NoBOM directly;
     # Set-Content's -Encoding parameter doesn't know that name on Windows
     # PowerShell 5.1, which is what runs here for a local build, so write the
     # bytes directly instead -- works identically on both.
     [System.IO.File]::WriteAllText($rcPath, $rc, (New-Object System.Text.UTF8Encoding $false))
-    Write-Host "patch-version-rc: $rcPath -> $dots"
+    Write-Host "patch-version-rc: $rcPath -> $dots (ProductVersion: $productDisplay)"
 }

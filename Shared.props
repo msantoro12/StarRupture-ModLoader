@@ -90,7 +90,7 @@
   </ItemDefinitionGroup>
 
   <!-- ============================================================
-       ModLoaderVersion -> ModLoaderBuildTag
+       ModLoaderVersion (+ ModLoaderGssBuild) -> ModLoaderBuildTag
        A version-stamped local build (/p:ModLoaderVersion=1.21.2, see
        the PatchModLoaderVersionRc target below) otherwise still shows
        "local-build" in the title bar right next to a real-looking file
@@ -99,13 +99,23 @@
        loader's own self-update check doesn't read MODLOADER_BUILD_TAG
        at all when the Core DLL's file version parses (the normal
        case for a build using ModLoaderVersion); see updater.cpp's
-       ParseVersion/CompareVersions, so "vX.Y.Z-gss" here is purely
+       ParseVersion/CompareVersions, so "vX.Y.Z-gss[.N]" here is purely
        cosmetic, not something that could make this build compare as
        a different release than it is. Only applies when the caller
        didn't already set ModLoaderBuildTag explicitly.
+
+       ModLoaderGssBuild (optional) is our own per-install counter
+       (see sr-update-state.json's "loaderGssBuild"), appended so two
+       of our own builds off the same upstream release still read as
+       different builds in the title bar/About tab/logs, instead of
+       both showing the bare release version indistinguishably from
+       each other or from a stock build.
        ============================================================ -->
-  <PropertyGroup Condition="'$(ModLoaderBuildTag)' == '' And '$(ModLoaderVersion)' != ''">
+  <PropertyGroup Condition="'$(ModLoaderBuildTag)' == '' And '$(ModLoaderVersion)' != '' And '$(ModLoaderGssBuild)' == ''">
     <ModLoaderBuildTag>v$(ModLoaderVersion)-gss</ModLoaderBuildTag>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(ModLoaderBuildTag)' == '' And '$(ModLoaderVersion)' != '' And '$(ModLoaderGssBuild)' != ''">
+    <ModLoaderBuildTag>v$(ModLoaderVersion)-gss.$(ModLoaderGssBuild)</ModLoaderBuildTag>
   </PropertyGroup>
 
   <!-- ============================================================
@@ -163,7 +173,7 @@
          of a shell-quoted argument escapes that quote instead of closing
          it (cmd/PowerShell argv parsing, not an MSBuild quirk), and
          $(SolutionDir) always ends in one. -->
-    <Exec Command="powershell -NoProfile -ExecutionPolicy Bypass -File &quot;$(SolutionDir)tools\patch-version-rc.ps1&quot; -Version &quot;$(ModLoaderVersion)&quot; -SolutionDir &quot;$(SolutionDir.TrimEnd('\'))&quot;" />
+    <Exec Command="powershell -NoProfile -ExecutionPolicy Bypass -File &quot;$(SolutionDir)tools\patch-version-rc.ps1&quot; -Version &quot;$(ModLoaderVersion)&quot; -BuildNumber &quot;$(ModLoaderGssBuild)&quot; -SolutionDir &quot;$(SolutionDir.TrimEnd('\'))&quot;" />
   </Target>
 
   <Target Name="RestoreModLoaderVersionRc" AfterTargets="ResourceCompile"

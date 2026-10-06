@@ -33,6 +33,7 @@
 #ifdef MODLOADER_CLIENT_BUILD
 #include "../hooks/game/crash_reporter/crash_reporter.h"
 #include "../hooks/game/game_menu/game_menu.h"
+#include "../hooks/game/native_settings/native_settings_spike.h"
 #include "../hooks/game/hud_post_render/hud_post_render.h"
 #include "../hooks/game/log_verbosity/log_verbosity.h"
 #endif
@@ -246,6 +247,8 @@ void InstallPluginEventHooks()
     // plugin can register a row the first time the main menu is built.
     InstallEventHook(L"GameMenu",
         &Hooks::GameMenu::IsInstalled,              &Hooks::GameMenu::Install);
+    InstallEventHook(L"NativeSettingsSpike",
+        &NativeSettingsSpike::IsInstalled,          &NativeSettingsSpike::Install);
 #endif
 }
 
@@ -275,5 +278,6 @@ void RemoveAllHooks()
     Hooks::CrashReporter::Remove();
     Hooks::HUDPostRender::Remove();
     Hooks::GameMenu::Remove();
+    NativeSettingsSpike::Remove();
 #endif
 }

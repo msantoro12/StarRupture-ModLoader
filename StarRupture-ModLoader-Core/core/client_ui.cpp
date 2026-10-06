@@ -8,6 +8,7 @@
 #include "../hooks/game/engine_tick/engine_tick.h"
 #include "../hooks/game/framegen_pause/framegen_pause.h"
 #include "../hooks/game/game_menu/game_menu_registry.h"
+#include "../hooks/game/native_settings/native_settings_spike.h"
 #include "../hooks/input/input_processor.h"
 #include "../hooks/input/input_hook.h"
 #include "../hooks/input/keybind_registry.h"
@@ -91,6 +92,19 @@ void InitClientUI()
         // Registered here, before the menus are ever built, and removable from
         // modloader.ini for anyone who would rather the game's menus stayed
         // untouched.
+        // Spike only: the MODS row that opens the native settings page.
+        // Registered first so the order is OPTIONS, MODS, MOD LOADER.
+        {
+            PluginGameMenuEntryDesc mods{};
+            mods.id       = "mods";
+            mods.label    = "MODS";
+            mods.targets  = PLUGIN_GAME_MENU_MAIN | PLUGIN_GAME_MENU_PAUSE;
+            mods.anchor   = PLUGIN_GAME_MENU_ANCHOR_AFTER_OPTIONS;
+            mods.onClick  = [](void*) { NativeSettingsSpike::RequestOpen(); };
+            mods.userData = nullptr;
+            GameMenu::Registry::AddLoaderEntry(&mods);
+        }
+
         int gameMenuEntry = GetPrivateProfileIntW(L"UI", L"GameMenuEntry", -1, iniPath.c_str());
         if (gameMenuEntry == -1)
         {
@@ -215,6 +229,8 @@ void InitClientUI()
 
     static auto s_onTick = [](float deltaSeconds)
     {
+        NativeSettingsSpike::Tick(deltaSeconds);
+
         // DLSS Frame Generation flicker workaround (see FrameGenPause) --
         // checked every tick regardless of pawn/world state below, since an
         // overlay window can be open at the main menu too.

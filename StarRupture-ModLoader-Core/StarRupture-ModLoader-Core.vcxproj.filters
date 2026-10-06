@@ -73,6 +73,9 @@
     <Filter Include="Source Files\hooks\game\game_menu">
       <UniqueIdentifier>{3e9c5b17-0a42-4d68-9f31-7b8e2c04a5d6}</UniqueIdentifier>
     </Filter>
+    <Filter Include="Source Files\hooks\game\native_settings">
+      <UniqueIdentifier>{6d1f4a92-58c3-4b7e-a0d5-2e9b7c13f846}</UniqueIdentifier>
+    </Filter>
     <Filter Include="Source Files\hooks\game\console_command">
       <UniqueIdentifier>{6a41f28d-3c07-4b95-8e1a-2d904f6c7b13}</UniqueIdentifier>
     </Filter>
@@ -299,6 +302,12 @@
     </ClInclude>
     <ClInclude Include="hooks\game\game_menu\game_menu_registry.h">
       <Filter>Source Files\hooks\game\game_menu</Filter>
+    </ClInclude>
+    <ClInclude Include="hooks\game\native_settings\native_settings_spike.h">
+      <Filter>Source Files\hooks\game\native_settings</Filter>
+    </ClInclude>
+    <ClInclude Include="hooks\game\native_settings\object_ref.h">
+      <Filter>Source Files\hooks\game\native_settings</Filter>
     </ClInclude>
     <ClInclude Include="hooks\game\debug_draw\debug_draw.h">
       <Filter>Source Files\hooks\game\debug_draw</Filter>
@@ -658,6 +667,9 @@
     </ClCompile>
     <ClCompile Include="hooks\game\game_menu\game_menu_registry.cpp">
       <Filter>Source Files\hooks\game\game_menu</Filter>
+    </ClCompile>
+    <ClCompile Include="hooks\game\native_settings\native_settings_spike.cpp">
+      <Filter>Source Files\hooks\game\native_settings</Filter>
     </ClCompile>
     <ClCompile Include="hooks\game\debug_draw\debug_draw.cpp">
       <Filter>Source Files\hooks\game\debug_draw</Filter>

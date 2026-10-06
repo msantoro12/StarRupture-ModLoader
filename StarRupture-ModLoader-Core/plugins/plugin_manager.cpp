@@ -14,6 +14,7 @@
 #include "plugins/pak_registry.h"
 #ifdef MODLOADER_CLIENT_BUILD
 #include "hooks/game/game_menu/game_menu_registry.h"
+#include "hooks/game/native_settings/native_settings_spike.h"
 #include "hooks/input/mouse_wheel_registry.h"
 #endif
 #include <vector>
@@ -782,6 +783,7 @@ namespace PluginManager
 			PakRegistry::ForgetPlugin(plugin->cachedName.c_str());
 #ifdef MODLOADER_CLIENT_BUILD
 			GameMenu::Registry::ForgetPlugin(plugin->cachedName.c_str());
+			NativeSettingsSpike::ForgetPlugin(plugin->cachedName.c_str());
 			Hooks::MouseWheel::ForgetModule(plugin->hModule);
 #endif
 
@@ -909,6 +911,7 @@ namespace PluginManager
 		PakRegistry::ForgetPlugin(p.cachedName.c_str());
 #ifdef MODLOADER_CLIENT_BUILD
 		GameMenu::Registry::ForgetPlugin(p.cachedName.c_str());
+		NativeSettingsSpike::ForgetPlugin(p.cachedName.c_str());
 		Hooks::MouseWheel::ForgetModule(p.hModule);
 #endif
 
@@ -951,6 +954,7 @@ namespace PluginManager
 			PakRegistry::ForgetPlugin(p.cachedName.c_str());
 #ifdef MODLOADER_CLIENT_BUILD
 			GameMenu::Registry::ForgetPlugin(p.cachedName.c_str());
+			NativeSettingsSpike::ForgetPlugin(p.cachedName.c_str());
 			Hooks::MouseWheel::ForgetModule(p.hModule);
 #endif
 

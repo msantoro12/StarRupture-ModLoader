@@ -417,6 +417,8 @@
     <ClInclude Include="hooks\game\crafting_finished\crafting_finished.h" />
     <ClInclude Include="hooks\game\game_menu\game_menu.h" />
     <ClInclude Include="hooks\game\game_menu\game_menu_registry.h" />
+    <ClInclude Include="hooks\game\native_settings\native_settings_spike.h" />
+    <ClInclude Include="hooks\game\native_settings\object_ref.h" />
     <ClInclude Include="hooks\game\crash_reporter\crash_dialog.h" />
     <ClInclude Include="hooks\game\console_command\console_command.h" />
     <ClInclude Include="hooks\game\engine_exec\engine_exec.h" />
@@ -559,6 +561,9 @@
       <ExcludedFromBuild Condition="'$(Configuration)' != 'Client Debug' And '$(Configuration)' != 'Client Release' And '$(Configuration)' != 'Local SDK Client Debug' And '$(Configuration)' != 'Local SDK Client Release'">true</ExcludedFromBuild>
     </ClCompile>
     <ClCompile Include="hooks\game\game_menu\game_menu_registry.cpp">
+      <ExcludedFromBuild Condition="'$(Configuration)' != 'Client Debug' And '$(Configuration)' != 'Client Release' And '$(Configuration)' != 'Local SDK Client Debug' And '$(Configuration)' != 'Local SDK Client Release'">true</ExcludedFromBuild>
+    </ClCompile>
+    <ClCompile Include="hooks\game\native_settings\native_settings_spike.cpp">
       <ExcludedFromBuild Condition="'$(Configuration)' != 'Client Debug' And '$(Configuration)' != 'Client Release' And '$(Configuration)' != 'Local SDK Client Debug' And '$(Configuration)' != 'Local SDK Client Release'">true</ExcludedFromBuild>
     </ClCompile>
     <ClCompile Include="hooks\game\crash_reporter\crash_dialog.cpp" />

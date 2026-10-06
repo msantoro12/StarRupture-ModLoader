@@ -63,7 +63,8 @@ namespace NativeSettingsSpike
 		constexpr size_t kRowPadSize = 0x38;
 
 		constexpr int    kMaxRows          = 16;
-		constexpr int    kActivateTimeout  = 120;   // ticks to wait for the pushed page to activate
+		constexpr int    kMaxHeadingChildren = 4;   // AddCategoryLine children recorded; the other rows stay within kMaxRows
+		constexpr double kActivateTimeoutSec = 3.0; // wall-clock wait for a pushed widget to activate; container transitions are timed in seconds, not frames
 		constexpr int    kRecheckTicks     = 30;    // second child-count check after building
 		constexpr double kStatsPeriodSec   = 5.0;   // tick-delta report while the page is open
 
@@ -111,6 +112,7 @@ namespace NativeSettingsSpike
 		std::vector<HiddenStock>                              g_hiddenStock;
 		uint64_t     g_tick        = 0;
 		uint64_t     g_phaseTick   = 0;
+		double       g_pushTime    = 0.0;       // NowSeconds() when the page was pushed
 		int          g_cycle       = 0;
 		int          g_childrenAfterBuild = -1;
 		int          g_lastHover   = -1;
@@ -122,11 +124,11 @@ namespace NativeSettingsSpike
 		wchar_t      g_lastKeyText[128]{};
 
 		// The key panel pushed onto the page's own container deactivates the
-		// page until the panel closes; the container then activates the page
-		// again after its transition.
-		bool         g_keyPanelOnContainer = false;
+		// page until CommonUI pops the panel, which it does in the same call
+		// that activates the page again. Set only for that push.
+		ObjectRef<SDK::UCommonActivatableWidget> g_keyPanelCover;
 		bool         g_keyPanelSeenActive  = false;
-		uint64_t     g_keyPanelTick        = 0;       // tick of the push, then of the close
+		double       g_keyPanelTime        = 0.0;     // NowSeconds() at the push
 
 		// The pooled page's title and description as the game left them, put
 		// back on close. Each is the FText the widget's own GetText returned,
@@ -182,6 +184,11 @@ namespace NativeSettingsSpike
 		// -------------------------------------------------------------------
 		// Small helpers
 		// -------------------------------------------------------------------
+		double NowSeconds()
+		{
+			return static_cast<double>(GetTickCount64()) / 1000.0;
+		}
+
 		bool IsLiveInstance(const SDK::UObject* obj)
 		{
 			return obj && obj->Class && (static_cast<uint32_t>(obj->Flags) & kSkipFlags) == 0;
@@ -1333,6 +1340,8 @@ namespace NativeSettingsSpike
 			SDK::UCommonActivatableWidget* page = nullptr;
 			if (container)
 			{
+				ModLoaderLogger::LogInfo(L"[NativeSettingsSpike] S1: the menu's container transition takes %.2f s",
+				                         container->TransitionDuration);
 				page = PushToContainer(container, pageClass);
 				ModLoaderLogger::LogInfo(L"[NativeSettingsSpike] S2: pushed onto the menu's container -> %S",
 				                         NameOf(page).c_str());
@@ -1359,6 +1368,7 @@ namespace NativeSettingsSpike
 			g_container.Set(container);
 			g_phase     = Phase::Pushed;
 			g_phaseTick = g_tick;
+			g_pushTime  = NowSeconds();
 			g_statsElapsed = 0.0;
 			g_statsFrames  = 0;
 			result->ok = true;
@@ -1511,9 +1521,9 @@ namespace NativeSettingsSpike
 			const std::wstring original = ReadTextBlock(title);   // for the log only
 			g_titleSaved     = title->GetText();
 			g_haveTitleSaved = true;
+			g_title.Set(title);
 
 			SetTextBlock(title, "MODS");
-			g_title.Set(title);
 			ModLoaderLogger::LogInfo(L"[NativeSettingsSpike] S2: page title %S (found by %s) set to MODS, was '%s'",
 			                         NameOf(title).c_str(), byName ? L"name" : L"text", original.c_str());
 		}
@@ -1568,14 +1578,24 @@ namespace NativeSettingsSpike
 				parms.InCategory = SDK::ECrCustomGameCategory::Building;
 				CallUFunction(page, "CrUW_CustomGame", "AddCategoryLine", &parms, false);
 				const int after = box->Slots.Num();
-				SDK::UWidget* line = (after == before + 1 && box->Slots[after - 1]) ? box->Slots[after - 1]->Content : nullptr;
-				SDK::UTextBlock* text = FindTextBlock(line, 0);
-				ModLoaderLogger::LogInfo(L"[NativeSettingsSpike] S2: heading A (AddCategoryLine): children %d -> %d, line %S, text block %S",
-				                         before, after, ClassNameOf(line).c_str(), NameOf(text).c_str());
-				if (line)
+				ModLoaderLogger::LogInfo(L"[NativeSettingsSpike] S2: heading A (AddCategoryLine): children %d -> %d", before, after);
+
+				// Every child it added is recorded, so the close removes them
+				// all. The first one with a text block carries the label.
+				bool labelled = false;
+				for (int i = before; i < after && i - before < kMaxHeadingChildren; ++i)
 				{
-					SetTextBlock(text, "Drone panel (F10)");
-					AddRow(line, RowKind::CategoryHeading, Mode::None, "Drone panel (F10)", "", 0);
+					SDK::UPanelSlot* slot = box->Slots[i];
+					SDK::UWidget* child = slot ? slot->Content : nullptr;
+					if (!child)
+						continue;
+					SDK::UTextBlock* text = labelled ? nullptr : FindTextBlock(child, 0);
+					ModLoaderLogger::LogInfo(L"[NativeSettingsSpike] S2: heading A child %d: %S, text block %S",
+					                         i, ClassNameOf(child).c_str(), NameOf(text).c_str());
+					if (text)
+						SetTextBlock(text, "Drone panel (F10)");
+					AddRow(child, RowKind::CategoryHeading, Mode::None, text ? "Drone panel (F10)" : "", "", 0);
+					labelled = labelled || text != nullptr;
 				}
 			}
 
@@ -1753,7 +1773,7 @@ namespace NativeSettingsSpike
 				                         RowIndex(&row), row.label, text.c_str(), focused ? 1 : 0);
 
 				// A construct that ran after our SetText would have blanked it.
-				if (title && text.empty())
+				if (title && text.empty() && row.label[0])
 				{
 					SetTextBlock(title, row.label);
 					ModLoaderLogger::LogInfo(L"[NativeSettingsSpike] S2: row %d label was blank after construct -- set again",
@@ -1890,24 +1910,25 @@ namespace NativeSettingsSpike
 				return;
 			}
 			g_keyPanel.Set(panel);
-			g_keyPanelOnContainer = onContainer;
-			g_keyPanelSeenActive  = false;
-			g_keyPanelTick        = g_tick;
+			if (onContainer)
+				g_keyPanelCover.Set(panel);
+			else
+				g_keyPanelCover.Reset();
+			g_keyPanelSeenActive = false;
+			g_keyPanelTime       = NowSeconds();
 			g_lastKeyText[0] = L'\0';
 		}
 
 		void WatchKeyPanel()
 		{
 			auto* panel = static_cast<SDK::UGameSettingPressAnyKey*>(g_keyPanel.Get());
-			// A pushed widget activates when the container's transition ends,
-			// which can be a few ticks after the push.
-			if (panel && !panel->bIsActive && !g_keyPanelSeenActive && g_tick - g_keyPanelTick <= kActivateTimeout)
+			// A pushed widget activates when its container's transition ends.
+			if (panel && !panel->bIsActive && !g_keyPanelSeenActive && NowSeconds() - g_keyPanelTime <= kActivateTimeoutSec)
 				return;
 			if (!panel || !panel->bIsActive)
 			{
 				ModLoaderLogger::LogInfo(L"[NativeSettingsSpike] S4: key panel closed; last key text '%s'", g_lastKeyText);
 				g_keyPanel.Reset();
-				g_keyPanelTick = g_tick;
 				return;
 			}
 			g_keyPanelSeenActive = true;
@@ -1978,7 +1999,7 @@ namespace NativeSettingsSpike
 			g_page.Reset();
 			g_container.Reset();
 			g_keyPanel.Reset();
-			g_keyPanelOnContainer = false;
+			g_keyPanelCover.Reset();
 			g_keyPanelSeenActive  = false;
 			g_title.Reset();
 			g_haveTitleSaved       = false;
@@ -2018,15 +2039,20 @@ namespace NativeSettingsSpike
 		}
 
 		// The key panel on the page's own container holds the page inactive
-		// while it is open, and for a short while after it closes until the
-		// container activates the page again. Not a close.
+		// for as long as the container lists it: CommonUI drops it from the
+		// list in the same call that activates the page again. Not a close.
 		bool KeyPanelHoldsPage()
 		{
-			if (!g_keyPanelOnContainer)
+			SDK::UCommonActivatableWidget* panel = g_keyPanelCover.Get();
+			SDK::UCommonActivatableWidgetContainerBase* container = g_container.Get();
+			if (!panel || !container)
 				return false;
-			if (g_keyPanel.Get())
-				return true;
-			return g_tick - g_keyPanelTick <= kActivateTimeout;
+			for (int i = 0; i < container->WidgetList.Num(); ++i)
+			{
+				if (container->WidgetList[i] == panel)
+					return true;
+			}
+			return false;
 		}
 
 		struct TickContext
@@ -2081,9 +2107,9 @@ namespace NativeSettingsSpike
 						ClosePage(L"the page could not be built");
 					}
 				}
-				else if (g_tick - g_phaseTick > kActivateTimeout)
+				else if (NowSeconds() - g_pushTime > kActivateTimeoutSec)
 				{
-					ModLoaderLogger::LogWarn(L"[NativeSettingsSpike] S2: the page did not activate within %d ticks", kActivateTimeout);
+					ModLoaderLogger::LogWarn(L"[NativeSettingsSpike] S2: the page did not activate within %.0f s", kActivateTimeoutSec);
 					ClosePage(L"activation timed out");
 				}
 				return;
@@ -2109,8 +2135,8 @@ namespace NativeSettingsSpike
 				ClosePage(L"page deactivated (back, Escape, B or menu closed)");
 				return;
 			}
-			if (!g_keyPanel.Get())
-				g_keyPanelOnContainer = false;
+			if (!KeyPanelHoldsPage())
+				g_keyPanelCover.Reset();
 
 			ReportTickStats(deltaSeconds);
 

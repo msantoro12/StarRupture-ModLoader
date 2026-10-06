@@ -93,6 +93,12 @@ namespace UI::PluginPanelRegistry
         if (!desc || !desc->windowTitle || !desc->renderFn)
             return nullptr;
 
+        // Resolved before taking the lock, like the callback below. A renderFn
+        // in no module could never be purged by ForgetModule, so refuse it.
+        const HMODULE owner = ModuleOf(reinterpret_cast<const void*>(desc->renderFn));
+        if (!owner)
+            return nullptr;
+
         std::lock_guard<std::mutex> lock(s_mutex);
         // Prevent duplicate titles
         for (auto& e : s_panels)
@@ -101,7 +107,7 @@ namespace UI::PluginPanelRegistry
         PanelEntry entry = {};
         entry.desc   = desc;
         entry.isOpen = false;
-        entry.owner  = ModuleOf(reinterpret_cast<const void*>(desc->renderFn));
+        entry.owner  = owner;
         strncpy_s(entry.pluginName, s_currentPlugin, _TRUNCATE);
         s_panels.push_back(entry);
         return static_cast<PanelHandle>(&s_panels.back());
@@ -199,6 +205,7 @@ namespace UI::PluginPanelRegistry
     {
         if (!callback) return;
         const HMODULE owner = ModuleOf(reinterpret_cast<const void*>(callback));
+        if (!owner) return;
         std::lock_guard<std::mutex> lock(s_mutex);
         s_panelClosedCallbacks.push_back({ callback, owner });
     }

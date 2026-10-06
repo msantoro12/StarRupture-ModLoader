@@ -13,6 +13,8 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <fstream>
+#include <iterator>
 #include <string>
 #include <vector>
 
@@ -90,6 +92,15 @@ static void OnChangedClamp(const char* section, const char* key, const char* val
     g_callsA.push_back(std::string(section) + "." + key + "=" + value);
     if (strcmp(key, "Speed") == 0 && atof(value) > 50.0)
         ConfigEdit::SetLive(kPluginA, section, key, "50");
+}
+
+// The clamp a real plugin can write: it only has IPluginConfig, so it answers
+// the notification with Write*, which updates the table through NoteWritten.
+static void OnChangedClampViaWrite(const char* section, const char* key, const char* value)
+{
+    g_callsA.push_back(std::string(section) + "." + key + "=" + value);
+    if (strcmp(key, "Speed") == 0 && atof(value) > 50.0)
+        g_selfA.config->WriteString(&g_selfA, section, key, "50");
 }
 
 static std::wstring IniPath(const char* plugin)
@@ -353,6 +364,54 @@ static void Test_PluginWriteVisibleThroughGet()
     UI::PluginPanelRegistry::UnregisterOnConfigChanged(&g_selfA, OnChangedA);
 }
 
+// A handler that clamps the value it was just told about, through the
+// IPluginConfig a plugin really has. Commit persists the table, so it is the
+// clamped value that reaches the file, not the one the page tried to set.
+static void Test_ClampedValueIsPersisted()
+{
+    FreshPluginA();
+    UI::PluginPanelRegistry::RegisterOnConfigChanged(&g_selfA, OnChangedClampViaWrite);
+
+    ConfigEdit::SetLive(kPluginA, "Drone", "Speed", "80");
+    CHECK_STR(Get(kPluginA, "Drone", "Speed"), "50");
+    CHECK_STR(DiskValue(kPluginA, "Drone", "Speed"), "50"); // the plugin's own write
+
+    ConfigEdit::Commit(kPluginA, "Drone", "Speed");
+    CHECK_STR(DiskValue(kPluginA, "Drone", "Speed"), "50");
+    CHECK(g_callsA.size() == 1); // the plugin's write does not notify again
+
+    UI::PluginPanelRegistry::UnregisterOnConfigChanged(&g_selfA, OnChangedClampViaWrite);
+}
+
+// A hand-edited INI that spells a section or key in another case still applies
+// its Block state when the plugin is loaded: INI names are case-insensitive.
+static void Test_BlockStateIgnoresCase()
+{
+    DeleteFileW(IniPath(kPluginA).c_str());
+    WriteDisk(kPluginA, "input", "boost", "F5");
+    WriteDisk(kPluginA, "input", "BOOSTBLOCKING", "1");
+    TestDoubles::ResetRecordedCalls();
+    ConfigEdit::Load(kPluginA);
+
+    CHECK(TestDoubles::blockingCalls.size() == 1);
+    if (TestDoubles::blockingCalls.size() == 1)
+    {
+        CHECK_STR(TestDoubles::blockingCalls[0].owner, std::string(kPluginA) + "|Input|Boost");
+        CHECK_STR(TestDoubles::blockingCalls[0].combo, "F5");
+        CHECK(TestDoubles::blockingCalls[0].blocking);
+    }
+    CHECK(ConfigEdit::GetBlocking(kPluginA, "Input", "Boost"));
+
+    // Same file, no Block flag: applied as not blocking.
+    DeleteFileW(IniPath(kPluginA).c_str());
+    WriteDisk(kPluginA, "input", "boost", "F5");
+    TestDoubles::ResetRecordedCalls();
+    ConfigEdit::Load(kPluginA);
+    CHECK(TestDoubles::blockingCalls.size() == 1);
+    if (TestDoubles::blockingCalls.size() == 1)
+        CHECK(!TestDoubles::blockingCalls[0].blocking);
+}
+
 // When a plugin is unloaded the loader forgets the callbacks it still had
 // registered; the plugin next to it keeps its own.
 static void Test_CallbackPurgedOnUnload()
@@ -389,6 +448,74 @@ static void Test_CallbackPurgedOnUnload()
     DeleteFileW(IniPath(kPluginB).c_str());
 }
 
+// The test above proves the purge works; this one proves the loader calls it.
+// plugin_manager.cpp cannot be linked into a console program (it is the plugin
+// loader), so its three paths that unmap a plugin -- unload all, unload one,
+// reload -- are read as source. Each must call ForgetConfigCallbacks, and call
+// it before FreeLibrary, since afterwards the callback's address is freed
+// memory. Delete any one call and this fails.
+static std::string StripLineComments(const std::string& src)
+{
+    std::string out;
+    for (size_t pos = 0; pos < src.size();)
+    {
+        size_t eol = src.find('\n', pos);
+        if (eol == std::string::npos) eol = src.size();
+        std::string line = src.substr(pos, eol - pos);
+        const size_t c = line.find("//");
+        if (c != std::string::npos) line.erase(c);
+        out += line;
+        out += '\n';
+        pos = eol + 1;
+    }
+    return out;
+}
+
+// Text of the function whose definition starts with signature, up to its
+// closing brace (a tab-indented "}" line; the functions sit in a namespace).
+static std::string FunctionBody(const std::string& src, const char* signature)
+{
+    const size_t start = src.find(signature);
+    if (start == std::string::npos) return "";
+    const size_t end = src.find("\n\t}", start);
+    return end == std::string::npos ? "" : src.substr(start, end - start);
+}
+
+static void Test_UnloadPathsPurgeCallbacks()
+{
+    // <solution>\build\tests\config_edit_tests.exe: the exe's name, then tests, then build.
+    wchar_t exe[MAX_PATH];
+    GetModuleFileNameW(nullptr, exe, MAX_PATH);
+    std::wstring path = exe;
+    for (int up = 0; up < 3; ++up)
+        path.erase(path.find_last_of(L"\\/"));
+    path += L"\\StarRupture-ModLoader-Core\\plugins\\plugin_manager.cpp";
+
+    std::ifstream in(path.c_str(), std::ios::binary);
+    CHECK(in.good());
+    const std::string src = StripLineComments(
+        std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()));
+
+    const char* const kPaths[] =
+    {
+        "void UnloadAllPlugins()",
+        "bool UnloadPlugin(int index)",
+        "bool ReloadPlugin(int index)",
+    };
+    for (const char* signature : kPaths)
+    {
+        printf("    %s\n", signature);
+        const std::string body = FunctionBody(src, signature);
+        CHECK(!body.empty());
+
+        const size_t forget = body.find("ForgetConfigCallbacks(");
+        const size_t free   = body.find("FreeLibrary(");
+        CHECK(forget != std::string::npos);
+        CHECK(free != std::string::npos);
+        CHECK(forget < free);
+    }
+}
+
 // ---------------------------------------------------------------------------
 
 int main()
@@ -405,7 +532,10 @@ int main()
     RunTest("HandlerMayCallBack",           Test_HandlerMayCallBack);
     RunTest("KeybindRebindOnCommit",        Test_KeybindRebindOnCommit);
     RunTest("PluginWriteVisibleThroughGet", Test_PluginWriteVisibleThroughGet);
+    RunTest("ClampedValueIsPersisted",      Test_ClampedValueIsPersisted);
+    RunTest("BlockStateIgnoresCase",        Test_BlockStateIgnoresCase);
     RunTest("CallbackPurgedOnUnload",       Test_CallbackPurgedOnUnload);
+    RunTest("UnloadPathsPurgeCallbacks",    Test_UnloadPathsPurgeCallbacks);
 
     DeleteFileW(IniPath(kPluginA).c_str());
     ModLoaderLogger::ShutdownConfigManager();

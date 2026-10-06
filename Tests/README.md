@@ -125,7 +125,9 @@ plugin list, the logger, the window theme -- see `test_doubles.cpp`). It covers:
 - Committing a changed Keybind moves the registration and the Block state to the new combo.
 - A plugin's own `IPluginConfig::Write*` shows up in `ConfigEdit::Get` and the Config tab's copy, and
   does not fire `OnConfigChanged`.
-- Unloading a plugin drops the `OnConfigChanged` callbacks it still had registered.
+- A handler that clamps a value by calling `IPluginConfig::Write*` has its clamped value persisted by `Commit`.
+- A hand-edited INI that spells a section or key in another case still applies its Block state on load.
+- Forgetting a plugin's `OnConfigChanged` callbacks drops its own and leaves the next plugin's alone, and each of `UnloadAllPlugins`, `UnloadPlugin` and `ReloadPlugin` calls that before `FreeLibrary`. The loader's plugin manager cannot be linked into a console program, so the second half is checked by reading `plugin_manager.cpp`; deleting any of the three calls fails the test.
 
 Build it from the command line (it creates `ModLoader\Plugins\config` beside the exe, under
 `build\tests`, and removes its own INI files when it finishes):

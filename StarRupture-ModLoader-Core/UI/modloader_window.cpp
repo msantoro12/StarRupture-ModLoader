@@ -139,10 +139,12 @@ namespace UI::ModLoaderWindow
         ConfigEdit::SetLive(pluginName, kv.section, kv.key, kv.value);
     }
 
-    // Write a changed value back to disk. Does NOT fire config-change
-    // notifications -- callers must call NotifyConfigChangedLive themselves
-    // at the point the value changes (this keeps notification timing
-    // decoupled from, and not gated on, the disk write).
+    // Write the value ConfigEdit holds for this key back to disk. kv.value is
+    // not consulted, so call NotifyConfigChangedLive first: it is what puts a
+    // changed value into the table. That also means a handler that clamps the
+    // value while being notified has its clamped value persisted. Does NOT
+    // fire config-change notifications -- notification timing stays decoupled
+    // from, and not gated on, the disk write.
     static void CommitConfigChange(const char* pluginName, const ConfigKV& kv)
     {
         ConfigEdit::Commit(pluginName, kv.section, kv.key);

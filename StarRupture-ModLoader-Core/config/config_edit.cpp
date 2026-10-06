@@ -43,12 +43,17 @@ namespace ConfigEdit
             return _stricmp(e.section, section) == 0 && _stricmp(e.key, key) == 0;
         }
 
-        Entry* FindEntry(Table& t, const char* section, const char* key)
+        Entry* FindEntry(std::vector<Entry>& entries, const char* section, const char* key)
         {
-            for (Entry& e : t.entries)
+            for (Entry& e : entries)
                 if (SameEntry(e, section, key))
                     return &e;
             return nullptr;
+        }
+
+        Entry* FindEntry(Table& t, const char* section, const char* key)
+        {
+            return FindEntry(t.entries, section, key);
         }
 
         void BlockingKeyName(const char* key, char* out, size_t outLen)
@@ -195,24 +200,23 @@ namespace ConfigEdit
         const ConfigSchema* schema = ModLoaderLogger::GetPluginSchema(pluginName);
         if (!schema) return;
 
-        for (const Entry& e : entries)
+        // Walk the schema rather than the INI, and look the values up the way
+        // the INI does, ignoring case: a hand-edited [input] or boost still
+        // applies.
+        for (int i = 0; i < schema->entryCount; ++i)
         {
-            const ConfigEntry* schEntry = FindSchemaEntry(schema, e.section, e.key);
-            if (!schEntry || schEntry->type != ConfigValueType::Keybind) continue;
-            if (!e.value[0]) continue;
+            const ConfigEntry& sch = schema->entries[i];
+            if (sch.type != ConfigValueType::Keybind) continue;
+            if (!sch.section || !sch.key) continue;
+
+            const Entry* combo = FindEntry(entries, sch.section, sch.key);
+            if (!combo || !combo->value[0]) continue;
 
             char blockingKey[128];
-            BlockingKeyName(e.key, blockingKey, sizeof(blockingKey));
-            bool blocking = false;
-            for (const Entry& b : entries)
-            {
-                if (SameEntry(b, e.section, blockingKey))
-                {
-                    blocking = ToBool(b.value);
-                    break;
-                }
-            }
-            SetEntryBlocking(pluginName, e.section, e.key, e.value, blocking);
+            BlockingKeyName(sch.key, blockingKey, sizeof(blockingKey));
+            const Entry* flag = FindEntry(entries, sch.section, blockingKey);
+            SetEntryBlocking(pluginName, sch.section, sch.key, combo->value,
+                             flag && ToBool(flag->value));
         }
     }
 

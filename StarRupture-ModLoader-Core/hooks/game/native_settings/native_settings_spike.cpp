@@ -104,6 +104,8 @@ namespace NativeSettingsSpike
 		ObjectRef<SDK::UCommonActivatableWidget>              g_page;
 		ObjectRef<SDK::UCommonActivatableWidgetContainerBase> g_container;
 		ObjectRef<SDK::UCommonActivatableWidget>              g_keyPanel;
+		ObjectRef<SDK::UTextBlock>                            g_title;
+		char                                                  g_titleOriginal[128]{};
 		std::vector<Row>                                      g_rows;
 		std::vector<HiddenStock>                              g_hiddenStock;
 		uint64_t     g_tick        = 0;
@@ -1400,6 +1402,87 @@ namespace NativeSettingsSpike
 			return nullptr;
 		}
 
+		// Every text block in a widget, through panels and nested user widgets,
+		// leaving out one subtree (the options list).
+		void CollectTextBlocks(SDK::UWidget* widget, const SDK::UWidget* skip, int depth,
+		                       std::vector<SDK::UTextBlock*>& out)
+		{
+			if (!widget || widget == skip || depth > 10 || out.size() >= 64)
+				return;
+			if (widget->IsA(SDK::UTextBlock::StaticClass()))
+			{
+				out.push_back(static_cast<SDK::UTextBlock*>(widget));
+				return;
+			}
+			if (widget->IsA(SDK::UUserWidget::StaticClass()))
+			{
+				SDK::UWidgetTree* tree = static_cast<SDK::UUserWidget*>(widget)->WidgetTree;
+				if (tree)
+					CollectTextBlocks(tree->RootWidget, skip, depth + 1, out);
+				return;
+			}
+			if (widget->IsA(SDK::UPanelWidget::StaticClass()))
+			{
+				auto& slots = static_cast<SDK::UPanelWidget*>(widget)->Slots;
+				for (int i = 0; i < slots.Num(); ++i)
+				{
+					SDK::UPanelSlot* slot = slots[i];
+					CollectTextBlocks(slot ? slot->Content : nullptr, skip, depth + 1, out);
+				}
+			}
+		}
+
+		bool NameHas(const std::string& name, const char* needle)
+		{
+			std::string lower = name;
+			for (char& c : lower)
+				c = static_cast<char>(tolower(static_cast<unsigned char>(c)));
+			return lower.find(needle) != std::string::npos;
+		}
+
+		// The page title is not a native member: it lives in the Blueprint's
+		// widget tree. Log every text block outside the options list, then
+		// relabel the one named like a title, or the one reading CUSTOM GAME.
+		void RetitlePage(SDK::UCrUW_CustomGame* page)
+		{
+			std::vector<SDK::UTextBlock*> blocks;
+			if (page->WidgetTree)
+				CollectTextBlocks(page->WidgetTree->RootWidget, page->OptionsBox, 0, blocks);
+
+			SDK::UTextBlock* byName = nullptr;
+			SDK::UTextBlock* byText = nullptr;
+			for (SDK::UTextBlock* block : blocks)
+			{
+				const std::wstring text = ReadTextBlock(block);
+				const std::string  name = block->GetName();
+				ModLoaderLogger::LogInfo(L"[NativeSettingsSpike] S2: page text block %S (%S) reads '%s'",
+				                         name.c_str(), ClassNameOf(block).c_str(), text.c_str());
+				if (!byName && (NameHas(name, "title") || NameHas(name, "header")))
+					byName = block;
+				if (!byText && _wcsicmp(text.c_str(), L"CUSTOM GAME") == 0)
+					byText = block;
+			}
+
+			SDK::UTextBlock* title = byName ? byName : byText;
+			if (!title)
+			{
+				ModLoaderLogger::LogWarn(L"[NativeSettingsSpike] S2: no page title text block found (%zu text block(s) seen)",
+				                         blocks.size());
+				return;
+			}
+
+			const std::wstring original = ReadTextBlock(title);
+			size_t i = 0;
+			for (; i + 1 < sizeof(g_titleOriginal) && i < original.size(); ++i)
+				g_titleOriginal[i] = original[i] < 0x80 ? static_cast<char>(original[i]) : '?';
+			g_titleOriginal[i] = '\0';
+
+			SetTextBlock(title, "MODS");
+			g_title.Set(title);
+			ModLoaderLogger::LogInfo(L"[NativeSettingsSpike] S2: page title %S (found by %s) set to MODS, was '%s'",
+			                         NameOf(title).c_str(), byName ? L"name" : L"text", original.c_str());
+		}
+
 		void BuildPage(void* ctx)
 		{
 			auto* built = static_cast<bool*>(ctx);
@@ -1572,6 +1655,8 @@ namespace NativeSettingsSpike
 				break;
 			}
 
+			RetitlePage(page);
+
 			g_childrenAfterBuild = box->Slots.Num();
 			ModLoaderLogger::LogInfo(L"[NativeSettingsSpike] S2: built %zu row(s); OptionsBox now holds %d child(ren)",
 			                         g_rows.size(), g_childrenAfterBuild);
@@ -1593,6 +1678,14 @@ namespace NativeSettingsSpike
 
 		void CheckLabelsAndFocus()
 		{
+			if (SDK::UTextBlock* title = g_title.Get())
+			{
+				const std::wstring text = ReadTextBlock(title);
+				ModLoaderLogger::LogInfo(L"[NativeSettingsSpike] S2: page title shows '%s'", text.c_str());
+				if (_wcsicmp(text.c_str(), L"MODS") != 0)
+					SetTextBlock(title, "MODS");
+			}
+
 			for (Row& row : g_rows)
 			{
 				SDK::UWidget* widget = row.ref.Get();
@@ -1805,6 +1898,15 @@ namespace NativeSettingsSpike
 				}
 			}
 
+			// The pool may hand this page to the game's own Custom Game screen,
+			// so its title goes back. A fresh FText from the same string: the
+			// original's localization identity is not kept.
+			if (SDK::UTextBlock* title = g_title.Get())
+			{
+				if (g_titleOriginal[0])
+					SetTextBlock(title, g_titleOriginal);
+			}
+
 			for (const Row& row : g_rows)
 			{
 				if (row.padOffset)
@@ -1821,6 +1923,8 @@ namespace NativeSettingsSpike
 			g_page.Reset();
 			g_container.Reset();
 			g_keyPanel.Reset();
+			g_title.Reset();
+			g_titleOriginal[0] = '\0';
 			g_phase       = Phase::Idle;
 			g_lastHover   = -1;
 			g_pendingHover = -1;

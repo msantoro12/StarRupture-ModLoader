@@ -37,11 +37,13 @@ namespace NativeSettingsSpike
 		// Constants
 		// -------------------------------------------------------------------
 
-		// FFrame as ModLoaderHello reads it: vptr, Node, Object, Code, Locals.
-		// Code is null when the call came through ProcessEvent (a dynamic
-		// delegate), and Locals then holds the parameters in declaration order.
-		constexpr size_t kFFrameCodeOffset   = 0x18;
-		constexpr size_t kFFrameLocalsOffset = 0x20;
+		// FFrame: vptr, FOutputDevice's two bools, Node, Object, Code, Locals.
+		// Every exec thunk's P_FINISH in this binary reads and writes Code at
+		// +0x20. Code is null when the call came through ProcessEvent (a
+		// dynamic delegate), and Locals then holds the parameters in
+		// declaration order.
+		constexpr size_t kFFrameCodeOffset   = 0x20;
+		constexpr size_t kFFrameLocalsOffset = 0x28;
 
 		constexpr uint32_t kFuncNative = 0x400;
 
@@ -105,7 +107,6 @@ namespace NativeSettingsSpike
 		ObjectRef<SDK::UCommonActivatableWidgetContainerBase> g_container;
 		ObjectRef<SDK::UCommonActivatableWidget>              g_keyPanel;
 		ObjectRef<SDK::UTextBlock>                            g_title;
-		char                                                  g_titleOriginal[128]{};
 		std::vector<Row>                                      g_rows;
 		std::vector<HiddenStock>                              g_hiddenStock;
 		uint64_t     g_tick        = 0;
@@ -119,6 +120,22 @@ namespace NativeSettingsSpike
 		uint8_t      g_subsystemBefore[kSubsystemPadSize]{};
 		bool         g_haveSubsystemBefore = false;
 		wchar_t      g_lastKeyText[128]{};
+
+		// The key panel pushed onto the page's own container deactivates the
+		// page until the panel closes; the container then activates the page
+		// again after its transition.
+		bool         g_keyPanelOnContainer = false;
+		bool         g_keyPanelSeenActive  = false;
+		uint64_t     g_keyPanelTick        = 0;       // tick of the push, then of the close
+
+		// The pooled page's title and description as the game left them, put
+		// back on close. Each is the FText the widget's own GetText returned,
+		// so it restores exactly, in any language. A held copy keeps its own
+		// reference for the process (the SDK FText has no destructor).
+		SDK::FText   g_titleSaved{};
+		SDK::FText   g_descriptionSaved{};
+		bool         g_haveTitleSaved       = false;
+		bool         g_haveDescriptionSaved = false;
 
 		// Tick-delta statistics while the page is open (S1).
 		double g_statsElapsed = 0.0;
@@ -421,6 +438,11 @@ namespace NativeSettingsSpike
 		// generated bodies: find the UFunction on the object's class chain,
 		// set FUNC_Native for the duration if it is a native function, and call
 		// ProcessEvent with the SDK's own Params struct.
+		//
+		// A Blueprint event (native == false) is implemented by a different
+		// UFunction of the same name on the Blueprint class; the one declared
+		// on the native class has no script and does nothing. Like the
+		// engine's FindFunction, take the most derived one.
 		// -------------------------------------------------------------------
 		bool CallUFunction(SDK::UObject* obj, const char* className, const char* funcName, void* parms, bool native)
 		{
@@ -433,6 +455,13 @@ namespace NativeSettingsSpike
 				ModLoaderLogger::LogWarn(L"[NativeSettingsSpike] %S::%S not found on %S",
 				                         className, funcName, ClassNameOf(obj).c_str());
 				return false;
+			}
+			if (!native)
+			{
+				if (SDK::UFunction* derived = obj->Class->GetFunction(fn->Name))
+					fn = derived;
+				ModLoaderLogger::LogInfo(L"[NativeSettingsSpike] %S resolved on %S for %S", funcName,
+				                         NameOf(fn->Outer).c_str(), ClassNameOf(obj).c_str());
 			}
 
 			using FlagsT = decltype(fn->FunctionFlags);
@@ -533,18 +562,24 @@ namespace NativeSettingsSpike
 
 			wchar_t value[64] = L"-";
 			if (code)
-				wcscpy_s(value, L"(bytecode call, not read)");
+				wcscpy_s(value, L"(not read)");
 			else if (locals && Id == kSlider)
-				swprintf_s(value, L"%.3f", *reinterpret_cast<const float*>(locals));
+				swprintf_s(value, L"%.3f",
+				           reinterpret_cast<const SDK::Params::CrUW_WidgetOptionSlider_OnSliderValueChanged*>(locals)->InValue);
 			else if (locals && Id == kRotator)
-				swprintf_s(value, L"%d user=%d", *reinterpret_cast<const int32_t*>(locals),
-				           static_cast<int>(locals[4]));
+			{
+				const auto* parms = reinterpret_cast<const SDK::Params::CrUW_WidgetOptionRotator_OnRotatorValueChanged*>(locals);
+				swprintf_s(value, L"%d user=%d", parms->InValue, parms->bUserInitiated ? 1 : 0);
+			}
 
-			++row->events;
+			// Counted here only when there is no member detour to count it.
+			if (!h.memberHook.installed)
+				++row->events;
 			const bool claim = row->mode == Mode::Claim && !h.memberHook.installed && !code;
 			ModLoaderLogger::LogInfo(
-				L"[NativeSettingsSpike] S2: %S::%S on row %d '%S' via the exec thunk (ProcessEvent path)%s, value %s, mode %s",
-				h.className, h.funcName, RowIndex(row), row->label, g_building ? L" during build" : L"",
+				L"[NativeSettingsSpike] S2: %S::%S on row %d '%S' via the exec thunk (%s)%s, value %s, mode %s",
+				h.className, h.funcName, RowIndex(row), row->label,
+				code ? L"bytecode path" : L"ProcessEvent path", g_building ? L" during build" : L"",
 				value, ModeText(row->mode));
 
 			if (claim)
@@ -1223,7 +1258,7 @@ namespace NativeSettingsSpike
 		bool IsMainMenuWorld()
 		{
 			SDK::UWorld* world = SDK::UWorld::GetWorld();
-			return world && world->GetName().find("MainMenu") != std::string::npos;
+			return world && world->GetName().find("Map_MainMenu") != std::string::npos;
 		}
 
 		void LogPauseState(const wchar_t* when)
@@ -1291,6 +1326,8 @@ namespace NativeSettingsSpike
 				ModLoaderLogger::LogWarn(L"[NativeSettingsSpike] S2: no active main or pause menu found -- not opening");
 				return;
 			}
+
+			LogSubsystem(L"before");
 
 			SDK::UCommonActivatableWidgetContainerBase* container = FindContainerFor(menu);
 			SDK::UCommonActivatableWidget* page = nullptr;
@@ -1471,11 +1508,9 @@ namespace NativeSettingsSpike
 				return;
 			}
 
-			const std::wstring original = ReadTextBlock(title);
-			size_t i = 0;
-			for (; i + 1 < sizeof(g_titleOriginal) && i < original.size(); ++i)
-				g_titleOriginal[i] = original[i] < 0x80 ? static_cast<char>(original[i]) : '?';
-			g_titleOriginal[i] = '\0';
+			const std::wstring original = ReadTextBlock(title);   // for the log only
+			g_titleSaved     = title->GetText();
+			g_haveTitleSaved = true;
 
 			SetTextBlock(title, "MODS");
 			g_title.Set(title);
@@ -1493,11 +1528,17 @@ namespace NativeSettingsSpike
 			SDK::UScrollBox* box = page->OptionsBox;
 			const int stockCount = box->Slots.Num();
 			ModLoaderLogger::LogInfo(L"[NativeSettingsSpike] S2: page active; OptionsBox holds %d stock child(ren)", stockCount);
-			LogSubsystem(L"before");
 
 			auto* cdo = static_cast<SDK::UCrUW_CustomGame*>(page->Class->ClassDefaultObject);
 			if (!cdo)
 				return;
+
+			// Kept before anything on the page changes; ClosePage puts it back.
+			if (page->Description)
+			{
+				g_descriptionSaved     = page->Description->GetText();
+				g_haveDescriptionSaved = true;
+			}
 
 			// Hide, don't clear: the container pools this page and may hand the
 			// same instance back to the game's own Custom Game screen. The stock
@@ -1825,6 +1866,7 @@ namespace NativeSettingsSpike
 				return;
 
 			SDK::UCommonActivatableWidget* panel = nullptr;
+			bool onContainer = false;
 			SDK::FGameplayTag modal{};
 			if (FindLayer("modal", &modal, false))
 			{
@@ -1837,8 +1879,9 @@ namespace NativeSettingsSpike
 				if (SDK::UCommonActivatableWidgetContainerBase* container = g_container.Get())
 				{
 					panel = PushToContainer(container, cls);
-					ModLoaderLogger::LogInfo(L"[NativeSettingsSpike] S4: pushed onto the page's container -> %S",
-					                         NameOf(panel).c_str());
+					onContainer = panel != nullptr;
+					ModLoaderLogger::LogInfo(L"[NativeSettingsSpike] S4: no modal layer; pushed onto the page's container -> %S "
+					                         L"(the page stays open underneath)", NameOf(panel).c_str());
 				}
 			}
 			if (!panel || !panel->IsA(SDK::UGameSettingPressAnyKey::StaticClass()))
@@ -1847,18 +1890,27 @@ namespace NativeSettingsSpike
 				return;
 			}
 			g_keyPanel.Set(panel);
+			g_keyPanelOnContainer = onContainer;
+			g_keyPanelSeenActive  = false;
+			g_keyPanelTick        = g_tick;
 			g_lastKeyText[0] = L'\0';
 		}
 
 		void WatchKeyPanel()
 		{
 			auto* panel = static_cast<SDK::UGameSettingPressAnyKey*>(g_keyPanel.Get());
+			// A pushed widget activates when the container's transition ends,
+			// which can be a few ticks after the push.
+			if (panel && !panel->bIsActive && !g_keyPanelSeenActive && g_tick - g_keyPanelTick <= kActivateTimeout)
+				return;
 			if (!panel || !panel->bIsActive)
 			{
 				ModLoaderLogger::LogInfo(L"[NativeSettingsSpike] S4: key panel closed; last key text '%s'", g_lastKeyText);
 				g_keyPanel.Reset();
+				g_keyPanelTick = g_tick;
 				return;
 			}
+			g_keyPanelSeenActive = true;
 			wchar_t text[128]{};
 			if (panel->KeyText)
 				ReadTextGuarded(&panel->KeyText->Text, text, _countof(text));
@@ -1872,8 +1924,20 @@ namespace NativeSettingsSpike
 		// -------------------------------------------------------------------
 		// Close
 		// -------------------------------------------------------------------
+		// Puts the pooled page back the way the game left it: the container
+		// may hand this instance to the game's own Custom Game screen. Safe to
+		// run again after a fault part-way through; every step is idempotent.
 		void ClosePage(const wchar_t* why)
 		{
+			g_keyCaptureRequested.store(false);
+
+			for (const Row& row : g_rows)
+			{
+				if (row.padOffset)
+					ModLoaderLogger::LogInfo(L"[NativeSettingsSpike] S2: row %d '%S' saw %d handler event(s)",
+					                         RowIndex(&row), row.label, row.events);
+			}
+
 			int removed = 0;
 			int restored = 0;
 			auto* page = static_cast<SDK::UCrUW_CustomGame*>(g_page.Get());
@@ -1898,48 +1962,71 @@ namespace NativeSettingsSpike
 				}
 			}
 
-			// The pool may hand this page to the game's own Custom Game screen,
-			// so its title goes back. A fresh FText from the same string: the
-			// original's localization identity is not kept.
-			if (SDK::UTextBlock* title = g_title.Get())
-			{
-				if (g_titleOriginal[0])
-					SetTextBlock(title, g_titleOriginal);
-			}
+			SDK::UTextBlock* title = g_title.Get();
+			if (title && g_haveTitleSaved)
+				title->SetText(g_titleSaved);
+			if (page && page->Description && g_haveDescriptionSaved)
+				page->Description->SetText(g_descriptionSaved);
 
-			for (const Row& row : g_rows)
-			{
-				if (row.padOffset)
-					ModLoaderLogger::LogInfo(L"[NativeSettingsSpike] S2: row %d '%S' saw %d handler event(s)",
-					                         RowIndex(&row), row.label, row.events);
-			}
-
-			ModLoaderLogger::LogInfo(L"[NativeSettingsSpike] S3: %s -- page gone, rows dropped (%d removed, %d stock row(s) restored)",
-			                         why, removed, restored);
-			LogSubsystem(L"after");
+			ModLoaderLogger::LogInfo(L"[NativeSettingsSpike] S3: %s -- page gone, rows dropped (%d removed, %d stock row(s) restored, "
+			                         L"title %s, description %s)", why, removed, restored,
+			                         (title && g_haveTitleSaved) ? L"restored" : L"untouched",
+			                         (page && page->Description && g_haveDescriptionSaved) ? L"restored" : L"untouched");
 
 			g_rows.clear();
 			g_hiddenStock.clear();
 			g_page.Reset();
 			g_container.Reset();
 			g_keyPanel.Reset();
+			g_keyPanelOnContainer = false;
+			g_keyPanelSeenActive  = false;
 			g_title.Reset();
-			g_titleOriginal[0] = '\0';
+			g_haveTitleSaved       = false;
+			g_haveDescriptionSaved = false;
 			g_phase       = Phase::Idle;
 			g_lastHover   = -1;
 			g_pendingHover = -1;
 			g_childrenAfterBuild = -1;
+
+			LogSubsystem(L"after");
 		}
 
+		void ClosePageGuarded(void* ctx)
+		{
+			ClosePage(static_cast<const wchar_t*>(ctx));
+		}
+
+		// Runs one step of the spike under an SEH guard. On a fault the spike
+		// stops for the session, but first puts the pooled page back, so the
+		// real Custom Game screen is left as it was found.
 		void Guarded(GuardedFn fn, void* ctx, const wchar_t* what)
 		{
 			unsigned long code = 0;
 			if (RunGuarded(fn, ctx, &code))
 				return;
-			g_broken = true;
 			g_building = false;
 			ModLoaderLogger::LogError(L"[NativeSettingsSpike] exception 0x%08lX while %s -- the spike stops here. "
 			                          L"Back out of the page and quit to desktop.", code, what);
+			if (g_phase != Phase::Idle)
+			{
+				unsigned long closeCode = 0;
+				if (!RunGuarded(&ClosePageGuarded, const_cast<wchar_t*>(L"spike stopped"), &closeCode))
+					ModLoaderLogger::LogError(L"[NativeSettingsSpike] exception 0x%08lX while restoring the page -- "
+					                          L"quit to desktop and don't open Custom Game before that", closeCode);
+			}
+			g_broken = true;
+		}
+
+		// The key panel on the page's own container holds the page inactive
+		// while it is open, and for a short while after it closes until the
+		// container activates the page again. Not a close.
+		bool KeyPanelHoldsPage()
+		{
+			if (!g_keyPanelOnContainer)
+				return false;
+			if (g_keyPanel.Get())
+				return true;
+			return g_tick - g_keyPanelTick <= kActivateTimeout;
 		}
 
 		struct TickContext
@@ -1989,6 +2076,10 @@ namespace NativeSettingsSpike
 						g_phase     = Phase::Built;
 						g_phaseTick = g_tick;
 					}
+					else if (!g_broken)
+					{
+						ClosePage(L"the page could not be built");
+					}
 				}
 				else if (g_tick - g_phaseTick > kActivateTimeout)
 				{
@@ -2009,9 +2100,17 @@ namespace NativeSettingsSpike
 			}
 			if (!IsActivated(page))
 			{
+				if (KeyPanelHoldsPage())
+				{
+					if (g_keyPanel.Get())
+						WatchKeyPanel();
+					return;
+				}
 				ClosePage(L"page deactivated (back, Escape, B or menu closed)");
 				return;
 			}
+			if (!g_keyPanel.Get())
+				g_keyPanelOnContainer = false;
 
 			ReportTickStats(deltaSeconds);
 

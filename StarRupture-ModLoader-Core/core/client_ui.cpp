@@ -92,13 +92,14 @@ void InitClientUI()
         // Registered here, before the menus are ever built, and removable from
         // modloader.ini for anyone who would rather the game's menus stayed
         // untouched.
-        // Spike only: the MODS row that opens the native settings page.
-        // Registered first so the order is OPTIONS, MODS, MOD LOADER.
+        // Spike only: the MODS row that opens the native settings page, in
+        // the main menu only. Registered first so the order is OPTIONS,
+        // MODS, MOD LOADER.
         {
             PluginGameMenuEntryDesc mods{};
             mods.id       = "mods";
             mods.label    = "MODS";
-            mods.targets  = PLUGIN_GAME_MENU_MAIN | PLUGIN_GAME_MENU_PAUSE;
+            mods.targets  = PLUGIN_GAME_MENU_MAIN;
             mods.anchor   = PLUGIN_GAME_MENU_ANCHOR_AFTER_OPTIONS;
             mods.onClick  = [](void*) { NativeSettingsSpike::RequestOpen(); };
             mods.userData = nullptr;

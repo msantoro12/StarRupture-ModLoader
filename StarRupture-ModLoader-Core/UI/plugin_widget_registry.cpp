@@ -15,6 +15,7 @@ namespace UI::PluginWidgetRegistry
     {
         const PluginWidgetDesc* desc;
         bool isVisible;
+        HMODULE owner;         // module the widget's renderFn lives in, for ForgetModule
     };
 
     static std::mutex s_mutex;
@@ -25,12 +26,19 @@ namespace UI::PluginWidgetRegistry
         if (!desc || !desc->name || !desc->renderFn)
             return nullptr;
 
+        // A renderFn in no module could never be purged by ForgetModule.
+        HMODULE owner = nullptr;
+        if (!GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                                GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                                reinterpret_cast<LPCSTR>(desc->renderFn), &owner) || !owner)
+            return nullptr;
+
         std::lock_guard<std::mutex> lock(s_mutex);
         // Prevent duplicate names
         for (auto& e : s_widgets)
             if (_stricmp(e.desc->name, desc->name) == 0)
                 return nullptr;
-        s_widgets.push_back({ desc, true });
+        s_widgets.push_back({ desc, true, owner });
         return static_cast<WidgetHandle>(&s_widgets.back());
     }
 
@@ -49,6 +57,14 @@ namespace UI::PluginWidgetRegistry
             }
         }
         // Handle not found — caller passed a stale or invalid handle; ignore silently.
+    }
+
+    void ForgetModule(HMODULE module)
+    {
+        if (!module) return;
+
+        std::lock_guard<std::mutex> lock(s_mutex);
+        s_widgets.remove_if([&](const WidgetEntry& e) { return e.owner == module; });
     }
 
     // Returns the WidgetEntry* if the handle is a known registered widget, otherwise null.

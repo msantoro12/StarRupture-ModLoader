@@ -1,4 +1,4 @@
-// PluginPanelRegistry::ForgetModule test.
+// PluginPanelRegistry and PluginWidgetRegistry ForgetModule test.
 //
 // A console program: no game, no plugin DLLs. The registry is the loader's own
 // source file; test_doubles.cpp replaces only what it calls out to.
@@ -9,9 +9,11 @@
 // renderFn and callback. Neither is ever called -- no panel is opened and
 // nothing is closed -- so only the module an address belongs to matters.
 #include "UI/plugin_panel_registry.h"
+#include "UI/plugin_widget_registry.h"
 
 #include <windows.h>
 #include <cstdio>
+#include <cstring>
 #include <fstream>
 #include <iterator>
 #include <string>
@@ -167,12 +169,33 @@ static void Test_ForgetOfUnrelatedModuleIsHarmless()
     CHECK(PanelCount() == 0);
 }
 
+// Widgets hold the same kind of pointers and are purged the same way. There is
+// no widget count to read, so a duplicate name shows what is still registered.
+static void Test_WidgetsPurgedByModule()
+{
+    const PluginWidgetDesc widgetA = { "Widget A", RenderA, nullptr };
+    const PluginWidgetDesc widgetB = { "Widget B", RenderB(), nullptr };
+
+    CHECK(UI::PluginWidgetRegistry::RegisterWidget(&widgetA) != nullptr);
+    CHECK(UI::PluginWidgetRegistry::RegisterWidget(&widgetB) != nullptr);
+
+    UI::PluginWidgetRegistry::ForgetModule(GetModuleHandleW(nullptr)); // plugin A unloads
+
+    CHECK(UI::PluginWidgetRegistry::RegisterWidget(&widgetB) == nullptr); // B kept
+    CHECK(UI::PluginWidgetRegistry::RegisterWidget(&widgetA) != nullptr); // A gone
+
+    UI::PluginWidgetRegistry::ForgetModule(GetModuleHandleW(nullptr));
+    UI::PluginWidgetRegistry::ForgetModule(ModuleB());
+    CHECK(UI::PluginWidgetRegistry::RegisterWidget(&widgetB) != nullptr);
+    UI::PluginWidgetRegistry::ForgetModule(ModuleB());
+}
+
 // The tests above prove the purge works; this one proves the loader calls it.
 // plugin_manager.cpp cannot be linked into a console program (it is the plugin
 // loader), so its three paths that unmap a plugin -- unload all, unload one,
-// reload -- are read as source. Each must call ForgetModule before FreeLibrary,
-// since afterwards the panel's renderFn is freed memory. Delete any one call and
-// this fails.
+// reload -- are read as source. Each must call both registries' ForgetModule,
+// on the module it frees, before FreeLibrary, since afterwards a panel's or
+// widget's renderFn is freed memory. Delete any one call and this fails.
 static std::string StripLineComments(const std::string& src)
 {
     std::string out;
@@ -227,11 +250,20 @@ static void Test_UnloadPathsPurgePanels()
         const std::string body = FunctionBody(src, signature);
         CHECK(!body.empty());
 
-        const size_t forget = body.find("PluginPanelRegistry::ForgetModule(");
-        const size_t free   = body.find("FreeLibrary(");
-        CHECK(forget != std::string::npos);
+        const size_t free = body.find("FreeLibrary(");
         CHECK(free != std::string::npos);
-        CHECK(forget < free);
+        if (free == std::string::npos) continue;
+
+        // The module being freed, e.g. "p.hModule".
+        const size_t argStart = free + strlen("FreeLibrary(");
+        const std::string module = body.substr(argStart, body.find(')', argStart) - argStart);
+
+        for (const char* registry : { "PluginPanelRegistry", "PluginWidgetRegistry" })
+        {
+            const size_t forget = body.find(std::string(registry) + "::ForgetModule(" + module + ")");
+            CHECK(forget != std::string::npos);
+            CHECK(forget < free);
+        }
     }
 }
 
@@ -241,6 +273,7 @@ int main()
     RunTest("OpenPanelAndStaleHandle",           Test_OpenPanelAndStaleHandle);
     RunTest("ClosedCallbacksPurgedByModule",     Test_ClosedCallbacksPurgedByModule);
     RunTest("ForgetOfUnrelatedModuleIsHarmless", Test_ForgetOfUnrelatedModuleIsHarmless);
+    RunTest("WidgetsPurgedByModule",             Test_WidgetsPurgedByModule);
     RunTest("UnloadPathsPurgePanels",            Test_UnloadPathsPurgePanels);
 
     printf("\n%d checks, %d failed\n", g_checks, g_failed);

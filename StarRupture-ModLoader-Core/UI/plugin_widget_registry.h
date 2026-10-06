@@ -23,6 +23,12 @@ namespace UI::PluginWidgetRegistry
     // Remove a widget using the handle returned by RegisterWidget.
     void UnregisterWidget(WidgetHandle handle);
 
+    // Drop every widget whose renderFn lives in the given module. For the
+    // plugin manager to call just before it FreeLibrary()s a plugin: a widget
+    // is drawn every frame from pointers into the plugin's image, so one the
+    // plugin did not unregister itself would be called after the module is gone.
+    void ForgetModule(HMODULE module);
+
     // Show or hide a widget window.  Widgets are visible by default after registration.
     void SetWidgetVisible(WidgetHandle handle, bool visible);
 

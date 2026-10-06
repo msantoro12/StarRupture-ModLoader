@@ -27,6 +27,7 @@
 #include "UI/splash_window.h"
 #include "UI/modloader_window.h"
 #include "UI/plugin_panel_registry.h"
+#include "UI/plugin_widget_registry.h"
 #endif
 
 namespace PluginManager
@@ -781,8 +782,9 @@ namespace PluginManager
 			PluginConsole::ForgetPlugin(plugin->cachedName.c_str());
 			PakRegistry::ForgetPlugin(plugin->cachedName.c_str());
 #ifdef MODLOADER_CLIENT_BUILD
-			// Panels and panel-closed callbacks too: renderFn is in this module.
+			// Panels, widgets and panel-closed callbacks too: renderFn is in this module.
 			UI::PluginPanelRegistry::ForgetModule(plugin->hModule);
+			UI::PluginWidgetRegistry::ForgetModule(plugin->hModule);
 			GameMenu::Registry::ForgetPlugin(plugin->cachedName.c_str());
 			Hooks::MouseWheel::ForgetModule(plugin->hModule);
 #endif
@@ -910,9 +912,10 @@ namespace PluginManager
 		PluginConsole::ForgetPlugin(p.cachedName.c_str());
 		PakRegistry::ForgetPlugin(p.cachedName.c_str());
 #ifdef MODLOADER_CLIENT_BUILD
-		// Same for a panel it registered and did not unregister: the registry
-		// keeps its descriptor and renderFn, both inside the module about to go.
+		// Same for a panel or widget it registered and did not unregister: the
+		// registries keep its descriptor and renderFn, both inside the module about to go.
 		UI::PluginPanelRegistry::ForgetModule(p.hModule);
+		UI::PluginWidgetRegistry::ForgetModule(p.hModule);
 		GameMenu::Registry::ForgetPlugin(p.cachedName.c_str());
 		Hooks::MouseWheel::ForgetModule(p.hModule);
 #endif
@@ -956,6 +959,7 @@ namespace PluginManager
 			PakRegistry::ForgetPlugin(p.cachedName.c_str());
 #ifdef MODLOADER_CLIENT_BUILD
 			UI::PluginPanelRegistry::ForgetModule(p.hModule);
+			UI::PluginWidgetRegistry::ForgetModule(p.hModule);
 			GameMenu::Registry::ForgetPlugin(p.cachedName.c_str());
 			Hooks::MouseWheel::ForgetModule(p.hModule);
 #endif

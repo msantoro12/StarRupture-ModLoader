@@ -760,6 +760,22 @@ namespace PluginManager
 		if (g_initCompleteEvent) SetEvent(g_initCompleteEvent);
 	}
 
+	// Called right after PluginShutdown, before any of the purges that follow
+	// it. The render thread may still be inside one of the plugin's panels or
+	// widgets, and code running there can register more of anything; waiting
+	// it out first means nothing gets added behind those purges. The panel and
+	// widget purges are repeated in their usual place for whatever the second
+	// wait let through.
+	static void WaitOutPluginRenders(HMODULE module)
+	{
+#ifdef MODLOADER_CLIENT_BUILD
+		UI::PluginPanelRegistry::ForgetModule(module);
+		UI::PluginWidgetRegistry::ForgetModule(module);
+#else
+		(void)module;
+#endif
+	}
+
 	void UnloadAllPlugins()
 	{
 		ModLoaderLogger::LogMessage(L"Unloading all plugins...");
@@ -775,6 +791,7 @@ namespace PluginManager
 					LogPluginCrash(plugin->cachedName.c_str(), plugin->hModule, L"PluginShutdown (unload all)");
 				plugin->isInitialized = false;
 			}
+			WaitOutPluginRenders(plugin->hModule);
 
 			// Before FreeLibrary: a console command or game-menu row it registered
 			// carries a handler address inside the module about to be unmapped.
@@ -898,6 +915,7 @@ namespace PluginManager
 		if (!CallShutdownSEH(p.shutdown))
 			LogPluginCrash(p.cachedName.c_str(), p.hModule, L"PluginShutdown (unload)");
 		p.isInitialized = false;
+		WaitOutPluginRenders(p.hModule);
 
 		// Before FreeLibrary, not after: the schema the config manager cached lives
 		// inside this module, so the moment it is unmapped that pointer is a read
@@ -951,6 +969,8 @@ namespace PluginManager
 		}
 		if (p.hModule)
 		{
+			WaitOutPluginRenders(p.hModule);
+
 			// Same reason as UnloadPlugin: the cached schema, any registered
 			// console commands and any game-menu rows point into this module.
 			// InitPluginRecord below re-registers whatever the new build asks for.

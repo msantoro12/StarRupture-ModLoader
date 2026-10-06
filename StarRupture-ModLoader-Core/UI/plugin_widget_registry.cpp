@@ -80,12 +80,19 @@ namespace UI::PluginWidgetRegistry
         if (!module) return;
 
         std::unique_lock<std::mutex> lock(s_mutex);
-        s_widgets.remove_if([&](const WidgetEntry& e) { return e.owner == module; });
+        const auto forget = [&]
+        {
+            s_widgets.remove_if([&](const WidgetEntry& e) { return e.owner == module; });
+        };
+        forget();
 
         // Nothing new can start in the module now. Wait out a render that
-        // already has: the module is unmapped as soon as this returns.
+        // already has: the module is unmapped as soon as this returns. Forget
+        // again after, under the same lock: a render still running in the
+        // module during the wait may have registered another widget.
         const bool finished = s_calls.WaitForOtherThreads(lock,
             [&](const void*, HMODULE owner) { return owner == module; });
+        forget();
         lock.unlock();
         if (!finished)
             ModLoaderLogger::LogError(

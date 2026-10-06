@@ -249,17 +249,24 @@ namespace UI::PluginPanelRegistry
         if (!module) return;
 
         std::unique_lock<std::mutex> lock(s_mutex);
-        s_panels.remove_if([&](const PanelEntry& e) { return e.owner == module; });
-        s_panelClosedCallbacks.erase(
-            std::remove_if(s_panelClosedCallbacks.begin(), s_panelClosedCallbacks.end(),
-                           [&](const PanelClosedEntry& e) { return e.owner == module; }),
-            s_panelClosedCallbacks.end());
+        const auto forget = [&]
+        {
+            s_panels.remove_if([&](const PanelEntry& e) { return e.owner == module; });
+            s_panelClosedCallbacks.erase(
+                std::remove_if(s_panelClosedCallbacks.begin(), s_panelClosedCallbacks.end(),
+                               [&](const PanelClosedEntry& e) { return e.owner == module; }),
+                s_panelClosedCallbacks.end());
+        };
+        forget();
 
         // Nothing new can start in the module now. Wait out what already has,
         // including the render of a panel the plugin unregistered itself: the
-        // module is unmapped as soon as this returns.
+        // module is unmapped as soon as this returns. Forget again after, under
+        // the same lock: a call still running in the module during the wait
+        // may have registered another panel or callback.
         const bool finished = s_calls.WaitForOtherThreads(lock,
             [&](const void*, HMODULE owner) { return owner == module; });
+        forget();
         lock.unlock();
         if (!finished)
             ModLoaderLogger::LogError(

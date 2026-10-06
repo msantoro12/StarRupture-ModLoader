@@ -285,6 +285,7 @@ static HANDLE      g_inRender;           // set once RenderSlow is running
 static HANDLE      g_letRenderFinish;    // RenderSlow returns when this is set
 static PanelHandle g_slowPanel;
 static bool        g_unregisterFromRender = false;
+static bool        g_registerAfterHold    = false;
 
 static void RenderSlow(IModLoaderImGui*)
 {
@@ -292,6 +293,8 @@ static void RenderSlow(IModLoaderImGui*)
         Registry::UnregisterPanel(g_slowPanel);   // its own panel, on the render thread
     SetEvent(g_inRender);
     WaitForSingleObject(g_letRenderFinish, 10000);
+    if (g_registerAfterHold)
+        Registry::RegisterPanel(&kPanelA);   // while the unload is still waiting
 }
 
 static const PluginPanelDesc kSlowPanel = { "Slow", "Slow panel", RenderSlow };
@@ -344,6 +347,18 @@ static void Test_UnloadWaitsForRender()
 }
 
 // The plugin's own UnregisterPanel waits too: it may free desc right after.
+// A renderFn that registers another panel while its module is being unloaded
+// does not leave that panel behind.
+static void Test_PanelRegisteredDuringUnloadIsForgotten()
+{
+    OpenSlowPanel();
+    g_registerAfterHold = true;
+    UnloadDuringRender([] { Registry::ForgetModule(GetModuleHandleW(nullptr)); }, 300);
+    g_registerAfterHold = false;
+    CHECK(PanelCount() == 0);
+    Registry::ForgetModule(GetModuleHandleW(nullptr));
+}
+
 static void Test_UnregisterWaitsForRender()
 {
     OpenSlowPanel();
@@ -427,6 +442,7 @@ int main()
     g_letRenderFinish  = CreateEventW(nullptr, TRUE, FALSE, nullptr);
 
     RunTest("UnloadWaitsForRender",              Test_UnloadWaitsForRender);
+    RunTest("PanelRegisteredDuringUnloadIsForgotten", Test_PanelRegisteredDuringUnloadIsForgotten);
     RunTest("UnregisterWaitsForRender",          Test_UnregisterWaitsForRender);
     RunTest("WaitIsBounded",                     Test_WaitIsBounded);
     RunTest("RenderMayUnregisterItself",         Test_RenderMayUnregisterItself);

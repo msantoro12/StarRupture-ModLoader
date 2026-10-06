@@ -1,22 +1,28 @@
-// PluginPanelRegistry and PluginWidgetRegistry ForgetModule test.
+// PluginPanelRegistry and PluginWidgetRegistry test: ForgetModule, and unloads
+// that race the render thread.
 //
-// A console program: no game, no plugin DLLs. The registry is the loader's own
-// source file; test_doubles.cpp replaces only what it calls out to.
+// A console program: no game, no plugin DLLs. The registries are the loader's
+// own source files; test_doubles.cpp replaces only what they call out to.
 //
 // Two "plugins" are needed, and a module is whatever an address lives in. This
 // executable is one: its own functions are plugin A's panel and callback.
 // kernel32.dll is the other: a function address from it stands in for plugin B's
-// renderFn and callback. Neither is ever called -- no panel is opened and
-// nothing is closed -- so only the module an address belongs to matters.
+// renderFn and callback. They are GetLastError and GetCurrentThreadId, which
+// take no arguments, so calling them with a panel's arguments is harmless.
 #include "UI/plugin_panel_registry.h"
 #include "UI/plugin_widget_registry.h"
+#include "UI/plugin_call_tracker.h"
+#include "imgui/imgui.h"
+#include "test_doubles.h"
 
 #include <windows.h>
+#include <atomic>
 #include <cstdio>
 #include <cstring>
 #include <fstream>
 #include <iterator>
 #include <string>
+#include <thread>
 
 static int g_checks = 0;
 static int g_failed = 0;
@@ -52,7 +58,7 @@ static void ClosedA(PanelHandle) { ++g_closedA; }
 static const PluginPanelDesc kPanelA = { "A", "Panel A", RenderA };
 
 // ---------------------------------------------------------------------------
-// Plugin B: lives in kernel32.dll. These are never called (see above).
+// Plugin B: lives in kernel32.dll (see above).
 // ---------------------------------------------------------------------------
 
 static HMODULE ModuleB()
@@ -267,6 +273,143 @@ static void Test_UnloadPathsPurgePanels()
     }
 }
 
+// ---------------------------------------------------------------------------
+// Render versus unload
+//
+// The render thread draws panels while the game thread unloads plugins. These
+// run RenderPanelWindows on a second thread, hold it inside a panel's renderFn,
+// and unload from a third, as the game does.
+// ---------------------------------------------------------------------------
+
+static HANDLE      g_inRender;           // set once RenderSlow is running
+static HANDLE      g_letRenderFinish;    // RenderSlow returns when this is set
+static PanelHandle g_slowPanel;
+static bool        g_unregisterFromRender = false;
+
+static void RenderSlow(IModLoaderImGui*)
+{
+    if (g_unregisterFromRender)
+        Registry::UnregisterPanel(g_slowPanel);   // its own panel, on the render thread
+    SetEvent(g_inRender);
+    WaitForSingleObject(g_letRenderFinish, 10000);
+}
+
+static const PluginPanelDesc kSlowPanel = { "Slow", "Slow panel", RenderSlow };
+
+static void OpenSlowPanel()
+{
+    g_slowPanel = Registry::RegisterPanel(&kSlowPanel);
+    CHECK(g_slowPanel != nullptr);
+    Registry::SetPanelOpen(g_slowPanel);
+    TestDoubles::drawnTitles.clear();
+    TestDoubles::loggedErrors = 0;
+}
+
+// Draws the open panels on a new thread and returns once it is inside RenderSlow.
+static std::thread StartRender()
+{
+    ResetEvent(g_inRender);
+    ResetEvent(g_letRenderFinish);
+    std::thread render([] { Registry::RenderPanelWindows(nullptr); });
+    CHECK(WaitForSingleObject(g_inRender, 5000) == WAIT_OBJECT_0);
+    return render;
+}
+
+// Runs unload on its own thread while the render sits in RenderSlow, lets the
+// render finish after holdMs, and returns how long unload took to return.
+static ULONGLONG UnloadDuringRender(void (*unload)(), DWORD holdMs)
+{
+    std::thread render = StartRender();
+
+    const ULONGLONG start = GetTickCount64();
+    std::atomic<ULONGLONG> returned{ 0 };
+    std::thread unloader([&] { unload(); returned = GetTickCount64(); });
+
+    Sleep(holdMs);
+    SetEvent(g_letRenderFinish);
+    unloader.join();
+    render.join();
+    return returned - start;
+}
+
+// The unload does not return, and so the module is not freed, while the
+// panel's renderFn is still running in it.
+static void Test_UnloadWaitsForRender()
+{
+    OpenSlowPanel();
+    const ULONGLONG took = UnloadDuringRender([] { Registry::ForgetModule(GetModuleHandleW(nullptr)); }, 300);
+    CHECK(took >= 250);
+    CHECK(TestDoubles::loggedErrors == 0);
+    CHECK(PanelCount() == 0);
+}
+
+// The plugin's own UnregisterPanel waits too: it may free desc right after.
+static void Test_UnregisterWaitsForRender()
+{
+    OpenSlowPanel();
+    const ULONGLONG took = UnloadDuringRender([] { Registry::UnregisterPanel(g_slowPanel); }, 300);
+    CHECK(took >= 250);
+    CHECK(TestDoubles::loggedErrors == 0);
+    CHECK(PanelCount() == 0);
+}
+
+// A renderFn that never returns cannot hang the unload: it gives up after the
+// timeout and logs.
+static void Test_WaitIsBounded()
+{
+    OpenSlowPanel();
+    const DWORD timeout = UI::PluginCallTracker::kWaitTimeoutMs;
+    const ULONGLONG took = UnloadDuringRender([] { Registry::ForgetModule(GetModuleHandleW(nullptr)); }, timeout + 700);
+    CHECK(took >= timeout - 50);
+    CHECK(took < timeout + 500);
+    CHECK(TestDoubles::loggedErrors == 1);
+}
+
+// A renderFn may unregister its own panel. That call is on the render thread
+// itself, so it must not wait for the render it is part of.
+static void Test_RenderMayUnregisterItself()
+{
+    OpenSlowPanel();
+    g_unregisterFromRender = true;
+
+    const ULONGLONG start = GetTickCount64();
+    std::thread render = StartRender();   // returns once UnregisterPanel has
+    const ULONGLONG took = GetTickCount64() - start;
+    SetEvent(g_letRenderFinish);
+    render.join();
+    g_unregisterFromRender = false;
+
+    CHECK(took < 500);
+    CHECK(TestDoubles::loggedErrors == 0);
+    CHECK(PanelCount() == 0);
+}
+
+// The panels to draw are snapshotted at the start of the frame. One forgotten
+// while an earlier panel's renderFn runs is not drawn: its entry is gone, and
+// with it the descriptor the old code went on to read.
+static void Test_ForgottenPanelIsNotDrawnLater()
+{
+    const PluginPanelDesc panelB = { "B", "Panel B", RenderB() };   // GetLastError: safe to call
+
+    OpenSlowPanel();
+    PanelHandle b = Registry::RegisterPanel(&panelB);
+    Registry::SetPanelOpen(b);
+
+    std::thread render = StartRender();
+    const ULONGLONG start = GetTickCount64();
+    Registry::ForgetModule(ModuleB());   // nothing of B's is running: returns at once
+    const ULONGLONG took = GetTickCount64() - start;
+    SetEvent(g_letRenderFinish);
+    render.join();
+
+    CHECK(took < 250);
+    CHECK(TestDoubles::drawnTitles.size() == 1);
+    CHECK(!TestDoubles::drawnTitles.empty() && TestDoubles::drawnTitles[0] == "Slow panel");
+
+    Registry::ForgetModule(GetModuleHandleW(nullptr));
+    CHECK(PanelCount() == 0);
+}
+
 int main()
 {
     RunTest("PanelsPurgedByModule",              Test_PanelsPurgedByModule);
@@ -275,6 +418,23 @@ int main()
     RunTest("ForgetOfUnrelatedModuleIsHarmless", Test_ForgetOfUnrelatedModuleIsHarmless);
     RunTest("WidgetsPurgedByModule",             Test_WidgetsPurgedByModule);
     RunTest("UnloadPathsPurgePanels",            Test_UnloadPathsPurgePanels);
+
+    // RenderPanelWindows sizes each window through Dear ImGui, which needs a
+    // context; nothing is drawn.
+    ImGui::CreateContext();
+    TestDoubles::drawWindows = true;
+    g_inRender         = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    g_letRenderFinish  = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+
+    RunTest("UnloadWaitsForRender",              Test_UnloadWaitsForRender);
+    RunTest("UnregisterWaitsForRender",          Test_UnregisterWaitsForRender);
+    RunTest("WaitIsBounded",                     Test_WaitIsBounded);
+    RunTest("RenderMayUnregisterItself",         Test_RenderMayUnregisterItself);
+    RunTest("ForgottenPanelIsNotDrawnLater",     Test_ForgottenPanelIsNotDrawnLater);
+
+    CloseHandle(g_letRenderFinish);
+    CloseHandle(g_inRender);
+    ImGui::DestroyContext();
 
     printf("\n%d checks, %d failed\n", g_checks, g_failed);
     return g_failed == 0 ? 0 : 1;

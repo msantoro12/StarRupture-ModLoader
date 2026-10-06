@@ -5,7 +5,9 @@
 
 #include "imgui/imgui.h"
 #include "theme.h"
+#include "plugin_call_tracker.h"
 #include "plugins/plugin_manager.h"
+#include "logging/logger.h"
 #include <mutex>
 #include <list>
 #include <map>
@@ -24,6 +26,7 @@ namespace UI::PluginPanelRegistry
         bool isOpen;
         char pluginName[64];   // set at registration time via SetCurrentRegistrationPlugin
         HMODULE owner;         // module the panel's renderFn lives in, for ForgetModule
+        unsigned serial;       // tells a re-used node from the entry a snapshot was taken of
     };
 
     // Config-change callbacks are tagged with the registering plugin's stable
@@ -53,6 +56,9 @@ namespace UI::PluginPanelRegistry
     static std::map<void*, std::string> s_captureTokens;
     static std::map<void*, std::string> s_passthroughTokens;
     static char s_currentPlugin[64];   // set by plugin_manager before each PluginInit call
+    static unsigned s_lastSerial = 0;
+    // Calls into plugin code made outside s_mutex; see plugin_call_tracker.h.
+    static PluginCallTracker s_calls;
 
     // The module an address lives in, or null if it is in none.
     static HMODULE ModuleOf(const void* address)
@@ -70,14 +76,21 @@ namespace UI::PluginPanelRegistry
     // Must NOT be called while holding s_mutex.
     static void FirePanelClosed(PanelHandle handle)
     {
-        std::vector<PluginPanelClosedCallback> callbacks;
+        std::unique_lock<std::mutex> lock(s_mutex);
+        const std::vector<PanelClosedEntry> callbacks = s_panelClosedCallbacks;
+        for (const PanelClosedEntry& cb : callbacks)
         {
-            std::lock_guard<std::mutex> lock(s_mutex);
-            for (const PanelClosedEntry& e : s_panelClosedCallbacks)
-                callbacks.push_back(e.callback);
+            // Each one is called without the lock, so an earlier one may have
+            // unregistered it, or an unload dropped it and freed its module.
+            const bool stillRegistered = std::any_of(
+                s_panelClosedCallbacks.begin(), s_panelClosedCallbacks.end(),
+                [&](const PanelClosedEntry& e) { return e.callback == cb.callback && e.owner == cb.owner; });
+            if (!stillRegistered)
+                continue;
+
+            PluginCallTracker::Scope call(s_calls, lock, reinterpret_cast<const void*>(cb.callback), cb.owner);
+            cb.callback(handle);
         }
-        for (auto cb : callbacks)
-            cb(handle);
     }
 
     void SetCurrentRegistrationPlugin(const char* name)
@@ -108,6 +121,7 @@ namespace UI::PluginPanelRegistry
         entry.desc   = desc;
         entry.isOpen = false;
         entry.owner  = owner;
+        entry.serial = ++s_lastSerial;
         strncpy_s(entry.pluginName, s_currentPlugin, _TRUNCATE);
         s_panels.push_back(entry);
         return static_cast<PanelHandle>(&s_panels.back());
@@ -118,12 +132,22 @@ namespace UI::PluginPanelRegistry
         if (!handle) return;
         PanelEntry* target = static_cast<PanelEntry*>(handle);
 
-        std::lock_guard<std::mutex> lock(s_mutex);
+        std::unique_lock<std::mutex> lock(s_mutex);
         for (auto it = s_panels.begin(); it != s_panels.end(); ++it)
         {
             if (&(*it) == target)
             {
                 s_panels.erase(it);
+
+                // The caller may free desc once this returns, so a render of
+                // this panel still running on another thread has to finish first.
+                const bool finished = s_calls.WaitForOtherThreads(lock,
+                    [&](const void* key, HMODULE) { return key == target; });
+                lock.unlock();
+                if (!finished)
+                    ModLoaderLogger::LogError(
+                        L"[PluginPanels] UnregisterPanel: the panel's render was still running "
+                        L"after %lu ms; returning anyway.", PluginCallTracker::kWaitTimeoutMs);
                 return;
             }
         }
@@ -224,12 +248,24 @@ namespace UI::PluginPanelRegistry
     {
         if (!module) return;
 
-        std::lock_guard<std::mutex> lock(s_mutex);
+        std::unique_lock<std::mutex> lock(s_mutex);
         s_panels.remove_if([&](const PanelEntry& e) { return e.owner == module; });
         s_panelClosedCallbacks.erase(
             std::remove_if(s_panelClosedCallbacks.begin(), s_panelClosedCallbacks.end(),
                            [&](const PanelClosedEntry& e) { return e.owner == module; }),
             s_panelClosedCallbacks.end());
+
+        // Nothing new can start in the module now. Wait out what already has,
+        // including the render of a panel the plugin unregistered itself: the
+        // module is unmapped as soon as this returns.
+        const bool finished = s_calls.WaitForOtherThreads(lock,
+            [&](const void*, HMODULE owner) { return owner == module; });
+        lock.unlock();
+        if (!finished)
+            ModLoaderLogger::LogError(
+                L"[PluginPanels] A panel render or panel-closed callback in module %p was still "
+                L"running after %lu ms; unloading it anyway, the game may crash.",
+                static_cast<void*>(module), PluginCallTracker::kWaitTimeoutMs);
     }
 
     // -----------------------------------------------------------------------
@@ -448,38 +484,60 @@ namespace UI::PluginPanelRegistry
 
     void RenderPanelWindows(IModLoaderImGui* imgui)
     {
-        // Snapshot to avoid holding lock during render callbacks
-        std::vector<PanelEntry*> toRender;
+        // Snapshot which panels to draw, not pointers to use: an entry can be
+        // erased (an unload, or UnregisterPanel on any thread) whenever the
+        // lock is not held, so each one is looked up again before it is read.
+        struct PanelRef
+        {
+            PanelEntry* entry;
+            unsigned    serial;
+        };
+        std::vector<PanelRef> toRender;
         {
             std::lock_guard<std::mutex> lock(s_mutex);
             for (auto& e : s_panels)
-                if (e.isOpen) toRender.push_back(&e);
+                if (e.isOpen) toRender.push_back({ &e, e.serial });
         }
 
-        for (PanelEntry* entry : toRender)
+        // Must be called with s_mutex held.
+        const auto find = [](const PanelRef& ref) -> PanelEntry*
         {
-            ImGui::SetNextWindowSize(ImVec2(480, 360), ImGuiCond_FirstUseEver);
+            PanelEntry* e = FindEntry(static_cast<PanelHandle>(ref.entry));
+            return e && e->serial == ref.serial ? e : nullptr;
+        };
 
-            bool open;
-            {
-                std::lock_guard<std::mutex> lock(s_mutex);
-                open = entry->isOpen;
-            }
+        for (const PanelRef& ref : toRender)
+        {
+            std::unique_lock<std::mutex> lock(s_mutex);
+            const PanelEntry* live = find(ref);
+            if (!live || !live->isOpen)
+                continue;
+            const PanelEntry panel = *live;
 
-            // Subtitle shows which plugin owns the panel -- nullptr (omitted)
-            // for panels registered without a recorded owner.
-            const char* subtitle = entry->pluginName[0] ? entry->pluginName : nullptr;
-            if (UI::Theme::BeginChamferedWindow(entry->desc->windowTitle, entry->desc->windowTitle,
-                                                 &open, subtitle))
+            bool open = true;
             {
                 // Not held across renderFn: a plugin's own render callback is
                 // free to call back into this registry (SetPanelClose on
                 // itself, RegisterPanel, etc.), and locking here would either
                 // deadlock that or block whatever else is waiting on s_mutex
-                // for the length of a plugin's render.
-                entry->desc->renderFn(imgui);
-                UI::Theme::EndChamferedWindow();
+                // for the length of a plugin's render. The call is tracked
+                // instead, so an unload waits for it before the module goes.
+                PluginCallTracker::Scope call(s_calls, lock, ref.entry, panel.owner);
+
+                ImGui::SetNextWindowSize(ImVec2(480, 360), ImGuiCond_FirstUseEver);
+
+                // Subtitle shows which plugin owns the panel -- nullptr (omitted)
+                // for panels registered without a recorded owner.
+                const char* subtitle = panel.pluginName[0] ? panel.pluginName : nullptr;
+                if (UI::Theme::BeginChamferedWindow(panel.desc->windowTitle, panel.desc->windowTitle,
+                                                     &open, subtitle))
+                {
+                    panel.desc->renderFn(imgui);
+                    UI::Theme::EndChamferedWindow();
+                }
             }
+            // s_mutex is held again here.
+
             // Only write back a close made by ImGui itself (the titlebar X).
             // `open` was snapshotted before renderFn ran, so assigning it
             // unconditionally undid any SetPanelClose the plugin issued from
@@ -489,14 +547,15 @@ namespace UI::PluginPanelRegistry
             if (!open)
             {
                 bool wasOpen = false;
+                if (PanelEntry* e = find(ref))
                 {
-                    std::lock_guard<std::mutex> lock(s_mutex);
-                    wasOpen = entry->isOpen;
-                    entry->isOpen = false;
+                    wasOpen = e->isOpen;
+                    e->isOpen = false;
                 }
+                lock.unlock();
                 // A SetPanelClose during render has already fired the callback.
                 if (wasOpen)
-                    FirePanelClosed(static_cast<PanelHandle>(entry));
+                    FirePanelClosed(static_cast<PanelHandle>(ref.entry));
             }
         }
     }

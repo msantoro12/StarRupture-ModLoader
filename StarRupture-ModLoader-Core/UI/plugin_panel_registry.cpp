@@ -23,6 +23,7 @@ namespace UI::PluginPanelRegistry
         const PluginPanelDesc* desc;
         bool isOpen;
         char pluginName[64];   // set at registration time via SetCurrentRegistrationPlugin
+        HMODULE owner;         // module the panel's renderFn lives in, for ForgetModule
     };
 
     // Config-change callbacks are tagged with the registering plugin's stable
@@ -36,16 +37,34 @@ namespace UI::PluginPanelRegistry
         const IPluginSelf* self;
     };
 
+    struct PanelClosedEntry
+    {
+        PluginPanelClosedCallback callback;
+        HMODULE owner;         // module the callback lives in, for ForgetModule
+    };
+
     static std::mutex s_mutex;
     static std::list<PanelEntry> s_panels;   // list: insertion never invalidates existing pointers
     static std::vector<ConfigCallbackEntry> s_configCallbacks;
-    static std::vector<PluginPanelClosedCallback> s_panelClosedCallbacks;
+    static std::vector<PanelClosedEntry> s_panelClosedCallbacks;
     // Token -> the module that acquired it (see ResolveCallerModule). A map
     // rather than a set purely so a leak can be attributed; the token identity
     // and lifetime rules are unchanged.
     static std::map<void*, std::string> s_captureTokens;
     static std::map<void*, std::string> s_passthroughTokens;
     static char s_currentPlugin[64];   // set by plugin_manager before each PluginInit call
+
+    // The module an address lives in, or null if it is in none.
+    static HMODULE ModuleOf(const void* address)
+    {
+        HMODULE owner = nullptr;
+        if (!address ||
+            !GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                                GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                                static_cast<LPCSTR>(address), &owner))
+            return nullptr;
+        return owner;
+    }
 
     // Invokes all registered panel-closed callbacks for the given handle.
     // Must NOT be called while holding s_mutex.
@@ -54,7 +73,8 @@ namespace UI::PluginPanelRegistry
         std::vector<PluginPanelClosedCallback> callbacks;
         {
             std::lock_guard<std::mutex> lock(s_mutex);
-            callbacks = s_panelClosedCallbacks;
+            for (const PanelClosedEntry& e : s_panelClosedCallbacks)
+                callbacks.push_back(e.callback);
         }
         for (auto cb : callbacks)
             cb(handle);
@@ -81,6 +101,7 @@ namespace UI::PluginPanelRegistry
         PanelEntry entry = {};
         entry.desc   = desc;
         entry.isOpen = false;
+        entry.owner  = ModuleOf(reinterpret_cast<const void*>(desc->renderFn));
         strncpy_s(entry.pluginName, s_currentPlugin, _TRUNCATE);
         s_panels.push_back(entry);
         return static_cast<PanelHandle>(&s_panels.back());
@@ -177,8 +198,9 @@ namespace UI::PluginPanelRegistry
     void RegisterOnPanelWindowClosed(PluginPanelClosedCallback callback)
     {
         if (!callback) return;
+        const HMODULE owner = ModuleOf(reinterpret_cast<const void*>(callback));
         std::lock_guard<std::mutex> lock(s_mutex);
-        s_panelClosedCallbacks.push_back(callback);
+        s_panelClosedCallbacks.push_back({ callback, owner });
     }
 
     void UnregisterOnPanelWindowClosed(PluginPanelClosedCallback callback)
@@ -186,7 +208,20 @@ namespace UI::PluginPanelRegistry
         if (!callback) return;
         std::lock_guard<std::mutex> lock(s_mutex);
         s_panelClosedCallbacks.erase(
-            std::remove(s_panelClosedCallbacks.begin(), s_panelClosedCallbacks.end(), callback),
+            std::remove_if(s_panelClosedCallbacks.begin(), s_panelClosedCallbacks.end(),
+                           [&](const PanelClosedEntry& e) { return e.callback == callback; }),
+            s_panelClosedCallbacks.end());
+    }
+
+    void ForgetModule(HMODULE module)
+    {
+        if (!module) return;
+
+        std::lock_guard<std::mutex> lock(s_mutex);
+        s_panels.remove_if([&](const PanelEntry& e) { return e.owner == module; });
+        s_panelClosedCallbacks.erase(
+            std::remove_if(s_panelClosedCallbacks.begin(), s_panelClosedCallbacks.end(),
+                           [&](const PanelClosedEntry& e) { return e.owner == module; }),
             s_panelClosedCallbacks.end());
     }
 

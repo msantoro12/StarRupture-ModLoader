@@ -43,6 +43,15 @@ namespace UI::PluginPanelRegistry
     void RegisterOnPanelWindowClosed(PluginPanelClosedCallback callback);
     void UnregisterOnPanelWindowClosed(PluginPanelClosedCallback callback);
 
+    // Drop every panel and panel-closed callback that lives in the given
+    // module. For the plugin manager to call just before it FreeLibrary()s a
+    // plugin: a panel holds pointers into the plugin's image (its descriptor,
+    // titles and renderFn) and is called every frame, so one the plugin did not
+    // unregister itself -- PluginShutdown crashed, or never got that far --
+    // would be read after the module is gone. An open panel is dropped without
+    // firing the panel-closed callbacks.
+    void ForgetModule(HMODULE module);
+
     // Acquire/release an input-capture request token. While at least one
     // token is held, AnyInputCaptureRequested() returns true.
     void* AcquireInputCapture();

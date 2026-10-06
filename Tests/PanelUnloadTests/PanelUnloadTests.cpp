@@ -308,21 +308,27 @@ static void OpenSlowPanel()
     TestDoubles::loggedErrors = 0;
 }
 
-// Draws the open panels on a new thread and returns once it is inside RenderSlow.
-static std::thread StartRender()
+static void DrawPanels()
+{
+    Registry::RenderPanelWindows(nullptr);
+}
+
+// Runs call (by default, drawing the open panels) on a new thread and returns
+// once it is held inside plugin code: RenderSlow or ClosedSlow.
+static std::thread StartRender(void (*call)() = DrawPanels)
 {
     ResetEvent(g_inRender);
     ResetEvent(g_letRenderFinish);
-    std::thread render([] { Registry::RenderPanelWindows(nullptr); });
+    std::thread render(call);
     CHECK(WaitForSingleObject(g_inRender, 5000) == WAIT_OBJECT_0);
     return render;
 }
 
-// Runs unload on its own thread while the render sits in RenderSlow, lets the
-// render finish after holdMs, and returns how long unload took to return.
-static ULONGLONG UnloadDuringRender(void (*unload)(), DWORD holdMs)
+// Runs unload on its own thread while call is held in plugin code, lets it
+// finish after holdMs, and returns how long unload took to return.
+static ULONGLONG UnloadDuringRender(void (*unload)(), DWORD holdMs, void (*call)() = DrawPanels)
 {
-    std::thread render = StartRender();
+    std::thread render = StartRender(call);
 
     const ULONGLONG start = GetTickCount64();
     std::atomic<ULONGLONG> returned{ 0 };
@@ -346,7 +352,6 @@ static void Test_UnloadWaitsForRender()
     CHECK(PanelCount() == 0);
 }
 
-// The plugin's own UnregisterPanel waits too: it may free desc right after.
 // A renderFn that registers another panel while its module is being unloaded
 // does not leave that panel behind.
 static void Test_PanelRegisteredDuringUnloadIsForgotten()
@@ -359,12 +364,42 @@ static void Test_PanelRegisteredDuringUnloadIsForgotten()
     Registry::ForgetModule(GetModuleHandleW(nullptr));
 }
 
+// The plugin's own UnregisterPanel waits too: it may free desc right after.
 static void Test_UnregisterWaitsForRender()
 {
     OpenSlowPanel();
     const ULONGLONG took = UnloadDuringRender([] { Registry::UnregisterPanel(g_slowPanel); }, 300);
     CHECK(took >= 250);
     CHECK(TestDoubles::loggedErrors == 0);
+    CHECK(PanelCount() == 0);
+}
+
+// A panel-closed callback is plugin code called outside the lock as well. Plugin
+// B's panel is closed on one thread, plugin A's callback holds it there, and A
+// is unloaded from another.
+static PanelHandle g_closingPanel;
+
+static void ClosedSlow(PanelHandle)
+{
+    SetEvent(g_inRender);
+    WaitForSingleObject(g_letRenderFinish, 10000);
+}
+
+static void Test_UnloadWaitsForClosedCallback()
+{
+    const PluginPanelDesc panelB = { "B", "Panel B", RenderB() };
+    TestDoubles::loggedErrors = 0;
+
+    Registry::RegisterOnPanelWindowClosed(ClosedSlow);
+    g_closingPanel = Registry::RegisterPanel(&panelB);
+    Registry::SetPanelOpen(g_closingPanel);
+
+    const ULONGLONG took = UnloadDuringRender([] { Registry::ForgetModule(GetModuleHandleW(nullptr)); }, 300,
+                                              [] { Registry::SetPanelClose(g_closingPanel); });
+    CHECK(took >= 250);
+    CHECK(TestDoubles::loggedErrors == 0);
+
+    Registry::ForgetModule(ModuleB());
     CHECK(PanelCount() == 0);
 }
 
@@ -444,6 +479,7 @@ int main()
     RunTest("UnloadWaitsForRender",              Test_UnloadWaitsForRender);
     RunTest("PanelRegisteredDuringUnloadIsForgotten", Test_PanelRegisteredDuringUnloadIsForgotten);
     RunTest("UnregisterWaitsForRender",          Test_UnregisterWaitsForRender);
+    RunTest("UnloadWaitsForClosedCallback",      Test_UnloadWaitsForClosedCallback);
     RunTest("WaitIsBounded",                     Test_WaitIsBounded);
     RunTest("RenderMayUnregisterItself",         Test_RenderMayUnregisterItself);
     RunTest("ForgottenPanelIsNotDrawnLater",     Test_ForgottenPanelIsNotDrawnLater);

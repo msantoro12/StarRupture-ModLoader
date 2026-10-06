@@ -16,6 +16,7 @@
 #include "console_window.h"
 #include "logging_tab.h"
 #include "tick_profiler_window.h"
+#include "wheel_test.h"
 #include "network_channel/net_timeout.h"
 #include "utils/game_thread_dispatch.h"
 #ifdef _DEBUG
@@ -107,6 +108,17 @@ namespace UI::ModLoaderWindow
     }
 
     // Parse all sections + keys from the plugin's INI file into s_configEntries.
+    // Blocking owner for one keybind config entry. Per entry rather than per
+    // plugin, so two binds in the same plugin that share a combo cannot clear
+    // each other's blocking either.
+    static void SetEntryBlocking(const char* pluginName, const char* section, const char* key,
+                                 const char* combo, bool blocking)
+    {
+        char owner[256];
+        snprintf(owner, sizeof(owner), "%s|%s|%s", pluginName, section, key);
+        Hooks::Input::SetComboBlocking(owner, combo, blocking);
+    }
+
     static void LoadConfigEntries(const char* pluginName)
     {
         s_configEntries.clear();
@@ -161,7 +173,7 @@ namespace UI::ModLoaderWindow
                 swprintf_s(wsec, L"%S", kv.section);
                 swprintf_s(wblkKey, L"%SBlocking", kv.key);
                 bool blocking = (GetPrivateProfileIntW(wsec, wblkKey, 0, iniPath) != 0);
-                Hooks::Input::SetComboBlocking(kv.value, blocking);
+                SetEntryBlocking(pluginName, kv.section, kv.key, kv.value, blocking);
             }
 
             // <KeybindKey>Blocking is the Block toggle's own on-disk state
@@ -232,9 +244,10 @@ namespace UI::ModLoaderWindow
                 swprintf_s(blkSec, L"%S", kv.section);
                 swprintf_s(wblkKey, L"%SBlocking", kv.key);
                 bool wasBlocking = (GetPrivateProfileIntW(blkSec, wblkKey, 0, iniPath) != 0);
-                Hooks::Input::SetComboBlocking(kv.value, wasBlocking);
-                // Remove any stale entry for the old combo so it does not linger.
-                Hooks::Input::SetComboBlocking(oldValue, false);
+                // Withdraw only THIS entry's claim on the old combo -- another
+                // plugin still bound to it keeps its own blocking.
+                SetEntryBlocking(pluginName, kv.section, kv.key, oldValue, false);
+                SetEntryBlocking(pluginName, kv.section, kv.key, kv.value, wasBlocking);
             }
 
             Hooks::Input::UpdateKeybindByName(pluginName, oldValue, kv.value);
@@ -843,7 +856,7 @@ namespace UI::ModLoaderWindow
                     swprintf_s(wblkKey2, L"%SBlocking", kv.key);
                     WritePrivateProfileStringW(wsec2, wblkKey2, bBlocking ? L"1" : L"0", iniPath2);
                 }
-                Hooks::Input::SetComboBlocking(kv.value, bBlocking);
+                SetEntryBlocking(pluginName, kv.section, kv.key, kv.value, bBlocking);
             }
             if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal))
                 ImGui::SetTooltip("Block: when ticked, this combo is consumed by the\n"
@@ -886,9 +899,13 @@ namespace UI::ModLoaderWindow
             snprintf(resetId, sizeof(resetId), "##r_%s_%s", kv.section, kv.key);
             if (UI::Theme::IconButton(UI::Theme::Icons::Reset, resetId))
             {
+                // Old value and entry passed so a keybind reset live-rebinds
+                // and moves its blocking, the same as picking the key by hand.
+                char oldValue[256];
+                strncpy_s(oldValue, kv.value, _TRUNCATE);
                 strncpy_s(kv.value, e->defaultValue, _TRUNCATE);
                 NotifyConfigChangedLive(pluginName, kv);
-                CommitConfigChange(pluginName, kv);
+                CommitConfigChange(pluginName, kv, oldValue, e);
             }
             if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal))
                 ImGui::SetTooltip("Reset to default: %s", e->defaultValue);
@@ -928,6 +945,7 @@ namespace UI::ModLoaderWindow
 
         s_rebind.active        = false;
         s_rebind.heldModifierVk = 0;
+        Hooks::Input::EndKeybindCapture();
         ImGui::CloseCurrentPopup();
     }
 
@@ -935,6 +953,10 @@ namespace UI::ModLoaderWindow
     {
         if (!s_rebind.active)
             return;
+
+        // No keybind fires while the user is picking one -- otherwise pressing
+        // the new key also opens whatever menu is already on it.
+        Hooks::Input::NoteKeybindCaptureFrame();
 
         // OpenPopup must be called at the same ID-stack level as BeginPopupModal.
         // The button that sets pendingOpen lives inside a BeginTable, so we defer here.
@@ -977,6 +999,7 @@ namespace UI::ModLoaderWindow
             {
                 s_rebind.active        = false;
                 s_rebind.heldModifierVk = 0;
+                Hooks::Input::EndKeybindCapture();
                 ImGui::CloseCurrentPopup();
                 ImGui::EndPopup();
                 return;
@@ -1053,6 +1076,7 @@ namespace UI::ModLoaderWindow
             // Popup was closed externally.
             s_rebind.active        = false;
             s_rebind.heldModifierVk = 0;
+            Hooks::Input::EndKeybindCapture();
         }
     }
 
@@ -1644,6 +1668,9 @@ namespace UI::ModLoaderWindow
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("Clears both persistent line batchers and every world-anchored\n"
                               "debug string, for every plugin -- not just the test scene.");
+
+        ImGui::Spacing();
+        UI::WheelTest::DrawControls();
 #endif
     }
 
@@ -2047,7 +2074,7 @@ namespace UI::ModLoaderWindow
             snprintf(combo, sizeof(combo), "%ls", comboW);
 
             bool blocking = (GetPrivateProfileIntW(wsec, wblkKey, 0, iniPath) != 0);
-            Hooks::Input::SetComboBlocking(combo, blocking);
+            SetEntryBlocking(pluginName, e.section, e.key, combo, blocking);
         }
     }
 

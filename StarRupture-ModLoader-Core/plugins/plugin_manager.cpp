@@ -14,6 +14,7 @@
 #include "plugins/pak_registry.h"
 #ifdef MODLOADER_CLIENT_BUILD
 #include "hooks/game/game_menu/game_menu_registry.h"
+#include "hooks/input/mouse_wheel_registry.h"
 #endif
 #include <vector>
 #include <string>
@@ -781,6 +782,7 @@ namespace PluginManager
 			PakRegistry::ForgetPlugin(plugin->cachedName.c_str());
 #ifdef MODLOADER_CLIENT_BUILD
 			GameMenu::Registry::ForgetPlugin(plugin->cachedName.c_str());
+			Hooks::MouseWheel::ForgetModule(plugin->hModule);
 #endif
 
 			if (plugin->hModule)
@@ -907,6 +909,7 @@ namespace PluginManager
 		PakRegistry::ForgetPlugin(p.cachedName.c_str());
 #ifdef MODLOADER_CLIENT_BUILD
 		GameMenu::Registry::ForgetPlugin(p.cachedName.c_str());
+		Hooks::MouseWheel::ForgetModule(p.hModule);
 #endif
 
 		FreeLibrary(p.hModule);
@@ -948,6 +951,7 @@ namespace PluginManager
 			PakRegistry::ForgetPlugin(p.cachedName.c_str());
 #ifdef MODLOADER_CLIENT_BUILD
 			GameMenu::Registry::ForgetPlugin(p.cachedName.c_str());
+			Hooks::MouseWheel::ForgetModule(p.hModule);
 #endif
 
 			FreeLibrary(p.hModule);
@@ -1026,6 +1030,19 @@ namespace PluginManager
 
 		LeaveCriticalSection(&g_pluginLock);
 		return found;
+	}
+
+	HMODULE GetPluginModule(const char* nameOrFile)
+	{
+		// g_pluginLock is a critical section, so re-entering it through
+		// FindPluginIndex is fine and keeps the index valid while we read it.
+		EnterCriticalSection(&g_pluginLock);
+		HMODULE mod = nullptr;
+		const int index = FindPluginIndex(nameOrFile);
+		if (index >= 0)
+			mod = g_loadedPlugins[index]->hModule;
+		LeaveCriticalSection(&g_pluginLock);
+		return mod;
 	}
 
 	int ScanForNewPlugins()

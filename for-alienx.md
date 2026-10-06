@@ -42,7 +42,7 @@ Every change is its own commit, and the commit messages go into more detail than
 
 This covers three branches, all pushed to forks under `msantoro12` so you can look at any of it without it touching your own repos:
 
-- Loader: `github.com/msantoro12/StarRupture-ModLoader/tree/gss/loader-work` (branched from `v1.21.2`)
+- Loader: `github.com/msantoro12/StarRupture-ModLoader/tree/gss/loader-work` (merged with `v1.22.0`)
 - BetterCheats: `github.com/msantoro12/StarRupture-Plugin-BetterCheats/tree/gss/plugin-work` (vs `origin/main`)
 - BetterDrone: `github.com/msantoro12/StarRupture-Plugin-BetterDrone/tree/gss/plugin-work` (vs `origin/main`)
 
@@ -108,4 +108,14 @@ One more commit stamps a real file version into local builds (`/p:ModLoaderVersi
 
 ## What it's tested against
 
-Loader `v1.21.2`, game build `++Earth20+Neon-HF2.5-CL-126119`. All of this is in daily play use on our end, but it's still moving. Expect more commits on these branches, not a finished state.
+Merged and released on 2026-10-05:
+- Loader PR #131 (`github.com/AlienXAXS/StarRupture-ModLoader/pull/131`), in ModLoader v1.22.0.
+- BetterDrone PR #1 (`github.com/AlienXAXS/StarRupture-Plugin-BetterDrone/pull/1`), in BetterDrone v0.21.0.
+- BetterCheats PR #3 (`github.com/AlienXAXS/StarRupture-Plugin-BetterCheats/pull/3`), in BetterCheats v0.21.0.
+
+What we run on top of those releases, each built on his release (`gss.N` is our local build counter), on game build CL-127004 (Hotfix 0.3.5), as of 2026-10-06:
+- Loader 1.22.0-gss.17: local build stamping only (`/p:ModLoaderVersion` for the file version, `/p:ModLoaderGssBuild` for the build number).
+- BetterDrone 0.21.0-gss.35: a floor guard that keeps the character on its floor across long drone flights, a Drone Reveals Map option, and opening and closing the map with the map key while in the drone.
+- BetterCheats 0.21.0-gss.43: Deconstruct Windows During Waves under Building, and a grenade damage probe for local builds.
+
+All of this is in daily play use on our end, but it's still moving. Expect more commits on these branches, not a finished state.

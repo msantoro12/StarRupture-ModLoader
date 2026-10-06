@@ -75,9 +75,9 @@ namespace UI::PluginWidgetRegistry
         // Handle not found — caller passed a stale or invalid handle; ignore silently.
     }
 
-    void ForgetModule(HMODULE module)
+    bool ForgetModule(HMODULE module)
     {
-        if (!module) return;
+        if (!module) return true;
 
         std::unique_lock<std::mutex> lock(s_mutex);
         const auto forget = [&]
@@ -96,9 +96,9 @@ namespace UI::PluginWidgetRegistry
         lock.unlock();
         if (!finished)
             ModLoaderLogger::LogError(
-                L"[PluginWidgets] A widget render in module %p was still running after %lu ms; "
-                L"unloading it anyway, the game may crash.",
+                L"[PluginWidgets] A widget render in module %p was still running after %lu ms.",
                 static_cast<void*>(module), PluginCallTracker::kWaitTimeoutMs);
+        return finished;
     }
 
     // Returns the WidgetEntry* if the handle is a known registered widget, otherwise null.

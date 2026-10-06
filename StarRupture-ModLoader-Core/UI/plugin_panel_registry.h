@@ -53,7 +53,9 @@ namespace UI::PluginPanelRegistry
     // would be read after the module is gone. An open panel is dropped without
     // firing the panel-closed callbacks. Then waits (bounded) for any render or
     // panel-closed callback of the module still running on another thread.
-    void ForgetModule(HMODULE module);
+    // Returns false if one still was when the wait gave up: the module must
+    // not be freed then.
+    bool ForgetModule(HMODULE module);
 
     // Acquire/release an input-capture request token. While at least one
     // token is held, AnyInputCaptureRequested() returns true.

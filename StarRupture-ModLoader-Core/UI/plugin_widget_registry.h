@@ -30,8 +30,9 @@ namespace UI::PluginWidgetRegistry
     // is drawn every frame from pointers into the plugin's image, so one the
     // plugin did not unregister itself would be called after the module is gone.
     // Then waits (bounded) for any render of the module still running on
-    // another thread.
-    void ForgetModule(HMODULE module);
+    // another thread. Returns false if one still was when the wait gave up:
+    // the module must not be freed then.
+    bool ForgetModule(HMODULE module);
 
     // Show or hide a widget window.  Widgets are visible by default after registration.
     void SetWidgetVisible(WidgetHandle handle, bool visible);

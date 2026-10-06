@@ -270,7 +270,19 @@ static void Test_UnloadPathsPurgePanels()
             CHECK(forget != std::string::npos);
             CHECK(forget < free);
         }
+
+        // The overlay may still be in the module when the wait gives up; the
+        // path must then stop before FreeLibrary.
+        const size_t refuse = body.find("if (!WaitOutPluginRenders(" + module + ",");
+        CHECK(refuse != std::string::npos);
+        CHECK(refuse < free);
     }
+
+    // ...and that wait must come from both registries, with its answer used.
+    const std::string wait = FunctionBody(src, "static bool WaitOutPluginRenders(");
+    CHECK(wait.find("= UI::PluginPanelRegistry::ForgetModule(module)") != std::string::npos);
+    CHECK(wait.find("= UI::PluginWidgetRegistry::ForgetModule(module)") != std::string::npos);
+    CHECK(wait.find("return false;") != std::string::npos);
 }
 
 // ---------------------------------------------------------------------------
@@ -343,11 +355,19 @@ static ULONGLONG UnloadDuringRender(void (*unload)(), DWORD holdMs, void (*call)
 
 // The unload does not return, and so the module is not freed, while the
 // panel's renderFn is still running in it.
+static bool g_forgetResult = false;
+
+static void ForgetThisModule()
+{
+    g_forgetResult = Registry::ForgetModule(GetModuleHandleW(nullptr));
+}
+
 static void Test_UnloadWaitsForRender()
 {
     OpenSlowPanel();
-    const ULONGLONG took = UnloadDuringRender([] { Registry::ForgetModule(GetModuleHandleW(nullptr)); }, 300);
+    const ULONGLONG took = UnloadDuringRender(ForgetThisModule, 300);
     CHECK(took >= 250);
+    CHECK(g_forgetResult);   // safe to free the module
     CHECK(TestDoubles::loggedErrors == 0);
     CHECK(PanelCount() == 0);
 }
@@ -404,15 +424,19 @@ static void Test_UnloadWaitsForClosedCallback()
 }
 
 // A renderFn that never returns cannot hang the unload: it gives up after the
-// timeout and logs.
+// timeout, logs, and reports that the module is still in use, so the plugin
+// manager keeps it mapped. The panel is gone all the same.
 static void Test_WaitIsBounded()
 {
     OpenSlowPanel();
+    g_forgetResult = true;
     const DWORD timeout = UI::PluginCallTracker::kWaitTimeoutMs;
-    const ULONGLONG took = UnloadDuringRender([] { Registry::ForgetModule(GetModuleHandleW(nullptr)); }, timeout + 700);
+    const ULONGLONG took = UnloadDuringRender(ForgetThisModule, timeout + 700);
     CHECK(took >= timeout - 50);
     CHECK(took < timeout + 500);
+    CHECK(!g_forgetResult);  // must not be freed
     CHECK(TestDoubles::loggedErrors == 1);
+    CHECK(PanelCount() == 0);
 }
 
 // A renderFn may unregister its own panel. That call is on the render thread

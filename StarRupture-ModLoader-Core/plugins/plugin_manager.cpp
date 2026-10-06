@@ -766,13 +766,24 @@ namespace PluginManager
 	// it out first means nothing gets added behind those purges. The panel and
 	// widget purges are repeated in their usual place for whatever the second
 	// wait let through.
-	static void WaitOutPluginRenders(HMODULE module)
+	//
+	// Returns false if the overlay is still in the plugin's code after the
+	// (bounded) wait. Its panels and widgets are gone by then, but the module
+	// must stay mapped: freeing it would crash the render thread on return.
+	static bool WaitOutPluginRenders(HMODULE module, const char* name, const wchar_t* action)
 	{
 #ifdef MODLOADER_CLIENT_BUILD
-		UI::PluginPanelRegistry::ForgetModule(module);
-		UI::PluginWidgetRegistry::ForgetModule(module);
+		const bool panelsIdle  = UI::PluginPanelRegistry::ForgetModule(module);
+		const bool widgetsIdle = UI::PluginWidgetRegistry::ForgetModule(module);
+		if (panelsIdle && widgetsIdle)
+			return true;
+		ModLoaderLogger::LogError(L"%s of %S skipped: the overlay is still drawing its panel. "
+		                          L"It is shut down but stays loaded; reload it to try again.",
+		                          action, name);
+		return false;
 #else
-		(void)module;
+		(void)module; (void)name; (void)action;
+		return true;
 #endif
 	}
 
@@ -791,7 +802,8 @@ namespace PluginManager
 					LogPluginCrash(plugin->cachedName.c_str(), plugin->hModule, L"PluginShutdown (unload all)");
 				plugin->isInitialized = false;
 			}
-			WaitOutPluginRenders(plugin->hModule);
+			if (!WaitOutPluginRenders(plugin->hModule, plugin->cachedName.c_str(), L"Unload"))
+				continue;   // left mapped, not freed under the overlay
 
 			// Before FreeLibrary: a console command or game-menu row it registered
 			// carries a handler address inside the module about to be unmapped.
@@ -915,7 +927,12 @@ namespace PluginManager
 		if (!CallShutdownSEH(p.shutdown))
 			LogPluginCrash(p.cachedName.c_str(), p.hModule, L"PluginShutdown (unload)");
 		p.isInitialized = false;
-		WaitOutPluginRenders(p.hModule);
+		if (!WaitOutPluginRenders(p.hModule, p.cachedName.c_str(), L"Unload"))
+		{
+			++g_pluginGeneration;   // it is shut down now
+			LeaveCriticalSection(&g_pluginLock);
+			return false;
+		}
 
 		// Before FreeLibrary, not after: the schema the config manager cached lives
 		// inside this module, so the moment it is unmapped that pointer is a read
@@ -969,7 +986,12 @@ namespace PluginManager
 		}
 		if (p.hModule)
 		{
-			WaitOutPluginRenders(p.hModule);
+			if (!WaitOutPluginRenders(p.hModule, p.cachedName.c_str(), L"Reload"))
+			{
+				++g_pluginGeneration;   // it is shut down now
+				LeaveCriticalSection(&g_pluginLock);
+				return false;
+			}
 
 			// Same reason as UnloadPlugin: the cached schema, any registered
 			// console commands and any game-menu rows point into this module.

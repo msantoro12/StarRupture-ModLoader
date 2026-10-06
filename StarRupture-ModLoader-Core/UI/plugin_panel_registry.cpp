@@ -244,9 +244,9 @@ namespace UI::PluginPanelRegistry
             s_panelClosedCallbacks.end());
     }
 
-    void ForgetModule(HMODULE module)
+    bool ForgetModule(HMODULE module)
     {
-        if (!module) return;
+        if (!module) return true;
 
         std::unique_lock<std::mutex> lock(s_mutex);
         const auto forget = [&]
@@ -271,8 +271,8 @@ namespace UI::PluginPanelRegistry
         if (!finished)
             ModLoaderLogger::LogError(
                 L"[PluginPanels] A panel render or panel-closed callback in module %p was still "
-                L"running after %lu ms; unloading it anyway, the game may crash.",
-                static_cast<void*>(module), PluginCallTracker::kWaitTimeoutMs);
+                L"running after %lu ms.", static_cast<void*>(module), PluginCallTracker::kWaitTimeoutMs);
+        return finished;
     }
 
     // -----------------------------------------------------------------------

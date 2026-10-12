@@ -87,19 +87,70 @@ turned off in the **Settings** tab.
 
 ## The Mod Loader Window (client)
 
-Press **F2** in game to open it. Down the left is an icon for each screen:
+Press **F2** in game to open it, or pick **MOD LOADER** in the game's main menu or pause menu, between
+OPTIONS and CREDITS. **Esc** closes it. Down the left is an icon for each screen:
 
 | Screen | What it's for |
 |---|---|
 | **Plugins** | Load, unload and reload installed plugins without restarting |
-| **Config** | Edit each plugin's own settings and keybinds |
-| **Settings** | HUD overlays (FPS, world name, position), auto-updates, diagnostics |
+| **Config** | Edit each plugin's own settings and keybinds — see below |
+| **Settings** | HUD overlays (FPS, world name, position), DLSS frame generation, network timeout, auto-updates, developer console, diagnostics |
 | **Logging** | Log levels for the mod loader, the game, and each plugin — see below |
-| **Theme** | Font, text size and every UI colour |
+| **Theme** | Font, text size and every UI colour, saved as named themes |
 | **About** | Build tag and the plugins currently loaded |
 
 A developer console is on **`~`** (tilde). Both keys can be changed in
-`ModLoader\modloader.ini` — `[UI] OpenKey` and `[Console] OpenKey`.
+`ModLoader\modloader.ini` — `[UI] OpenKey` and `[Console] OpenKey`. The **MOD LOADER** menu row can be
+removed with `[UI] GameMenuEntry=0` in the same file.
+
+### Plugins tab
+
+**UNLOAD**, **LOAD** and **RELOAD** run on the game thread. Unloading a plugin also removes the panels,
+widgets and config callbacks it registered, even if it did not unregister them itself, so a RELOAD
+cannot leave the overlay calling into code that is gone.
+
+If the overlay is still drawing one of the plugin's panels a second after the request, the unload is
+skipped rather than risk a crash: the log says so, the plugin is shut down but stays loaded, and
+**RELOAD** tries again.
+
+### Config tab
+
+Pick a plugin in the list on the left (drag the divider to resize it) and its settings appear on the
+right, grouped by their `.ini` section. Each row has the setting's name, its description in grey, and a
+control:
+
+- **On/off settings** are toggles.
+- **Settings with a range** are sliders. The **-** and **+** buttons beside a slider step by 1% of the
+  range, repeating while held; hold **Ctrl** for 10%. **Ctrl+Click** a slider to type an exact value.
+- **Other numbers and text** are fields, applied on **Enter** or when you click away.
+- **Keybinds** show the current key with **Rebind** and **Block**. **Rebind** waits for the next key:
+  hold Ctrl, Shift or Alt for a combo, press a modifier on its own to bind just that, or **Esc** to
+  cancel. **Block** stops the game also reacting to the combo.
+- The **reset** arrow puts a setting back to its default. It is not shown on `Enabled`.
+
+The plugin hears about a change as you make it, through its config-changed callback; the `.ini` is
+written when you let go of a slider or confirm a field, not on every frame. If a plugin writes one of
+its own settings while the page is open, the new value shows up straight away. Reloading a plugin picks
+up settings its new build added without reselecting it.
+
+### Settings tab
+
+- **HUD Overlays** — FPS, current world name and player position in the bottom corner, and
+  *ModLoader Debug Values* (see [Troubleshooting](#troubleshooting)).
+- **Rendering** — *Pause Frame Generation While Windows Are Open*, on by default. DLSS Frame
+  Generation's interpolated frames never pass through the overlay, so with it running every other
+  frame has no overlay on it, which looks like flicker. This turns it off while the mod loader window,
+  the console or any plugin panel is open and restores it once they are all closed. Saved as
+  `PauseFrameGenWhileOpen` under `[Rendering]`.
+- **Networking** — the connection timeout, see [Net timeouts](#net-timeouts).
+- **Auto Update** — the mod loader and plugin update check at startup.
+- **Developer** and **Diagnostics** — open the developer console, and a live tick profiler.
+
+### Theme tab
+
+Switching theme applies at once. **Default** and **Star Rupture** are built in and read-only; **Save As**
+stores your colours as `ModLoader\Themes\<name>.ini`, and **Save**, **Delete** and **Reload** work on
+your own themes. Share the file to share the theme.
 
 ---
 
@@ -164,6 +215,14 @@ the rest of the session.
 
 Use the [StarRupture-Plugin-SDK](https://github.com/AlienXAXS/StarRupture-Plugin-SDK) — it has everything you need (headers, UE5 SDK, an example plugin, and a pre-built `dwmapi.dll`) without requiring a fork of this repo.
 
+### Unloading and RELOAD
+
+The mod loader removes a plugin's panels, widgets and config-changed callbacks when it unloads, so a
+plugin that fails part-way through `PluginShutdown` cannot leave the overlay pointing into freed
+memory. Still unregister them in `PluginShutdown`, and still check the thread before touching game
+objects there: shutdown runs on the game thread from the overlay's RELOAD button, and also at process
+exit.
+
 ### Preload plugins
 
 A **preload plugin** is a DLL in `ModLoader\Preload\` that runs *before the game executable's
@@ -197,6 +256,7 @@ the whole API and you can hot-reload it while the game runs.
 | Logs / diagnostics | Check `ModLoader\Logs\ModLoader.log`. Raise the detail in the **Logging** tab, or set `Level=DEBUG` under `[Logging]` in `ModLoader\modloader.ini`. |
 | One plugin is flooding the log | See [Log Levels](#log-levels) — turn that plugin down on its own, or use `-PluginLogLevel=` if it happens during startup. |
 | The *game's* log is flooding on a dedicated server | Hundreds of `LogTemp` / `LogSkinnedMeshComp` warnings a second come from the game itself, not the mod loader. Server builds turn those two categories down to errors automatically; edit `GameLogCategories` under `[Logging]` in `ModLoader\modloader.ini` to change the list, or blank it to leave the game log alone. `-LogCmds=` has no effect on this build. |
+| A plugin will not unload from the **Plugins** tab | The log says "the overlay is still drawing its panel". The plugin has been shut down but stays loaded; press **RELOAD** to try again. |
 | Game stops responding to input | Turn on *ModLoader Debug Values* in the **Settings** tab — it names the plugin holding input open. |
 | Players dropped during a long map load | The mod loader raises the engine's net timeouts to 300s by default — see [Net timeouts](#net-timeouts). Both ends of the session need the mod loader for this to help. |
 
@@ -245,6 +305,8 @@ option into that URL from outside the process in a shipping build.
 - **[Dumper-7](https://github.com/Encryqed/Dumper-7)** — Unreal Engine SDK generation
 - **[MinHook](https://github.com/TsudaKageyu/minhook)** — Function hooking library
 - **[nlohmann/json](https://github.com/nlohmann/json)** — JSON parsing
+
+Additional features by @msantoro12, built with Claude Code.
 
 ---
 

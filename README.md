@@ -3,6 +3,8 @@
 
 A plugin-based mod loader for [StarRupture](https://store.steampowered.com/app/1631270/StarRupture/). Loads automatically via DLL proxy injection — no game files are modified.
 
+<a href="https://github.com/msantoro12"><img src="https://github.com/msantoro12.png?size=40" width="18" height="18" alt="@msantoro12"></a> Reworked and extended by @msantoro12, built with Claude Code.
+
 Like this project? Give it a star here on GitHub!
 
 ---
@@ -106,12 +108,12 @@ removed with `[UI] GameMenuEntry=0` in the same file.
 ### Plugins tab
 
 **UNLOAD**, **LOAD** and **RELOAD** run on the game thread. Unloading a plugin also removes the panels,
-widgets and config callbacks it registered, even if it did not unregister them itself, so a RELOAD
-cannot leave the overlay calling into code that is gone.
+widgets, panel-closed callbacks and config-changed callbacks it registered, even if it did not
+unregister them itself, so a RELOAD cannot leave the overlay calling into code that is gone.
 
-If the overlay is still drawing one of the plugin's panels a second after the request, the unload is
-skipped rather than risk a crash: the log says so, the plugin is shut down but stays loaded, and
-**RELOAD** tries again.
+If the overlay is still drawing one of the plugin's panels or widgets after waiting about a second for
+each list, the unload is skipped rather than risk a crash: the log says so, the plugin is shut down
+but stays loaded, and **RELOAD** tries again.
 
 ### Config tab
 
@@ -120,16 +122,20 @@ right, grouped by their `.ini` section. Each row has the setting's name, its des
 control:
 
 - **On/off settings** are toggles.
-- **Settings with a range** are sliders. The **-** and **+** buttons beside a slider step by 1% of the
-  range, repeating while held; hold **Ctrl** for 10%. **Ctrl+Click** a slider to type an exact value.
-- **Other numbers and text** are fields, applied on **Enter** or when you click away.
+- **Settings with a range** are sliders. The **-** and **+** buttons beside a slider repeat while held.
+  A whole-number slider steps by 1, or by 10% of its range with **Ctrl** held; a decimal slider steps
+  by 1% of its range, or 10% with **Ctrl**. **Ctrl+Click** a slider to type an exact value.
+- **Other numbers** are fields that apply as you type. **Text** applies on **Enter** or when you click
+  away.
 - **Keybinds** show the current key with **Rebind** and **Block**. **Rebind** waits for the next key:
   hold Ctrl, Shift or Alt for a combo, press a modifier on its own to bind just that, or **Esc** to
   cancel. **Block** stops the game also reacting to the combo.
-- The **reset** arrow puts a setting back to its default. It is not shown on `Enabled`.
+- The **reset** arrow puts a setting back to its default. It is not shown on `Enabled`, or on a
+  setting that has no default.
 
-The plugin hears about a change as you make it, through its config-changed callback; the `.ini` is
-written when you let go of a slider or confirm a field, not on every frame. If a plugin writes one of
+The plugin hears about a change as you make it, through its config-changed callback. The `.ini` is
+written when you let go of a slider, or as soon as a toggle, a number or a confirmed text value
+changes, not on every frame. If a plugin writes one of
 its own settings while the page is open, the new value shows up straight away. Reloading a plugin picks
 up settings its new build added without reselecting it.
 
@@ -146,11 +152,12 @@ up settings its new build added without reselecting it.
 - **Auto Update** — the mod loader and plugin update check at startup.
 - **Developer** and **Diagnostics** — open the developer console, and a live tick profiler.
 
-### Theme tab
+### Theme tab <a href="https://github.com/msantoro12"><img src="https://github.com/msantoro12.png?size=40" width="18" height="18" alt="@msantoro12"></a>
 
-Switching theme applies at once. **Default** and **Star Rupture** are built in and read-only; **Save As**
-stores your colours as `ModLoader\Themes\<name>.ini`, and **Save**, **Delete** and **Reload** work on
-your own themes. Share the file to share the theme.
+Switching theme applies at once. **Default** and **Star Rupture** are built in and read-only. **Save
+As...** stores your colours as `ModLoader\Themes\<name>.ini`. **Save** and **Delete** are greyed out
+on built-in themes, and **Delete** asks you to confirm. **Reload** re-reads the selected theme from
+disk. Share the file to share the theme.
 
 ---
 
@@ -215,13 +222,13 @@ the rest of the session.
 
 Use the [StarRupture-Plugin-SDK](https://github.com/AlienXAXS/StarRupture-Plugin-SDK) — it has everything you need (headers, UE5 SDK, an example plugin, and a pre-built `dwmapi.dll`) without requiring a fork of this repo.
 
-### Unloading and RELOAD
+### Unloading and RELOAD <a href="https://github.com/msantoro12"><img src="https://github.com/msantoro12.png?size=40" width="18" height="18" alt="@msantoro12"></a>
 
-The mod loader removes a plugin's panels, widgets and config-changed callbacks when it unloads, so a
-plugin that fails part-way through `PluginShutdown` cannot leave the overlay pointing into freed
-memory. Still unregister them in `PluginShutdown`, and still check the thread before touching game
-objects there: shutdown runs on the game thread from the overlay's RELOAD button, and also at process
-exit.
+The mod loader removes a plugin's panels, widgets, panel-closed callbacks and config-changed
+callbacks when it unloads, so a plugin that fails part-way through `PluginShutdown` cannot leave
+the overlay pointing into freed memory. Still unregister them in `PluginShutdown`, and still check the
+thread before touching game objects there: shutdown runs on the game thread from the overlay's RELOAD
+button, and also at process exit.
 
 ### Preload plugins
 
@@ -306,7 +313,7 @@ option into that URL from outside the process in a shipping build.
 - **[MinHook](https://github.com/TsudaKageyu/minhook)** — Function hooking library
 - **[nlohmann/json](https://github.com/nlohmann/json)** — JSON parsing
 
-Additional features by @msantoro12, built with Claude Code.
+<a href="https://github.com/msantoro12"><img src="https://github.com/msantoro12.png?size=40" width="18" height="18" alt="@msantoro12"></a> marks features added by @msantoro12.
 
 ---
 

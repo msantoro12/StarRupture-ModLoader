@@ -42,6 +42,7 @@ StarRupture\Binaries\Win64\
 └── ModLoader\
     ├── StarRupture-ModLoader-Core.dll   ← the mod loader itself
     ├── StarRupture-ImGui.dll            ← client builds only
+    ├── StarRupture-ModLoader-Updater.exe  ← client builds only, offers mod loader updates
     ├── modloader.ini                    ← created on first launch
     ├── Logs\                            ← created on first launch
     ├── Plugins\                         ← put plugin DLLs here
@@ -87,83 +88,147 @@ turned off in the **Settings** tab.
 
 ## The Mod Loader Window (client)
 
-Press **F2** in game to open it, or pick **MOD LOADER** in the game's main menu or pause menu, between
-OPTIONS and CREDITS. **Esc** closes it. Down the left is an icon for each screen:
+- **F2** opens it. So does **MOD LOADER** in the game's main and pause menus, below OPTIONS.
+- **Esc** closes it. <a href="https://github.com/msantoro12"><img src="https://github.com/msantoro12.png?size=40" width="18" height="18" alt="@msantoro12"></a>
+- **`~`** (tilde) opens the [developer console](#developer-console).
+
+Down the left is an icon for each screen:
 
 | Screen | What it's for |
 |---|---|
 | **Plugins** | Load, unload and reload installed plugins without restarting |
-| **Config** | Edit each plugin's own settings and keybinds — see below |
-| **Settings** | HUD overlays (FPS, world name, position), DLSS frame generation, network timeout, auto-updates, developer console, diagnostics |
-| **Logging** | Log levels for the mod loader, the game, and each plugin — see below |
-| **Theme** | Font, text size and every UI colour, saved as named themes |
+| **Config** | Edit each plugin's own settings and keybinds |
+| **Settings** | HUD overlays, frame generation, network timeout, auto-updates, console, profiler |
+| **Logging** | Log levels for the mod loader, the game, and each plugin — see [Log Levels](#log-levels) |
+| **Theme** | Themes, font, text size and every UI colour |
 | **About** | Build tag and the plugins currently loaded |
 
-A developer console is on **`~`** (tilde). Both keys can be changed in
-`ModLoader\modloader.ini` — `[UI] OpenKey` and `[Console] OpenKey`. The **MOD LOADER** menu row can be
-removed with `[UI] GameMenuEntry=0` in the same file.
+Keys and the menu row are set in [`modloader.ini`](#modloaderini). A splash window shows startup
+progress. In the main menu a bottom-left banner shows the build tag, plugin count and open key,
+plus a red note when an update is available.
 
 ### Plugins tab
 
-**UNLOAD**, **LOAD** and **RELOAD** run on the game thread. Unloading a plugin also removes the panels,
-widgets, panel-closed callbacks and config-changed callbacks it registered, even if it did not
-unregister them itself, so a RELOAD cannot leave the overlay calling into code that is gone.
+One row per plugin: name, version, author, status, and **UNLOAD**, **LOAD** and **RELOAD** buttons.
+A plugin that cannot load shows a note instead of the buttons.
 
-If the overlay is still drawing one of the plugin's panels or widgets after waiting about a second for
-each list, the unload is skipped rather than risk a crash: the log says so, the plugin is shut down
-but stays loaded, and **RELOAD** tries again.
+| Status | Meaning |
+|---|---|
+| **Loaded** | Running |
+| **Unloaded** | Not running. Press **LOAD** |
+| **Cannot Load** | Built for the other target: a server plugin on a client, or the reverse |
+| **Needs Update** | Different plugin interface versions. The tab says which side to update |
+| **Hooks Failed** | A hook it needs was not found in this game build. **WHY?** lists the misses |
+
+- Unload removes the panels, widgets and callbacks the plugin registered, even ones it left
+  behind. <a href="https://github.com/msantoro12"><img src="https://github.com/msantoro12.png?size=40" width="18" height="18" alt="@msantoro12"></a>
+- If the overlay is still drawing its panel after about a second, the unload is skipped and the log
+  says so. The plugin is shut down and shows **Unloaded**, but its DLL stays mapped. **LOAD** or
+  **RELOAD** retries. <a href="https://github.com/msantoro12"><img src="https://github.com/msantoro12.png?size=40" width="18" height="18" alt="@msantoro12"></a>
 
 ### Config tab
 
-Pick a plugin in the list on the left (drag the divider to resize it) and its settings appear on the
-right, grouped by their `.ini` section. Each row has the setting's name, its description in grey, and a
-control:
+Pick a plugin on the left (drag the divider to resize). Its settings show on the right by `.ini`
+section: name, grey description, control. A **Plugin Tools** row has a button per plugin panel.
 
-- **On/off settings** are toggles.
-- **Settings with a range** are sliders. The **-** and **+** buttons beside a slider repeat while held.
-  A whole-number slider steps by 1, or by 10% of its range with **Ctrl** held; a decimal slider steps
-  by 1% of its range, or 10% with **Ctrl**. **Ctrl+Click** a slider to type an exact value.
-- **Other numbers** are fields that apply as you type. **Text** applies on **Enter** or when you click
-  away.
-- **Keybinds** show the current key with **Rebind** and **Block**. **Rebind** waits for the next key:
-  hold Ctrl, Shift or Alt for a combo, press a modifier on its own to bind just that, or **Esc** to
-  cancel. **Block** stops the game also reacting to the combo.
-- The **reset** arrow puts a setting back to its default. It is not shown on `Enabled`, or on a
-  setting that has no default.
+<img src="images/config-tab.png" width="480" alt="Config tab with BetterDrone selected">
 
-The plugin hears about a change as you make it, through its config-changed callback. The `.ini` is
-written when you let go of a slider, or as soon as a toggle, a number or a confirmed text value
-changes, not on every frame. If a plugin writes one of
-its own settings while the page is open, the new value shows up straight away. Reloading a plugin picks
-up settings its new build added without reselecting it.
+| Setting | Control |
+|---|---|
+| On/off | Toggle |
+| Number with a range | Slider. **Ctrl+Click** types an exact value |
+| Other number | Field, applies as you type |
+| Text | Field, applies on **Enter** or when you click away |
+| Keybind | Current key, **Rebind**, **Block** |
+
+- **-** and **+** beside a slider step it by 1 (decimal: 1% of range). **Ctrl** steps 10%. They
+  repeat while held. <a href="https://github.com/msantoro12"><img src="https://github.com/msantoro12.png?size=40" width="18" height="18" alt="@msantoro12"></a>
+- **Rebind** waits for the next key; hold Ctrl, Shift or Alt for a combo, **Esc** cancels. No
+  keybind fires meanwhile.
+- Press and release a modifier alone to bind just that modifier. <a href="https://github.com/msantoro12"><img src="https://github.com/msantoro12.png?size=40" width="18" height="18" alt="@msantoro12"></a>
+- **Block** stops the game also reacting to the combo.
+- **Reset** arrow restores the default. Hidden on a plugin's `[General] Enabled` and on settings
+  without a default.
+- A value a plugin writes to its own `.ini` shows at once. <a href="https://github.com/msantoro12"><img src="https://github.com/msantoro12.png?size=40" width="18" height="18" alt="@msantoro12"></a>
+- The plugin hears each change as you make it. The `.ini` is written when you let go of a slider
+  or confirm a value. Reload picks up settings the new build added.
 
 ### Settings tab
 
-- **HUD Overlays** — FPS, current world name and player position in the bottom corner, and
-  *ModLoader Debug Values* (see [Troubleshooting](#troubleshooting)).
-- **Rendering** — *Pause Frame Generation While Windows Are Open*, on by default. DLSS Frame
-  Generation's interpolated frames never pass through the overlay, so with it running every other
-  frame has no overlay on it, which looks like flicker. This turns it off while the mod loader window,
-  the console or any plugin panel is open and restores it once they are all closed. Saved as
-  `PauseFrameGenWhileOpen` under `[Rendering]`.
-- **Networking** — the connection timeout, see [Net timeouts](#net-timeouts).
-- **Auto Update** — the mod loader and plugin update check at startup.
-- **Developer** and **Diagnostics** — open the developer console, and a live tick profiler.
+| Section | Controls |
+|---|---|
+| **HUD Overlays** | **Show FPS**, **Show Current World Name**, **Show Player Position**: a draggable box at the top left. **ModLoader Debug Values** adds input details ([Troubleshooting](#troubleshooting)) |
+| **Rendering** | Frame generation, below |
+| **Networking** | **Connection Timeout**, 0 to 900 s ([Net timeouts](#net-timeouts)) |
+| **Auto Update** | **Enable Auto Updates** checks plugins and the mod loader at launch. A mod loader update asks Yes or No first; a No is remembered for that version. Next launch |
+| **Logging** | **Open Logging** |
+| **Developer** | **Open** the developer console |
+| **Diagnostics** | **Open Tick Profiler** |
 
-### Theme tab <a href="https://github.com/msantoro12"><img src="https://github.com/msantoro12.png?size=40" width="18" height="18" alt="@msantoro12"></a>
+- **Pause Frame Generation While Windows Are Open**, on by default. DLSS frame generation's
+  interpolated frames skip the overlay and flicker. This turns it off while the mod loader window,
+  the console or a plugin panel is open. <a href="https://github.com/msantoro12"><img src="https://github.com/msantoro12.png?size=40" width="18" height="18" alt="@msantoro12"></a>
 
-Switching theme applies at once. **Default** and **Star Rupture** are built in and read-only. **Save
-As...** stores your colours as `ModLoader\Themes\<name>.ini`. **Save** and **Delete** are greyed out
-on built-in themes, and **Delete** asks you to confirm. **Reload** re-reads the selected theme from
-disk. Share the file to share the theme.
+### Theme tab
+
+- **Active Theme** switches at once and is remembered. **Save**, **Save As...**, **Delete** and
+  **Reload** manage `ModLoader\Themes\<name>.ini`; share the file to share the theme. **Default**
+  and **Star Rupture** are built in and read-only. <a href="https://github.com/msantoro12"><img src="https://github.com/msantoro12.png?size=40" width="18" height="18" alt="@msantoro12"></a>
+- **Text Size** 75% to 500%. **Font Family** lists the fonts found on your PC (Arial, Microsoft
+  YaHei, Meiryo, Malgun Gothic, Arial + CJK) and the built-in one.
+- **Accent**, **Highlight**, **Panel Border** and **All UI Colors** open a colour wheel. Edits apply
+  at once; **Save** keeps them.
+
+### Developer console
+
+**`~`** opens it over the top of the screen; it takes game input while open. Up and Down walk your
+history. A line the mod loader does not know goes to the game's own console; prefix `!` to send it
+there only. See [Console commands](#console-commands).
+
+### Pop-up windows
+
+| Window | Appears |
+|---|---|
+| **Plugins Updated** | At the main menu after an automatic plugin update. Old and new versions |
+| **Plugin Hooks Failed** | When a plugin did not load because a hook is missing, and again when a later load or reload adds one. **Copy Details** for a bug report. **WHY?** reopens it; `hookfailures` prints the same list |
+| **Tick Profiler** | From Settings. Live tick times; each stutter split by segment, with a call tree and **Send To Log**. **Log Tick Stutters** and **Stack Sample Stutters** reset on restart |
 
 ---
 
 ## The Server Console (dedicated server)
 
-A dedicated server has no UI, so launch it with `-console` for a console window with the same
-commands. `help` lists them; `plugins`, `reload`, `load`, `unload` and `rescan` manage plugins
-without restarting the server, and `stop` shuts it down cleanly.
+A dedicated server has no UI. Launch it with `-console` for a console window with the same
+[commands](#console-commands). Tab completes, Up and Down walk your history, **Ctrl+C** or
+**Ctrl+U** clears the line. `stop` shuts the server down. `close` closes the window and leaves the
+server running; the X ends the server. `exit` and `quit` only print a reminder of those two.
+
+---
+
+## Console commands
+
+On the server console and the client's [developer console](#developer-console). `<target>` is a
+plugin name, its index from `plugins`, or `all`. Plugins can add their own commands, which show up
+in `help` ([Console.md](Console.md)).
+
+| Command | Also | Does |
+|---|---|---|
+| `help [command]` | `?`, `commands` | List commands, or explain one |
+| `plugins` | `list`, `mods` | List every plugin, its version and state |
+| `reload <target>` | | Shut a plugin down, free its DLL and load it again |
+| `unload <target>` | | Shut a plugin down and free its DLL |
+| `load <target>` | | Load a plugin that is unloaded |
+| `rescan` | `scan` | Load plugin DLLs added to `Plugins\` since startup |
+| `hookfailures` | `hooks` | List plugins whose hook patterns did not resolve |
+| `hooklist` | | List every detoured address and the plugins sharing it |
+| `preload` | `preloads` | Show what happened to the DLLs in `Preload\` at startup |
+| `version` | `ver` | Show the mod loader build and plugin interface versions |
+| `pak <action>` | `paks` | Mount and unmount paks, and load, spawn or preview assets from them. Actions: `list` (or `ls`), `mount <path> [order]`, `unmount <n or path>`, `load <path>`, `loadclass <path>`, `spawn <class> [x y z]`, `spawnmesh <mesh> [x y z]`, and on a client `widget <class> [zorder]` or `widget close` |
+| `loglevel [level]` | `log` | Show or change the log level. Runtime only |
+| `loglevel <plugin or *> <level or default>` | | The same for one plugin, or all |
+| `clear` | `cls` | Wipe the scrollback |
+| `clients [n]` | `who` | List connected clients and the plugins they reported |
+| `nettest [bytes]` | | Round-trip a payload through the server to test fragmentation |
+| `stop [force]` | `shutdown` | Shut the server down cleanly, or at once with `force`. Server builds only |
 
 ---
 
@@ -174,9 +239,10 @@ Open the mod loader window and go to the **Logging** tab to change how much deta
 
 - **Log Level** — the mod loader's own output. Saved, so it applies on every launch.
 - **Game Log Verbosity** — the game's own log categories, written to `StarRupture.log`. Also saved.
-- **Per plugin** — a grid with one row per plugin. Turn a single plugin up to read its output
-  without the rest of the log burying it, or down to silence a noisy one without quieting
-  everything else. `Default` means "follow the Log Level above".
+- **Per plugin** — a grid with one row per plugin, and an **All plugins** row that sets them together.
+  Turn a single plugin up to read its output without the rest of the log burying it, or down to
+  silence a noisy one without quieting everything else. `Default` means "follow the Log Level above".
+  Unloaded plugins show as `(unloaded)`.
 
 Per-plugin levels are **not saved** — every plugin is back on `Default` next launch.
 
@@ -220,13 +286,24 @@ the rest of the session.
 
 Use the [StarRupture-Plugin-SDK](https://github.com/AlienXAXS/StarRupture-Plugin-SDK) — it has everything you need (headers, UE5 SDK, an example plugin, and a pre-built `dwmapi.dll`) without requiring a fork of this repo.
 
-### Unloading and RELOAD <a href="https://github.com/msantoro12"><img src="https://github.com/msantoro12.png?size=40" width="18" height="18" alt="@msantoro12"></a>
+A plugin declares its settings as a config schema (string, integer, float, boolean or keybind, with
+an optional range); the [Config tab](#config-tab) draws it.
 
-The mod loader removes a plugin's panels, widgets, panel-closed callbacks and config-changed
-callbacks when it unloads, so a plugin that fails part-way through `PluginShutdown` cannot leave
-the overlay pointing into freed memory. Still unregister them in `PluginShutdown`, and still check the
-thread before touching game objects there: shutdown runs on the game thread from the overlay's RELOAD
-button, and also at process exit.
+| Guide | Covers |
+|---|---|
+| [Console.md](Console.md) | Console commands, running command lines from code (v63; `ExecuteWithEngine` v69). All builds |
+| [GameMenu.md](GameMenu.md) | Rows in the main and pause menus (v64). Client |
+| [HttpServer.md](HttpServer.md) | HTTP from the game server's listener (v22). Server |
+| [ImGui_Dev.md](ImGui_Dev.md) | Panels, always-on widgets, config-change notifications, keybinds, mouse wheel (v70) and the full ImGui function table. Client |
+| [MaterialIcons.md](MaterialIcons.md) | The 2188 bundled icons |
+| [Networking.md](Networking.md) | Messages between server and clients, `hooks->Network`. Client and server |
+| [PakLoading.md](PakLoading.md) | Mounting `.pak` files, spawning their assets (v67). All builds |
+| [Preload.md](Preload.md) | Preload plugins, below |
+| [Tests/README.md](Tests/README.md) | Manual test projects. CI does not build them |
+
+Still unregister panels, widgets and callbacks in `PluginShutdown`, though the loader
+[removes them on unload](#plugins-tab). Check the thread before touching game objects there: it runs
+on the game thread from **RELOAD** and also at process exit.
 
 ### Preload plugins
 
@@ -252,18 +329,17 @@ the whole API and you can hot-reload it while the game runs.
 
 | Problem | Solution |
 |---|---|
-| Nothing loads at all | `dwmapi.dll` must sit next to the game `.exe` with the `ModLoader\` folder beside it — not in a subfolder of its own. On Linux, set `WINEDLLOVERRIDES=dwmapi=n,b`. |
-| Plugins not loading | Make sure the DLLs are in `ModLoader\Plugins\` and `Enabled=1` is set in each plugin's `.ini`. The **Plugins** tab shows why a plugin was rejected. |
+| Nothing loads at all | `dwmapi.dll` must sit next to the game `.exe` with the `ModLoader\` folder beside it — not in a subfolder of its own. On Linux, set `WINEDLLOVERRIDES=dwmapi=n,b`. No `Logs\Proxy.log` at all means the game never loaded `dwmapi.dll`. |
+| Plugins not loading | Make sure the DLLs are in `ModLoader\Plugins\` and `Enabled=1` is set in each plugin's `.ini`. The **Plugins** tab shows why a plugin was rejected: see its [statuses](#plugins-tab). |
 | Preload plugin not running | Run `preload` in the console, or check the `[Preload]` lines in the log. A preload plugin that fails is skipped and the game starts without it. |
-| Game will not start after adding a preload plugin | Launch with `-NoPreload`, or set `Enabled=0` under `[Preload]` in `modloader.ini`. The loader also skips any preload plugin that did not finish loading last launch, and says which it was. |
-| "Cannot Load" next to a plugin | It was built for the other target — a server plugin on a client, or the reverse. |
-| "Needs Update" next to a plugin | The plugin and the mod loader were built against different plugin interface versions. The tab says which of the two to update. |
+| Game will not start after adding a preload plugin | Launch with `-NoPreload`, or set `Enabled=0` under `[Preload]` in `modloader.ini`. The loader also skips any preload plugin that did not finish loading last launch, and says which it was. Delete `Preload\.state` to let it try again. |
+| A dialog offers "Start Game Without ModLoader" | The game build changed or a scan pattern no longer matches. The mod loader stays off until it is updated. **Copy Details** has the report. `-SkipPatternValidation` overrides an ambiguous or wrong-kind pattern, not a missing one. |
 | Logs / diagnostics | Check `ModLoader\Logs\ModLoader.log`. Raise the detail in the **Logging** tab, or set `Level=DEBUG` under `[Logging]` in `ModLoader\modloader.ini`. |
 | One plugin is flooding the log | See [Log Levels](#log-levels) — turn that plugin down on its own, or use `-PluginLogLevel=` if it happens during startup. |
 | The *game's* log is flooding on a dedicated server | Hundreds of `LogTemp` / `LogSkinnedMeshComp` warnings a second come from the game itself, not the mod loader. Server builds turn those two categories down to errors automatically; edit `GameLogCategories` under `[Logging]` in `ModLoader\modloader.ini` to change the list, or blank it to leave the game log alone. `-LogCmds=` has no effect on this build. |
-| A plugin will not unload from the **Plugins** tab | The log says "the overlay is still drawing its panel". The plugin has been shut down but stays loaded; press **RELOAD** to try again. |
 | Game stops responding to input | Turn on *ModLoader Debug Values* in the **Settings** tab — it names the plugin holding input open. |
-| Players dropped during a long map load | The mod loader raises the engine's net timeouts to 300s by default — see [Net timeouts](#net-timeouts). Both ends of the session need the mod loader for this to help. |
+| The game crashes | The mod loader's own dialog has **Copy Details** and buttons for `ModLoader.log` and `StarRupture.log`. Include them in a bug report. |
+| Players dropped during a long map load | See [Net timeouts](#net-timeouts). Both ends need the mod loader. |
 
 ---
 
@@ -276,16 +352,8 @@ longer than that disconnects everyone still joining.
 
 The mod loader raises both net timeouts to **300 seconds** by default. The connection
 timeout has a slider in the **Settings** tab under *Networking*, which also shows what
-the live net driver is actually using. Both are in `ModLoader\modloader.ini`:
-
-```ini
-[Network]
-ConnectionTimeout=300.0
-InitialConnectTimeout=300.0
-```
-
-Set a value to `0` to leave the engine's own default alone. Accepted range is 1–3600
-seconds; anything outside it is ignored with a warning in the log.
+the live net driver is actually using. Both keys are under `[Network]` in
+[`modloader.ini`](#modloaderini).
 
 Two things to know:
 
@@ -298,6 +366,63 @@ Two things to know:
 This cannot be set from Steam launch options. The engine does read
 `?ConnectionTimeout=` out of the URL it connects with, but there is no way to get an
 option into that URL from outside the process in a shipping build.
+
+---
+
+## Command-line switches
+
+| Switch | Effect |
+|---|---|
+| `-console`, `-mlconsole`, `-modloaderconsole` | Open the [console window](#the-server-console-dedicated-server). Works on a client too, without `stop` |
+| `-PluginLogLevel=<plugin>:<level>` | Set plugin log levels before they load. See [Log Levels](#log-levels) |
+| `-NoPreload` | Skip the preload phase |
+| `-SkipPatternValidation` | Start even if a scan pattern is ambiguous or the wrong kind. It is not an ini key on purpose |
+
+---
+
+## modloader.ini
+
+`ModLoader\modloader.ini`, created on first launch. **Default** is what a fresh file holds; where a
+deleted key behaves differently, Notes says so. The Settings, Logging and Theme tabs write most of
+these for you.
+
+| Section | Key | Default | Notes |
+|---|---|---|---|
+| `[Logging]` | `Level` | `INFO` | `TRACE`, `DEBUG`, `INFO`, `WARN` or `ERROR`. `DEBUG` if you delete the key |
+| | `EnableFile` | `1` | |
+| | `FileName` | `ModLoader.log` | Written to `Logs\` |
+| | `GameVerbosity` | `Default` | Set by the Logging tab |
+| | `GameLogCategories` | `LogTemp Error,LogSkinnedMeshComp Error` | Servers only. `<category> <verbosity>` pairs, comma separated. Empty leaves the game log alone |
+| `[UI]` | `Enabled` | `1` | `0` turns the overlay off |
+| | `OpenKey` | `F2` | |
+| | `GameMenuEntry` | `1` | `0` removes the **MOD LOADER** menu row |
+| | `FontScale` | `1.00` | 0.75 to 5.00. Set by **Text Size** |
+| | `FontFamily` | `Arial` | `Default` if Arial is not installed. Set by **Font Family** |
+| | `Theme` | empty | Empty is `Default`, unless the file has an old `[ThemeColors]` block: that is saved as the `Custom` theme. Set by **Active Theme** |
+| `[Input]` | `SuppressKeybindsWhileTyping` | `1` | Keybinds ignore keys typed into a game text box |
+| `[Console]` | `OpenKey` | `Tilde` | |
+| `[HUD]` | `ShowFPS`, `ShowWorldName`, `ShowPlayerPosition`, `ShowDebugValues` | `0` | The Settings toggles |
+| `[Rendering]` | `PauseFrameGenWhileOpen` | `1` | |
+| `[Network]` | `ConnectionTimeout`, `InitialConnectTimeout` | `300.0` | Seconds, 1 to 3600; anything else logs a warning and uses 300. `0` keeps the engine default. See [Net timeouts](#net-timeouts) |
+| `[AutoUpdate]` | `Enabled` | `1` | |
+| | `ManifestUrl` | empty | Empty uses the built-in manifest |
+| `[Preload]` | `Enabled` | `1` | |
+| | `Disabled` | empty | Comma-separated DLL names to skip |
+| `[UE4SS]` | `Enabled` | `0` | Load UE4SS before plugins. `1` if you delete the key |
+| | `Path` | `ue4ss\ue4ss.dll` | Relative to the game executable |
+| `[Debug]` | `ExportKnownGObjects` | `0` | Writes `known_gobjects_dump.txt` |
+
+Other files, all under `ModLoader\`:
+
+| File | What |
+|---|---|
+| `Plugins\config\<plugin>.ini` | One per plugin |
+| `Themes\<name>.ini` | Saved themes |
+| `modloader_imgui.ini` | Window and HUD positions |
+| `Logs\Proxy.log`, `Logs\AutoUpdate.log` | The `dwmapi.dll` proxy and the startup updater. Ten runs kept, as for `ModLoader.log` |
+| `update_state.ini` | Versions the auto-updater has installed. Not for editing |
+| `scan_cache.ini` | Pattern scan results for the current game version |
+| `Preload\.state` | Marks a preload plugin that did not finish loading |
 
 ---
 
@@ -330,7 +455,7 @@ This is a modding tool for educational purposes. Use at your own risk. The autho
 
 ---
 
-## Credits
+## Rework credits
 
 <a href="https://github.com/msantoro12"><img src="https://github.com/msantoro12.png?size=40" width="18" height="18" alt="@msantoro12"></a> Reworked and extended by [@msantoro12](https://github.com/msantoro12), creator of [StarRupture Planner](https://starrupture.goodstuff.software). Built with Claude Code.
 

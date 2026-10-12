@@ -3,8 +3,6 @@
 
 A plugin-based mod loader for [StarRupture](https://store.steampowered.com/app/1631270/StarRupture/). Loads automatically via DLL proxy injection — no game files are modified.
 
-<a href="https://github.com/msantoro12"><img src="https://github.com/msantoro12.png?size=40" width="18" height="18" alt="@msantoro12"></a> Reworked and extended by @msantoro12, built with Claude Code.
-
 Like this project? Give it a star here on GitHub!
 
 ---
@@ -313,8 +311,6 @@ option into that URL from outside the process in a shipping build.
 - **[MinHook](https://github.com/TsudaKageyu/minhook)** — Function hooking library
 - **[nlohmann/json](https://github.com/nlohmann/json)** — JSON parsing
 
-<a href="https://github.com/msantoro12"><img src="https://github.com/msantoro12.png?size=40" width="18" height="18" alt="@msantoro12"></a> marks features added by @msantoro12.
-
 ---
 
 ## Tools Used
@@ -331,3 +327,11 @@ This is a modding tool for educational purposes. Use at your own risk. The autho
 ---
 
 **Game:** Star Rupture · **Engine:** Unreal Engine 5
+
+---
+
+## Credits
+
+<a href="https://github.com/msantoro12"><img src="https://github.com/msantoro12.png?size=40" width="18" height="18" alt="@msantoro12"></a> Reworked and extended by [@msantoro12](https://github.com/msantoro12), creator of [StarRupture Planner](https://starrupture.goodstuff.software). Built with Claude Code.
+
+<a href="https://github.com/msantoro12"><img src="https://github.com/msantoro12.png?size=40" width="18" height="18" alt="@msantoro12"></a> marks features he added.

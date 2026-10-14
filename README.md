@@ -447,12 +447,10 @@ This is a modding tool for educational purposes. Use at your own risk. The autho
 
 Original mod by [@AlienXAXS](https://github.com/AlienXAXS) ([AGNGaming](https://www.agngaming.com)).
 
-Contributors: [@Mralexandresys](https://github.com/Mralexandresys), [@Wilhelm-af](https://github.com/Wilhelm-af).
+Contributors: [@Mralexandresys](https://github.com/Mralexandresys), [@Wilhelm-af](https://github.com/Wilhelm-af), [@msantoro12](https://github.com/msantoro12) (creator of [StarRupture Planner](https://starrupture.goodstuff.software)).
 
 - **[Dumper-7](https://github.com/Encryqed/Dumper-7)** — Unreal Engine SDK generation
 - **[MinHook](https://github.com/TsudaKageyu/minhook)** — Function hooking library
 - **[nlohmann/json](https://github.com/nlohmann/json)** — JSON parsing
 
-<a href="https://github.com/msantoro12"><img src="https://github.com/msantoro12.png?size=40" width="18" height="18" alt="@msantoro12"></a> Reworked and extended by [@msantoro12](https://github.com/msantoro12), creator of [StarRupture Planner](https://starrupture.goodstuff.software). Built with Claude Code.
-
-<a href="https://github.com/msantoro12"><img src="https://github.com/msantoro12.png?size=40" width="18" height="18" alt="@msantoro12"></a> marks features he added.
+<a href="https://github.com/msantoro12"><img src="https://github.com/msantoro12.png?size=40" width="18" height="18" alt="@msantoro12"></a> marks features added by @msantoro12, built with Claude Code.

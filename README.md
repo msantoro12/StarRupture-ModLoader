@@ -89,7 +89,7 @@ turned off in the **Settings** tab.
 ## The Mod Loader Window (client)
 
 - **F2** (rebindable: `OpenKey` under `[UI]` in `modloader.ini`) opens it. So does **MOD LOADER** in the game's main and pause menus, below OPTIONS.
-- **Esc** closes it.<sup>†</sup>
+- **Esc** closes it.<sup>[†](#msantoro12)</sup>
 - **`~`** (tilde; rebindable: `OpenKey` under `[Console]` in `modloader.ini`) opens the [developer console](#developer-console).
 
 Down the left is an icon for each screen:
@@ -121,10 +121,10 @@ A plugin that cannot load shows a note instead of the buttons.
 | **Hooks Failed** | A hook it needs was not found in this game build. **WHY?** lists the misses |
 
 - Unload removes the panels, widgets and callbacks the plugin registered, even ones it left
-  behind.<sup>†</sup>
+  behind.<sup>[†](#msantoro12)</sup>
 - If the overlay is still drawing its panel after about a second, the unload is skipped and the log
   says so. The plugin is shut down and shows **Unloaded**, but its DLL stays mapped. **LOAD** or
-  **RELOAD** retries.<sup>†</sup>
+  **RELOAD** retries.<sup>[†](#msantoro12)</sup>
 
 ### Config tab
 
@@ -142,14 +142,14 @@ section: name, grey description, control. A **Plugin Tools** row has a button pe
 | Keybind | Current key, **Rebind**, **Block** |
 
 - **-** and **+** beside a slider step it by 1 (decimal: 1% of range). **Ctrl** steps 10%. They
-  repeat while held.<sup>†</sup>
+  repeat while held.<sup>[†](#msantoro12)</sup>
 - **Rebind** waits for the next key; hold Ctrl, Shift or Alt for a combo, **Esc** cancels. No
   keybind fires meanwhile.
-- Press and release a modifier alone to bind just that modifier.<sup>†</sup>
+- Press and release a modifier alone to bind just that modifier.<sup>[†](#msantoro12)</sup>
 - **Block** stops the game also reacting to the combo.
 - **Reset** arrow restores the default. Hidden on a plugin's `[General] Enabled` and on settings
   without a default.
-- A value a plugin writes to its own `.ini` shows at once.<sup>†</sup>
+- A value a plugin writes to its own `.ini` shows at once.<sup>[†](#msantoro12)</sup>
 - The plugin hears each change as you make it. The `.ini` is written when you let go of a slider
   or confirm a value. Reload picks up settings the new build added.
 
@@ -167,13 +167,13 @@ section: name, grey description, control. A **Plugin Tools** row has a button pe
 
 - **Pause Frame Generation While Windows Are Open**, on by default. DLSS frame generation's
   interpolated frames skip the overlay and flicker. This turns it off while the mod loader window,
-  the console or a plugin panel is open.<sup>†</sup>
+  the console or a plugin panel is open.<sup>[†](#msantoro12)</sup>
 
 ### Theme tab
 
 - **Active Theme** switches at once and is remembered. **Save**, **Save As...**, **Delete** and
   **Reload** manage `ModLoader\Themes\<name>.ini`; share the file to share the theme. **Default**
-  and **Star Rupture** are built in and read-only.<sup>†</sup>
+  and **Star Rupture** are built in and read-only.<sup>[†](#msantoro12)</sup>
 - **Text Size** 75% to 500%. **Font Family** lists the fonts found on your PC (Arial, Microsoft
   YaHei, Meiryo, Malgun Gothic, Arial + CJK) and the built-in one.
 - **Accent**, **Highlight**, **Panel Border** and **All UI Colors** open a colour wheel. Edits apply
@@ -447,10 +447,14 @@ This is a modding tool for educational purposes. Use at your own risk. The autho
 
 Original mod by [@AlienXAXS](https://github.com/AlienXAXS) ([AGNGaming](https://www.agngaming.com)).
 
-Contributors: [@Mralexandresys](https://github.com/Mralexandresys), [@Wilhelm-af](https://github.com/Wilhelm-af), [@msantoro12](https://github.com/msantoro12) (creator of [StarRupture Planner](https://starrupture.goodstuff.software)).
+Contributors:
+
+- [@Mralexandresys](https://github.com/Mralexandresys)
+- [@Wilhelm-af](https://github.com/Wilhelm-af)
+- <a id="msantoro12"></a>[@msantoro12](https://github.com/msantoro12), creator of [StarRupture Planner](https://starrupture.goodstuff.software). Features marked † are his, built with Claude Code.
+
+Third-party:
 
 - **[Dumper-7](https://github.com/Encryqed/Dumper-7)** — Unreal Engine SDK generation
 - **[MinHook](https://github.com/TsudaKageyu/minhook)** — Function hooking library
 - **[nlohmann/json](https://github.com/nlohmann/json)** — JSON parsing
-
-<sup>†</sup> Added by [@msantoro12](https://github.com/msantoro12), built with Claude Code.

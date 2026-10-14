@@ -451,7 +451,7 @@ Contributors:
 
 - [@Mralexandresys](https://github.com/Mralexandresys)
 - [@Wilhelm-af](https://github.com/Wilhelm-af)
-- <a id="msantoro12"></a>[@msantoro12](https://github.com/msantoro12), creator of [StarRupture Planner](https://starrupture.goodstuff.software). Features marked † are his, built with Claude Code.
+- <a id="msantoro12"></a><sup>†</sup> [@msantoro12](https://github.com/msantoro12), creator of [StarRupture Planner](https://starrupture.goodstuff.software)
 
 Third-party:
 

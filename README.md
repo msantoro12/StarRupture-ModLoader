@@ -88,9 +88,9 @@ turned off in the **Settings** tab.
 
 ## The Mod Loader Window (client)
 
-- **F2** opens it. So does **MOD LOADER** in the game's main and pause menus, below OPTIONS.
+- **F2** (rebindable: `OpenKey` under `[UI]` in `modloader.ini`) opens it. So does **MOD LOADER** in the game's main and pause menus, below OPTIONS.
 - **Esc** closes it. <a href="https://github.com/msantoro12"><img src="https://github.com/msantoro12.png?size=40" width="18" height="18" alt="@msantoro12"></a>
-- **`~`** (tilde) opens the [developer console](#developer-console).
+- **`~`** (tilde; rebindable: `OpenKey` under `[Console]` in `modloader.ini`) opens the [developer console](#developer-console).
 
 Down the left is an icon for each screen:
 
@@ -103,7 +103,7 @@ Down the left is an icon for each screen:
 | **Theme** | Themes, font, text size and every UI colour |
 | **About** | Build tag and the plugins currently loaded |
 
-Keys and the menu row are set in [`modloader.ini`](#modloaderini). A splash window shows startup
+The menu row is set in [`modloader.ini`](#modloaderini). A splash window shows startup
 progress. In the main menu a bottom-left banner shows the build tag, plugin count and open key,
 plus a red note when an update is available.
 
@@ -426,18 +426,6 @@ Other files, all under `ModLoader\`:
 
 ---
 
-## Author
-
-**AlienX** — [GitHub](https://github.com/AlienXAXS) · [AGNGaming](https://www.agngaming.com)
-
-## Credits
-
-- **[Dumper-7](https://github.com/Encryqed/Dumper-7)** — Unreal Engine SDK generation
-- **[MinHook](https://github.com/TsudaKageyu/minhook)** — Function hooking library
-- **[nlohmann/json](https://github.com/nlohmann/json)** — JSON parsing
-
----
-
 ## Tools Used
 
 - **[IDA Pro](https://hex-rays.com/)** by Hex-Rays — reverse engineering the game binary to find hook targets and AOB patterns
@@ -455,7 +443,15 @@ This is a modding tool for educational purposes. Use at your own risk. The autho
 
 ---
 
-## Rework credits
+## Credits
+
+Original mod by [@AlienXAXS](https://github.com/AlienXAXS).
+
+Contributors: [@Mralexandresys](https://github.com/Mralexandresys), [@Wilhelm-af](https://github.com/Wilhelm-af).
+
+- **[Dumper-7](https://github.com/Encryqed/Dumper-7)** — Unreal Engine SDK generation
+- **[MinHook](https://github.com/TsudaKageyu/minhook)** — Function hooking library
+- **[nlohmann/json](https://github.com/nlohmann/json)** — JSON parsing
 
 <a href="https://github.com/msantoro12"><img src="https://github.com/msantoro12.png?size=40" width="18" height="18" alt="@msantoro12"></a> Reworked and extended by [@msantoro12](https://github.com/msantoro12), creator of [StarRupture Planner](https://starrupture.goodstuff.software). Built with Claude Code.
 

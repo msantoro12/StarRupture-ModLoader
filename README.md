@@ -445,7 +445,7 @@ This is a modding tool for educational purposes. Use at your own risk. The autho
 
 ## Credits
 
-Original mod by [@AlienXAXS](https://github.com/AlienXAXS).
+Original mod by [@AlienXAXS](https://github.com/AlienXAXS) ([AGNGaming](https://www.agngaming.com)).
 
 Contributors: [@Mralexandresys](https://github.com/Mralexandresys), [@Wilhelm-af](https://github.com/Wilhelm-af).
 

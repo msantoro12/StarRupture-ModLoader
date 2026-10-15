@@ -92,34 +92,18 @@ turned off in the **Settings** tab.
 - **Esc** closes it. <sup>[✦](#msantoro12)</sup>
 - **`~`** (tilde; rebindable: `OpenKey` under `[Console]` in `modloader.ini`) opens the [developer console](#developer-console).
 
-Down the left is an icon for each screen:
-
-| Screen | What it's for |
-|---|---|
-| **Plugins** | Load, unload and reload installed plugins without restarting |
-| **Config** | Edit each plugin's own settings and keybinds |
-| **Settings** | HUD overlays, frame generation, network timeout, auto-updates, console, profiler |
-| **Logging** | Log levels for the mod loader, the game, and each plugin — see [Log Levels](#log-levels) |
-| **Theme** | Themes, font, text size and every UI colour |
-| **About** | Build tag and the plugins currently loaded |
-
-The menu row is set in [`modloader.ini`](#modloaderini). A splash window shows startup
-progress. In the main menu a bottom-left banner shows the build tag, plugin count and open key,
-plus a red note when an update is available.
+The tabs down the left are **Plugins**, **Config**, **Settings**, **Logging**, **Theme** and **About**
+(the build tag and the plugins currently loaded). The menu row is set in
+[`modloader.ini`](#modloaderini). A splash window shows startup progress. In the main menu a
+bottom-left banner shows the build tag, plugin count and open key, plus a red note when an update
+is available.
 
 ### Plugins tab
 
-One row per plugin: name, version, author, status, and **UNLOAD**, **LOAD** and **RELOAD** buttons.
-A plugin that cannot load shows a note instead of the buttons.
+<img src="images/plugins-tab.png" width="480" alt="Plugins tab listing plugins in each status">
 
-| Status | Meaning |
-|---|---|
-| **Loaded** | Running |
-| **Unloaded** | Not running. Press **LOAD** |
-| **Cannot Load** | Built for the other target: a server plugin on a client, or the reverse |
-| **Needs Update** | Different plugin interface versions. The tab says which side to update |
-| **Hooks Failed** | A hook it needs was not found in this game build. **WHY?** lists the misses |
-
+- **Needs Update** names the side that is behind: the plugin or the mod loader.
+- **WHY?** on a Hooks Failed row reopens the [report](#pop-up-windows).
 - Unload removes the panels, widgets and callbacks the plugin registered, even ones it left
   behind.
 - If the overlay is still drawing its panel after about a second, the unload is skipped and the log
@@ -128,56 +112,47 @@ A plugin that cannot load shows a note instead of the buttons.
 
 ### Config tab
 
-Pick a plugin on the left (drag the divider to resize). Its settings show on the right by `.ini`
-section: name, grey description, control. A **Plugin Tools** row has a button per plugin panel.
+<img src="images/config-tab.png" width="480" alt="Config tab with an example plugin selected, showing a toggle, sliders, number and text fields, and keybinds">
 
-<img src="images/config-tab.png" width="480" alt="Config tab with BetterDrone selected">
-
-| Setting | Control |
-|---|---|
-| On/off | Toggle |
-| Number with a range | Slider. **Ctrl+Click** types an exact value |
-| Other number | Field, applies as you type |
-| Text | Field, applies on **Enter** or when you click away |
-| Keybind | Current key, **Rebind**, **Block** |
-
+- **Ctrl+Click** a slider to type an exact value.
 - **-** and **+** beside a slider step it by 1 (decimal: 1% of range). **Ctrl** steps 10%. They
   repeat while held. <sup>[✦](#msantoro12)</sup>
+- A number field applies as you type; a text field on **Enter** or when you click away.
 - **Rebind** waits for the next key; hold Ctrl, Shift or Alt for a combo, **Esc** cancels. No
   keybind fires meanwhile.
 - Press and release a modifier alone to bind just that modifier. <sup>[✦](#msantoro12)</sup>
 - **Block** stops the game also reacting to the combo.
-- **Reset** arrow restores the default. Hidden on a plugin's `[General] Enabled` and on settings
-  without a default.
-- A value a plugin writes to its own `.ini` shows at once.
+- The reset arrow restores the default. A plugin's `[General] Enabled` has none, nor does a
+  setting without a default.
 - The plugin hears each change as you make it. The `.ini` is written when you let go of a slider
-  or confirm a value. Reload picks up settings the new build added.
+  or confirm a value. A value a plugin writes to its own `.ini` shows at once, and Reload picks up
+  settings the new build added.
 
 ### Settings tab
 
-| Section | Controls |
-|---|---|
-| **HUD Overlays** | **Show FPS**, **Show Current World Name**, **Show Player Position**: a draggable box at the top left. **ModLoader Debug Values** adds input details ([Troubleshooting](#troubleshooting)) |
-| **Rendering** | Frame generation, below |
-| **Networking** | **Connection Timeout**, 0 to 900 s ([Net timeouts](#net-timeouts)) |
-| **Auto Update** | **Enable Auto Updates** checks plugins and the mod loader at launch. A mod loader update asks Yes or No first; a No is remembered for that version. Next launch |
-| **Logging** | **Open Logging** |
-| **Developer** | **Open** the developer console |
-| **Diagnostics** | **Open Tick Profiler** |
+<img src="images/settings-tab.png" width="480" alt="Settings tab">
 
-- **Pause Frame Generation While Windows Are Open**, on by default. DLSS frame generation's
-  interpolated frames skip the overlay and flicker. This turns it off while the mod loader window,
-  the console or a plugin panel is open. <sup>[✦](#msantoro12)</sup>
+- The HUD toggles share one draggable box. It starts at the top left and remembers where you put
+  it. **ModLoader Debug Values** adds input details to it ([Troubleshooting](#troubleshooting)).
+- **Pause Frame Generation While Windows Are Open** turns DLSS frame generation off while the mod
+  loader window, the console or a plugin panel is open, and back on when they close. Its
+  interpolated frames skip the overlay and flicker. <sup>[✦](#msantoro12)</sup>
+- **Connection Timeout**: see [Net timeouts](#net-timeouts).
+- **Enable Auto Updates** takes effect next launch. A mod loader update asks Yes or No first; a No
+  is remembered for that version.
+- **Open Tick Profiler**: **Log Tick Stutters** and **Stack Sample Stutters** reset on restart.
+  Stack sampling needs stutter logging on and is the heavier of the two.
 
 ### Theme tab
 
-- **Active Theme** switches at once and is remembered. **Save**, **Save As...**, **Delete** and
-  **Reload** manage `ModLoader\Themes\<name>.ini`; share the file to share the theme. **Default**
-  and **Star Rupture** are built in and read-only. <sup>[✦](#msantoro12)</sup>
-- **Text Size** 75% to 500%. **Font Family** lists the fonts found on your PC (Arial, Microsoft
-  YaHei, Meiryo, Malgun Gothic, Arial + CJK) and the built-in one.
-- **Accent**, **Highlight**, **Panel Border** and **All UI Colors** open a colour wheel. Edits apply
-  at once; **Save** keeps them.
+<img src="images/theme-tab.png" width="480" alt="Theme tab with theme, font and colour settings">
+
+- **Save**, **Save As...**, **Delete** and **Reload** manage `ModLoader\Themes\<name>.ini`; share the
+  file to share the theme. **Default** and **Star Rupture** are built in and read-only: **Save As...**
+  makes an editable copy. <sup>[✦](#msantoro12)</sup>
+- Colour edits apply at once; **Save** keeps them and **Reload** discards them.
+- **Font Family** lists only fonts found on your PC; the others add Chinese, Japanese or Korean
+  text.
 
 ### Developer console
 
@@ -187,11 +162,15 @@ there only. See [Console commands](#console-commands).
 
 ### Pop-up windows
 
-| Window | Appears |
-|---|---|
-| **Plugins Updated** | At the main menu after an automatic plugin update. Old and new versions |
-| **Plugin Hooks Failed** | When a plugin did not load because a hook is missing, and again when a later load or reload adds one. **Copy Details** for a bug report. **WHY?** reopens it; `hookfailures` prints the same list |
-| **Tick Profiler** | From Settings. Live tick times; each stutter split by segment, with a call tree and **Send To Log**. **Log Tick Stutters** and **Stack Sample Stutters** reset on restart |
+**Plugins Updated** appears once at the main menu after an automatic plugin update.
+
+<img src="images/popup-plugins-updated.png" width="325" alt="Plugins Updated pop-up listing old and new versions">
+
+**Plugin Hooks Failed** appears when a plugin did not load because a hook is missing, and again
+when a later load or reload adds one. **Copy Details** puts the report on the clipboard for a bug
+report. **WHY?** reopens it; `hookfailures` prints the same list.
+
+<img src="images/popup-hooks-failed.png" width="383" alt="Plugin Hooks Failed pop-up with the missing hooks of one plugin">
 
 ---
 
@@ -243,6 +222,8 @@ Open the mod loader window and go to the **Logging** tab to change how much deta
   Turn a single plugin up to read its output without the rest of the log burying it, or down to
   silence a noisy one without quieting everything else. `Default` means "follow the Log Level above".
   Unloaded plugins show as `(unloaded)`.
+
+<img src="images/logging-tab.png" width="480" alt="Logging tab with log levels and the per-plugin grid">
 
 Per-plugin levels are **not saved** — every plugin is back on `Default` next launch.
 

@@ -121,10 +121,10 @@ A plugin that cannot load shows a note instead of the buttons.
 | **Hooks Failed** | A hook it needs was not found in this game build. **WHY?** lists the misses |
 
 - Unload removes the panels, widgets and callbacks the plugin registered, even ones it left
-  behind. <sup>[✦](#msantoro12)</sup>
+  behind.
 - If the overlay is still drawing its panel after about a second, the unload is skipped and the log
   says so. The plugin is shut down and shows **Unloaded**, but its DLL stays mapped. **LOAD** or
-  **RELOAD** retries. <sup>[✦](#msantoro12)</sup>
+  **RELOAD** retries.
 
 ### Config tab
 
@@ -149,7 +149,7 @@ section: name, grey description, control. A **Plugin Tools** row has a button pe
 - **Block** stops the game also reacting to the combo.
 - **Reset** arrow restores the default. Hidden on a plugin's `[General] Enabled` and on settings
   without a default.
-- A value a plugin writes to its own `.ini` shows at once. <sup>[✦](#msantoro12)</sup>
+- A value a plugin writes to its own `.ini` shows at once.
 - The plugin hears each change as you make it. The `.ini` is written when you let go of a slider
   or confirm a value. Reload picks up settings the new build added.
 

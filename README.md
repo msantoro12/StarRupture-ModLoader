@@ -102,6 +102,7 @@ is available.
 
 <img src="images/plugins-tab.png" width="480" alt="Plugins tab listing plugins in each status">
 
+- **Cannot Load** is a server plugin on a client, or the reverse.
 - **Needs Update** names the side that is behind: the plugin or the mod loader.
 - **WHY?** on a Hooks Failed row reopens the [report](#pop-up-windows).
 - Unload removes the panels, widgets and callbacks the plugin registered, even ones it left
@@ -151,8 +152,8 @@ is available.
   file to share the theme. **Default** and **Star Rupture** are built in and read-only: **Save As...**
   makes an editable copy. <sup>[✦](#msantoro12)</sup>
 - Colour edits apply at once; **Save** keeps them and **Reload** discards them.
-- **Font Family** lists only fonts found on your PC; the others add Chinese, Japanese or Korean
-  text.
+- **Font Family** only lists fonts found on your PC. Microsoft YaHei, Meiryo, Malgun Gothic and
+  Arial + CJK add Chinese, Japanese or Korean text.
 
 ### Developer console
 

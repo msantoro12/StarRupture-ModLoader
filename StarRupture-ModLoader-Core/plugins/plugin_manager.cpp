@@ -1111,8 +1111,10 @@ namespace PluginManager
 		return mod;
 	}
 
-	int ScanForNewPlugins()
+	int ScanForNewPlugins(int* outFailed)
 	{
+		if (outFailed) *outFailed = 0;
+
 		if (!g_managerInitialized)
 		{
 			ModLoaderLogger::LogMessage(L"ERROR: Plugin manager not initialized");
@@ -1130,6 +1132,7 @@ namespace PluginManager
 
 		const size_t firstNew = g_loadedPlugins.size();
 		int loadedCount = 0;
+		int newDllCount = 0;
 
 		for (const std::wstring& path : dllPaths)
 		{
@@ -1146,8 +1149,40 @@ namespace PluginManager
 				continue;
 
 			ModLoaderLogger::LogMessage(L"ScanForNewPlugins: new plugin DLL found: %s", path.c_str());
-			if (LoadPlugin(path))
-				loadedCount++;
+			newDllCount++;
+			if (!LoadPlugin(path))
+				continue;
+
+			// Plugin names key the config, console and panel registrations, so a
+			// second DLL under a name that is already in use would trample the
+			// first one's. LoadPlugin has just appended this record, so it is
+			// the last one; everything before it is what it would collide with.
+			// Records the loader refused (wrong target, out of date, hooks
+			// missing) hold no registrations and do not count.
+			LoadedPlugin& added = *g_loadedPlugins.back();
+			bool nameTaken = false;
+			for (size_t i = 0; i + 1 < g_loadedPlugins.size(); ++i)
+			{
+				const LoadedPlugin& other = *g_loadedPlugins[i];
+				if (other.isWrongTarget || other.isOutOfDate || other.hookScanFailed)
+					continue;
+				if (_stricmp(other.cachedName.c_str(), added.cachedName.c_str()) == 0)
+				{
+					nameTaken = true;
+					break;
+				}
+			}
+			if (nameTaken)
+			{
+				ModLoaderLogger::LogError(
+					L"ScanForNewPlugins: refusing %s -- a plugin named '%S' is already loaded",
+					path.c_str(), added.cachedName.c_str());
+				FreeLibrary(added.hModule);
+				g_loadedPlugins.pop_back();
+				continue;
+			}
+
+			loadedCount++;
 		}
 
 		// Init only the records this scan appended -- everything before firstNew
@@ -1168,6 +1203,7 @@ namespace PluginManager
 		LeaveCriticalSection(&g_pluginLock);
 
 		ModLoaderLogger::LogMessage(L"ScanForNewPlugins: %d new DLL(s) loaded, %d initialized", loadedCount, initedCount);
+		if (outFailed) *outFailed = newDllCount - initedCount;
 		return initedCount;
 	}
 

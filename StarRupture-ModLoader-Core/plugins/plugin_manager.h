@@ -96,7 +96,14 @@ namespace PluginManager
     //
     // For plugin DLLs dropped in while the game is running -- ReloadPlugin only
     // ever reloads a path that was already there at startup.
-    int ScanForNewPlugins();
+    //
+    // A DLL whose plugin name is already in use by another plugin is refused.
+    // A DLL that cannot be loaded right now (locked, still being copied) leaves
+    // no record, so the next scan tries it again. If outFailed is given it
+    // receives the number of new DLLs that did not come up for either reason.
+    //
+    // Game thread only: PluginInit runs here. Preload plugins are not covered.
+    int ScanForNewPlugins(int* outFailed = nullptr);
 
     // Increments every time a plugin is loaded, unloaded or reloaded.
     //

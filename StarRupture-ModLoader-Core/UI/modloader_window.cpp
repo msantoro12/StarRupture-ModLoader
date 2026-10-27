@@ -31,6 +31,7 @@
 #include <vector>
 #include <string>
 #include <functional>
+#include <atomic>
 
 // Build tag is set by CI; fall back to a local placeholder.
 #ifndef MODLOADER_BUILD_TAG
@@ -213,8 +214,90 @@ namespace UI::ModLoaderWindow
         });
     }
 
+    // LOAD NEW: queue state and outcome of the last PluginManager::ScanForNewPlugins
+    // pass. The scan runs on the game thread (PluginInit may touch engine state),
+    // so the result crosses back to this render-thread window through atomics.
+    // s_scanPending is cleared last, after the result is published.
+    static std::atomic<bool> s_scanPending{false};
+    static std::atomic<bool> s_scanDone{false};
+    static std::atomic<int>  s_scanLoaded{0};
+    static std::atomic<int>  s_scanFailed{0};
+
+    static void PostScanForNewPlugins()
+    {
+        s_scanDone = false;
+        s_scanPending = true;
+        GameThreadDispatch::PostVoid([]()
+        {
+            int failed = 0;
+            const int loaded = PluginManager::ScanForNewPlugins(&failed);
+            s_scanLoaded = loaded;
+            s_scanFailed = failed;
+            s_scanDone = true;
+            s_scanPending = false;
+        });
+    }
+
+    // The button that picks up plugin DLLs dropped into the Plugins folder after
+    // startup, and the short result line beside it (a few seconds, then gone).
+    static void RenderLoadNewPlugins()
+    {
+        static double s_resultShownAt = 0.0;   // render thread only
+
+        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(10.0f, 4.0f));
+
+        const bool busy = s_scanPending;
+        if (busy) ImGui::BeginDisabled();
+        if (ImGui::Button(busy ? "..." : "LOAD NEW"))
+            PostScanForNewPlugins();
+        if (busy) ImGui::EndDisabled();
+
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+            ImGui::SetTooltip("Load plugins added to the Plugins folder since the game started.\n"
+                              "Preload plugins still need a restart.");
+
+        if (s_scanDone)
+        {
+            if (s_resultShownAt == 0.0)
+                s_resultShownAt = ImGui::GetTime();
+
+            if (ImGui::GetTime() - s_resultShownAt < 6.0)
+            {
+                const int loaded = s_scanLoaded;
+                const int failed = s_scanFailed;
+                char msg[96];
+                if (loaded > 0)
+                    snprintf(msg, sizeof(msg), "Loaded %d new plugin%s", loaded, loaded == 1 ? "" : "s");
+                else
+                    snprintf(msg, sizeof(msg), "No new plugins");
+                if (failed > 0)
+                {
+                    const size_t len = strlen(msg);
+                    snprintf(msg + len, sizeof(msg) - len, ", %d failed (see the log)", failed);
+                }
+
+                ImGui::SameLine();
+                ImGui::AlignTextToFramePadding();
+                ImGui::TextDisabled("%s", msg);
+            }
+            else
+            {
+                s_scanDone = false;
+                s_resultShownAt = 0.0;
+            }
+        }
+        else
+        {
+            s_resultShownAt = 0.0;
+        }
+
+        ImGui::PopStyleVar();
+    }
+
     static void RenderPluginsTab()
     {
+        RenderLoadNewPlugins();
+
         // The return is the TOTAL record count, not how many were copied --
         // clamp to the buffer before iterating.
         static PluginManager::PluginStatus statuses[64];

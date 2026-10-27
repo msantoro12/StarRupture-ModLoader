@@ -1157,15 +1157,14 @@ namespace PluginManager
 			// second DLL under a name that is already in use would trample the
 			// first one's. LoadPlugin has just appended this record, so it is
 			// the last one; everything before it is what it would collide with.
-			// Records the loader refused (wrong target, out of date, hooks
-			// missing) hold no registrations and do not count.
+			// Any record counts, refused ones too: name lookups (FindPluginIndex,
+			// config-change dispatch) return the first match, which a refused row
+			// would otherwise keep.
 			LoadedPlugin& added = *g_loadedPlugins.back();
 			bool nameTaken = false;
 			for (size_t i = 0; i + 1 < g_loadedPlugins.size(); ++i)
 			{
 				const LoadedPlugin& other = *g_loadedPlugins[i];
-				if (other.isWrongTarget || other.isOutOfDate || other.hookScanFailed)
-					continue;
 				if (_stricmp(other.cachedName.c_str(), added.cachedName.c_str()) == 0)
 				{
 					nameTaken = true;
@@ -1175,7 +1174,7 @@ namespace PluginManager
 			if (nameTaken)
 			{
 				ModLoaderLogger::LogError(
-					L"ScanForNewPlugins: refusing %s -- a plugin named '%S' is already loaded",
+					L"ScanForNewPlugins: refusing %s -- a plugin named '%S' is already in the plugin list",
 					path.c_str(), added.cachedName.c_str());
 				FreeLibrary(added.hModule);
 				g_loadedPlugins.pop_back();

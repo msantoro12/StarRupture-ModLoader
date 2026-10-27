@@ -100,7 +100,7 @@ namespace PluginManager
     // A DLL whose plugin name is already in use by another plugin is refused.
     // A DLL that cannot be loaded right now (locked, still being copied) leaves
     // no record, so the next scan tries it again. If outFailed is given it
-    // receives the number of new DLLs that did not come up for either reason.
+    // receives the number of new DLLs that did not come up, whatever the reason.
     //
     // Game thread only: PluginInit runs here. Preload plugins are not covered.
     int ScanForNewPlugins(int* outFailed = nullptr);

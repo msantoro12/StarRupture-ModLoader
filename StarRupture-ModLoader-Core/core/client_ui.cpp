@@ -20,6 +20,7 @@
 #include "../UI/modloader_window.h"
 #include "../UI/overlay.h"
 #include "../UI/plugin_panel_registry.h"
+#include "../UI/plugin_scan_window.h"
 #include "../UI/plugin_widget_registry.h"
 #include "../UI/splash_window.h"
 #include "../UI/theme.h"
@@ -39,6 +40,7 @@ bool ShouldCaptureInputNow()
     // forwarded to ImGui while this returns true.
     return UI::ModLoaderWindow::IsOpen()
         || UI::UpdateNoticeWindow::IsOpen()
+        || UI::PluginScanWindow::IsOpen()
         || UI::HookFailureWindow::IsOpen()
         || UI::TickProfilerWindow::IsOpen()
         || UI::ConsoleWindow::IsOpen()
@@ -142,6 +144,7 @@ void InitClientUI()
             UI::Overlay::RenderHud();
             UI::ModLoaderWindow::Render(api);
             UI::UpdateNoticeWindow::Render();
+            UI::PluginScanWindow::Render();
             UI::HookFailureWindow::Render();
             UI::TickProfilerWindow::Render();
             UI::ConsoleWindow::Render();

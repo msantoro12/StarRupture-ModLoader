@@ -714,6 +714,24 @@ namespace PreloadManager
 		return g_records;
 	}
 
+	std::vector<std::string> FindNewDlls()
+	{
+		std::lock_guard<std::mutex> lock(g_mutex);
+
+		std::vector<std::string> out;
+		if (!g_didRun)
+			return out;
+
+		for (const Candidate& c : CollectCandidates())
+		{
+			const bool seen = std::any_of(g_records.begin(), g_records.end(),
+				[&](const Record& r) { return EqualsNoCase(r.fileName, c.fileName); });
+			if (!seen)
+				out.push_back(c.fileName);
+		}
+		return out;
+	}
+
 	bool DidRun()
 	{
 		std::lock_guard<std::mutex> lock(g_mutex);

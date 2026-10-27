@@ -1,6 +1,8 @@
 #pragma once
 
 #include <windows.h>
+#include <string>
+#include <vector>
 #include "plugins/plugin_interface.h"
 
 namespace PluginManager
@@ -91,6 +93,47 @@ namespace PluginManager
     // FindPluginIndex), or nullptr if there is no such plugin or it is unloaded.
     HMODULE GetPluginModule(const char* nameOrFile);
 
+    // What ScanForNewPlugins found out about one DLL.
+    enum class ScanStatus
+    {
+        Live,          // loaded and initialized; nothing it registered was missed
+        Late,          // loaded, but it registered for one-time events that had already fired
+        NeedsRestart,  // a new DLL in ModLoader\Preload, which only runs at game start
+        Incompatible,  // plugin interface version outside what this loader supports
+        WrongTarget,   // built for the other build target (client vs server)
+        HooksFailed,   // one of its patterns does not match this game build
+        Retry,         // LoadLibrary failed: locked or still being copied
+        NotAPlugin,    // loads, but has no plugin exports
+        Failed,        // crashed or returned an error while loading or in PluginInit
+        Duplicate,     // a plugin with that name is already in the plugin list
+    };
+
+    // One-time events that are replayed to a plugin registering late only while
+    // startup is still in progress. A plugin that registers for one of them after
+    // PluginManager::IsStartupComplete() has missed the firing that already happened.
+    enum MissedEvent : unsigned
+    {
+        MissedChimeraMain    = 1u << 0,   // IPluginWorldEvents::RegisterOnWorldBeginPlay
+        MissedAnyWorld       = 1u << 1,   // IPluginWorldEvents::RegisterOnAnyWorldBeginPlay
+        MissedExperienceLoad = 1u << 2,   // IPluginWorldEvents::RegisterOnExperienceLoadComplete
+    };
+
+    // Called by those three registrations when they skip the replay because
+    // startup is over and the event had already fired. Only the plugin being
+    // initialized by ScanForNewPlugins is looked at, so this is a plain note.
+    void NoteMissedEvent(MissedEvent event);
+
+    struct ScanResult
+    {
+        ScanStatus  status;
+        std::string name;      // plugin name, or the file name when it never got that far
+        std::string fileName;  // bare DLL file name
+        std::string action;    // what happened and what to do about it, one sentence or two
+    };
+
+    // Short label for a status, e.g. "Loaded", "Loaded late", "Needs restart".
+    const char* ScanStatusLabel(ScanStatus status);
+
     // Rescan ModLoader\Plugins for DLLs that have no record yet, load them and
     // run PluginInit on each. Returns the number of plugins that came up.
     //
@@ -99,11 +142,14 @@ namespace PluginManager
     //
     // A DLL whose plugin name is already in use by another plugin is refused.
     // A DLL that cannot be loaded right now (locked, still being copied) leaves
-    // no record, so the next scan tries it again. If outFailed is given it
-    // receives the number of new DLLs that did not come up, whatever the reason.
+    // no record, so the next scan tries it again. New DLLs in ModLoader\Preload
+    // are not loaded, only reported: they run at game start.
     //
-    // Game thread only: PluginInit runs here. Preload plugins are not covered.
-    int ScanForNewPlugins(int* outFailed = nullptr);
+    // If outResults is given it receives one entry per DLL the scan found: what
+    // became of it and what to do next.
+    //
+    // Game thread only: PluginInit runs here.
+    int ScanForNewPlugins(std::vector<ScanResult>* outResults = nullptr);
 
     // Increments every time a plugin is loaded, unloaded or reloaded.
     //

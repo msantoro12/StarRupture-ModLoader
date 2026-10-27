@@ -250,6 +250,10 @@ namespace Hooks::WorldBeginPlay
 			try { callback(g_lastChimeraWorld); }
 			catch (...) { ModLoaderLogger::LogError(L"[WorldBeginPlay] Exception in late-registration ChimeraMain callback"); }
 		}
+		else if (g_chimeraHasFired && PluginManager::IsStartupComplete())
+		{
+			PluginManager::NoteMissedEvent(PluginManager::MissedChimeraMain);
+		}
 	}
 
 	void UnregisterPluginCallback(PluginWorldBeginPlayCallback callback)
@@ -293,6 +297,10 @@ namespace Hooks::WorldBeginPlay
 			                          g_lastAnyWorldName.c_str());
 			try { callback(g_lastAnyWorld, g_lastAnyWorldName.c_str()); }
 			catch (...) { ModLoaderLogger::LogError(L"[WorldBeginPlay] Exception in late-registration any-world callback"); }
+		}
+		else if (g_anyWorldHasFired && PluginManager::IsStartupComplete())
+		{
+			PluginManager::NoteMissedEvent(PluginManager::MissedAnyWorld);
 		}
 	}
 

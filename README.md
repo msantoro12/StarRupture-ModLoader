@@ -104,6 +104,17 @@ is available.
 
 <img src="images/plugins-tab.png" width="480" alt="Plugins tab listing plugins in each status">
 
+- **LOAD NEW** picks up plugin DLLs added to the Plugins folder since the game started, and a
+  popup lists each one with what to do next. <sup>[✦](#msantoro12)</sup>
+  - **Loaded** is fully live. **Loaded late** missed a world or experience start that had
+    already fired; load a save to catch it up (the any-world start also re-fires on returning to
+    the main menu).
+  - **Needs restart** is a new DLL in the Preload folder, which only loads at game start.
+  - **Incompatible** names the plugin interface the DLL was built for and the range this loader accepts.
+  - **Hooks failed** has a **WHY?** button for the [report](#pop-up-windows).
+  - **Retry** is a DLL Windows could not open yet, usually still being copied or locked.
+  - **Duplicate** is a plugin whose name is already in the list.
+  - The `rescan` console command prints the same lines.
 - **Cannot Load** is a server plugin on a client, or the reverse.
 - **Needs Update** names the side that is behind: the plugin or the mod loader.
 - **WHY?** on a Hooks Failed row reopens the [report](#pop-up-windows).

@@ -12,6 +12,7 @@
 #include "hooks/hooks_interface.h"
 #include "console/plugin_console.h"
 #include "plugins/pak_registry.h"
+#include "preload/preload_manager.h"
 #ifdef MODLOADER_CLIENT_BUILD
 #include "hooks/game/game_menu/game_menu_registry.h"
 #include "hooks/input/mouse_wheel_registry.h"
@@ -19,9 +20,15 @@
 #include <vector>
 #include <string>
 #include <cstring>
+#include <atomic>
 #include <dbghelp.h>
 
 #pragma comment(lib, "dbghelp.lib")
+
+// Build tag is set by CI; fall back to a local placeholder.
+#ifndef MODLOADER_BUILD_TAG
+#define MODLOADER_BUILD_TAG "dev"
+#endif
 
 #ifdef MODLOADER_CLIENT_BUILD
 #include "UI/splash_window.h"
@@ -278,12 +285,25 @@ namespace PluginManager
 		rec.self.version = rec.cachedVersion.c_str();
 	}
 
+	// Why a DLL did not come up, so ScanForNewPlugins can say so. Most failures
+	// leave no record behind, so the reason has to travel out separately.
+	enum class LoadFailure { None, CouldNotLoad, Crashed, NotAPlugin, OutOfDate, WrongTarget };
+
+	struct LoadFailureInfo
+	{
+		LoadFailure kind             = LoadFailure::None;
+		DWORD       win32Error       = 0;   // CouldNotLoad: GetLastError() of LoadLibrary
+		int         interfaceVersion = 0;   // OutOfDate: what the plugin was built for
+		std::string name;                   // whatever name the DLL reported, if it got that far
+	};
+
 	// Inner load helper: performs LoadLibrary, GetProcAddress, GetPluginInfo,
 	// version check, and PluginInit on an existing LoadedPlugin record.
 	// rec.fileName must be set before calling. On success: hModule, info,
 	// function pointers, cached strings, and isInitialized are all populated.
-	// On failure: any resources acquired are released and the record is left clean.
-	static bool LoadPluginIntoRecord(LoadedPlugin& rec)
+	// On failure: any resources acquired are released and the record is left clean,
+	// and why (if given) says which way it failed.
+	static bool LoadPluginIntoRecord(LoadedPlugin& rec, LoadFailureInfo* why = nullptr)
 	{
 		ModLoaderLogger::LogMessage(L"Loading plugin: %s", rec.fileName.c_str());
 
@@ -292,6 +312,7 @@ namespace PluginManager
 		{
 			LogPluginLoadCrash(rec.fileName.c_str(), L"LoadLibrary (plugin DllMain)");
 			ModLoaderLogger::LogError(L"Plugin DLL crashed while loading -- skipping: %s", rec.fileName.c_str());
+			if (why) why->kind = LoadFailure::Crashed;
 			return false;
 		}
 
@@ -300,6 +321,7 @@ namespace PluginManager
 		{
 			DWORD error = GetLastError();
 			ModLoaderLogger::LogMessage(L"Failed to load plugin DLL: %s (error: %lu)", rec.fileName.c_str(), error);
+			if (why) { why->kind = LoadFailure::CouldNotLoad; why->win32Error = error; }
 			return false;
 		}
 
@@ -319,6 +341,7 @@ namespace PluginManager
 		{
 			ModLoaderLogger::LogMessage(L"Plugin missing required exports: %s", rec.fileName.c_str());
 			FreeLibrary(hModule);
+			if (why) why->kind = LoadFailure::NotAPlugin;
 			return false;
 		}
 
@@ -340,6 +363,7 @@ namespace PluginManager
 				ModLoaderLogger::LogMessage(L"Plugin GetPluginInfo returned nullptr: %s", rec.fileName.c_str());
 			}
 			FreeLibrary(hModule);
+			if (why) why->kind = LoadFailure::Crashed;
 			return false;
 		}
 
@@ -357,6 +381,7 @@ namespace PluginManager
 			rec.isOutOfDate         = true;
 			rec.needsModLoaderUpdate = (info->interfaceVersion > PLUGIN_INTERFACE_VERSION_MAX);
 			FreeLibrary(hModule);
+			if (why) { why->kind = LoadFailure::OutOfDate; why->interfaceVersion = info->interfaceVersion; }
 			return false;
 		}
 
@@ -382,6 +407,7 @@ namespace PluginManager
 			rec.cachedAuthor  = info->author  ? info->author  : "";
 			rec.isWrongTarget = true;
 			FreeLibrary(hModule);
+			if (why) why->kind = LoadFailure::WrongTarget;
 			return false;
 		}
 
@@ -405,7 +431,7 @@ namespace PluginManager
 	}
 
 	// Load a single plugin DLL by path (used during startup scan).
-	static bool LoadPlugin(const std::wstring& dllPath)
+	static bool LoadPlugin(const std::wstring& dllPath, LoadFailureInfo* why = nullptr)
 	{
 		auto rec = std::make_unique<LoadedPlugin>();
 		rec->fileName = dllPath;
@@ -414,8 +440,10 @@ namespace PluginManager
 		rec->isWrongTarget        = false;
 		rec->hookScanFailed       = false;
 
-		if (!LoadPluginIntoRecord(*rec))
+		if (!LoadPluginIntoRecord(*rec, why))
 		{
+			if (why) why->name = rec->cachedName;
+
 			// Keep the record visible in the UI for out-of-date or wrong-target plugins.
 			if (rec->isOutOfDate || rec->isWrongTarget)
 			{
@@ -1111,10 +1139,144 @@ namespace PluginManager
 		return mod;
 	}
 
-	int ScanForNewPlugins(int* outFailed)
-	{
-		if (outFailed) *outFailed = 0;
+	// Events NoteMissedEvent has been told about since the last reset. Only
+	// ScanForNewPlugins reads it, around one plugin's PluginInit at a time.
+	static std::atomic<unsigned> g_missedEvents{0};
 
+	void NoteMissedEvent(MissedEvent event)
+	{
+		g_missedEvents |= event;
+	}
+
+	const char* ScanStatusLabel(ScanStatus status)
+	{
+		switch (status)
+		{
+		case ScanStatus::Live:         return "Loaded";
+		case ScanStatus::Late:         return "Loaded late";
+		case ScanStatus::NeedsRestart: return "Needs restart";
+		case ScanStatus::Incompatible: return "Incompatible";
+		case ScanStatus::WrongTarget:  return "Cannot load";
+		case ScanStatus::HooksFailed:  return "Hooks failed";
+		case ScanStatus::Retry:        return "Retry";
+		case ScanStatus::NotAPlugin:   return "Not a plugin";
+		case ScanStatus::Failed:       return "Failed";
+		case ScanStatus::Duplicate:    return "Duplicate";
+		}
+		return "?";
+	}
+
+	// Bare DLL file name, narrowed for display. Same conversion as the
+	// fileName in GetAllPluginStatuses.
+	static std::string BaseFileNameA(const std::wstring& path)
+	{
+		char buffer[128]{};
+		WideCharToMultiByte(CP_ACP, 0, BaseFileName(path), -1, buffer, static_cast<int>(sizeof(buffer)), "?", nullptr);
+		buffer[sizeof(buffer) - 1] = '\0';
+		return buffer;
+	}
+
+	// "Missed A, B, which had already fired. <remedy>". All three events fire
+	// again for every world (the hooks have no once-per-process guard), so a
+	// save load catches the plugin up; the any-world event also fires when the
+	// main menu world loads.
+	static std::string LateAction(unsigned missed)
+	{
+		std::string events;
+		auto add = [&](unsigned bit, const char* text)
+		{
+			if (!(missed & bit)) return;
+			if (!events.empty()) events += ", ";
+			events += text;
+		};
+		add(MissedChimeraMain,    "the ChimeraMain world start");
+		add(MissedAnyWorld,       "the any-world start");
+		add(MissedExperienceLoad, "the experience load");
+
+		return "Missed " + events + ", which had already fired. " +
+			((missed & (MissedChimeraMain | MissedExperienceLoad))
+				? "Load a save to catch up."
+				: "Load a save or return to the main menu to catch up.");
+	}
+
+	// Result for a DLL LoadPlugin gave up on. The out-of-date and wrong-target
+	// ones also keep a plugin-list row; the rest leave nothing behind.
+	static ScanResult ResultForLoadFailure(const std::wstring& path, const LoadFailureInfo& why)
+	{
+		ScanResult r;
+		r.fileName = BaseFileNameA(path);
+		r.name     = why.name.empty() ? r.fileName : why.name;
+
+		char text[256];
+		switch (why.kind)
+		{
+		case LoadFailure::CouldNotLoad:
+			r.status = ScanStatus::Retry;
+			snprintf(text, sizeof(text),
+				"Windows could not load it (error %lu). It may be locked or still being copied; try again in a moment.",
+				why.win32Error);
+			break;
+		case LoadFailure::NotAPlugin:
+			r.status = ScanStatus::NotAPlugin;
+			snprintf(text, sizeof(text), "It has none of the plugin exports. Preload plugins go in ModLoader\\Preload.");
+			break;
+		case LoadFailure::OutOfDate:
+			r.status = ScanStatus::Incompatible;
+			if (why.interfaceVersion > PLUGIN_INTERFACE_VERSION_MAX)
+				snprintf(text, sizeof(text),
+					"Built for plugin interface v%d, newer than this loader (%s accepts up to v%d). Update the mod loader.",
+					why.interfaceVersion, MODLOADER_BUILD_TAG, PLUGIN_INTERFACE_VERSION_MAX);
+			else
+				snprintf(text, sizeof(text),
+					"Built for plugin interface v%d, older than this loader (%s accepts v%d to v%d). Ask its author for an update.",
+					why.interfaceVersion, MODLOADER_BUILD_TAG, PLUGIN_INTERFACE_VERSION_MIN, PLUGIN_INTERFACE_VERSION_MAX);
+			break;
+		case LoadFailure::WrongTarget:
+			r.status = ScanStatus::WrongTarget;
+			snprintf(text, sizeof(text), "Built for the other build target: a server plugin on the client, or the reverse.");
+			break;
+		default:
+			r.status = ScanStatus::Failed;
+			snprintf(text, sizeof(text), "It crashed while loading. See ModLoader.log.");
+			break;
+		}
+		r.action = text;
+		return r;
+	}
+
+	// Result for a record this scan appended and ran PluginInit on.
+	static ScanResult ResultAfterInit(const LoadedPlugin& rec, bool inited, unsigned missedEvents)
+	{
+		ScanResult r;
+		r.name     = rec.cachedName;
+		r.fileName = BaseFileNameA(rec.fileName);
+
+		if (inited && missedEvents == 0)
+		{
+			r.status = ScanStatus::Live;
+			r.action = "Loaded and running.";
+		}
+		else if (inited)
+		{
+			r.status = ScanStatus::Late;
+			r.action = LateAction(missedEvents);
+		}
+		else if (rec.hookScanFailed)
+		{
+			// Same wording as the plugin list row.
+			r.status = ScanStatus::HooksFailed;
+			r.action = "A hook it needs could not be found in this game build. It needs a new build from its author.";
+		}
+		else
+		{
+			r.status = ScanStatus::Failed;
+			r.action = "PluginInit failed or crashed. See ModLoader.log.";
+		}
+		return r;
+	}
+
+	int ScanForNewPlugins(std::vector<ScanResult>* outResults)
+	{
 		if (!g_managerInitialized)
 		{
 			ModLoaderLogger::LogMessage(L"ERROR: Plugin manager not initialized");
@@ -1132,7 +1294,6 @@ namespace PluginManager
 
 		const size_t firstNew = g_loadedPlugins.size();
 		int loadedCount = 0;
-		int newDllCount = 0;
 
 		for (const std::wstring& path : dllPaths)
 		{
@@ -1149,9 +1310,13 @@ namespace PluginManager
 				continue;
 
 			ModLoaderLogger::LogMessage(L"ScanForNewPlugins: new plugin DLL found: %s", path.c_str());
-			newDllCount++;
-			if (!LoadPlugin(path))
+			LoadFailureInfo why;
+			if (!LoadPlugin(path, &why))
+			{
+				if (outResults)
+					outResults->push_back(ResultForLoadFailure(path, why));
 				continue;
+			}
 
 			// Plugin names key the config, console and panel registrations, so a
 			// second DLL under a name that is already in use would trample the
@@ -1161,21 +1326,31 @@ namespace PluginManager
 			// config-change dispatch) return the first match, which a refused row
 			// would otherwise keep.
 			LoadedPlugin& added = *g_loadedPlugins.back();
-			bool nameTaken = false;
+			const LoadedPlugin* nameHolder = nullptr;
 			for (size_t i = 0; i + 1 < g_loadedPlugins.size(); ++i)
 			{
 				const LoadedPlugin& other = *g_loadedPlugins[i];
 				if (_stricmp(other.cachedName.c_str(), added.cachedName.c_str()) == 0)
 				{
-					nameTaken = true;
+					nameHolder = &other;
 					break;
 				}
 			}
-			if (nameTaken)
+			if (nameHolder)
 			{
 				ModLoaderLogger::LogError(
 					L"ScanForNewPlugins: refusing %s -- a plugin named '%S' is already in the plugin list",
 					path.c_str(), added.cachedName.c_str());
+				if (outResults)
+				{
+					ScanResult r;
+					r.status   = ScanStatus::Duplicate;
+					r.name     = added.cachedName;
+					r.fileName = BaseFileNameA(path);
+					r.action   = "A plugin named '" + added.cachedName + "' is already in the plugin list (" +
+						BaseFileNameA(nameHolder->fileName) + "). Remove or rename one of the two files.";
+					outResults->push_back(std::move(r));
+				}
 				FreeLibrary(added.hModule);
 				g_loadedPlugins.pop_back();
 				continue;
@@ -1192,8 +1367,16 @@ namespace PluginManager
 			LoadedPlugin& rec = *g_loadedPlugins[i];
 			if (rec.isInitialized || !rec.init)
 				continue;
-			if (InitPluginRecord(rec))
+
+			// The registrations in PluginInit report any one-time event they
+			// arrive too late for; start from a clean slate for this plugin.
+			g_missedEvents = 0;
+			const bool inited = InitPluginRecord(rec);
+			const unsigned missedEvents = g_missedEvents.exchange(0);
+			if (inited)
 				initedCount++;
+			if (outResults)
+				outResults->push_back(ResultAfterInit(rec, inited, missedEvents));
 		}
 
 		if (loadedCount > 0)
@@ -1201,8 +1384,17 @@ namespace PluginManager
 
 		LeaveCriticalSection(&g_pluginLock);
 
+		// Preload plugins run before the game starts, so a new one cannot be
+		// loaded now. Say so rather than leave it looking ignored.
+		for (const std::string& file : PreloadManager::FindNewDlls())
+		{
+			ModLoaderLogger::LogMessage(L"ScanForNewPlugins: new Preload DLL %S needs a game restart", file.c_str());
+			if (outResults)
+				outResults->push_back({ ScanStatus::NeedsRestart, file, file,
+					"A Preload plugin runs before the game starts. Restart the game to load it." });
+		}
+
 		ModLoaderLogger::LogMessage(L"ScanForNewPlugins: %d new DLL(s) loaded, %d initialized", loadedCount, initedCount);
-		if (outFailed) *outFailed = newDllCount - initedCount;
 		return initedCount;
 	}
 

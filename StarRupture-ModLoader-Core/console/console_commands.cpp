@@ -574,11 +574,20 @@ namespace ModConsole
 
     static void Cmd_Rescan(const std::vector<std::string>&, Sink& out)
     {
-        const int loaded = PluginManager::ScanForNewPlugins();
-        if (loaded > 0)
-            out.Out("Loaded %d new plugin(s).", loaded);
-        else
+        std::vector<PluginManager::ScanResult> results;
+        const int loaded = PluginManager::ScanForNewPlugins(&results);
+        if (results.empty())
+        {
             out.Notice("No new plugin DLLs found.");
+            return;
+        }
+
+        out.Out("Loaded %d new plugin(s), %d new DLL(s) found:", loaded, static_cast<int>(results.size()));
+        for (const PluginManager::ScanResult& r : results)
+        {
+            out.Printf(r.status == PluginManager::ScanStatus::Live ? LineKind::Output : LineKind::Error,
+                       "%-26s %-14s %s", r.name.c_str(), PluginManager::ScanStatusLabel(r.status), r.action.c_str());
+        }
     }
 
     // The dedicated server's only view of the hook report -- there is no

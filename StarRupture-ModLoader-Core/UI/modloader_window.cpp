@@ -12,6 +12,7 @@
 #include "theme.h"
 #include "named_entry_utils.h"
 #include "update_notice_window.h"
+#include "plugin_scan_window.h"
 #include "hook_failure_window.h"
 #include "hooks/input/keybind_registry.h"
 #include "console_window.h"
@@ -216,12 +217,13 @@ namespace UI::ModLoaderWindow
 
     // LOAD NEW: queue state and outcome of the last PluginManager::ScanForNewPlugins
     // pass. The scan runs on the game thread (PluginInit may touch engine state),
-    // so the result crosses back to this render-thread window through atomics.
-    // s_scanPending is cleared last, after the result is published.
+    // so the counts cross back to this render-thread window through atomics. The
+    // per-plugin lines go to PluginScanWindow, which opens when any of them needs
+    // the user. s_scanPending is cleared last, after the result is published.
     static std::atomic<bool> s_scanPending{false};
     static std::atomic<bool> s_scanDone{false};
     static std::atomic<int>  s_scanLoaded{0};
-    static std::atomic<int>  s_scanFailed{0};
+    static std::atomic<int>  s_scanAttention{0};
 
     static void PostScanForNewPlugins()
     {
@@ -229,11 +231,13 @@ namespace UI::ModLoaderWindow
         s_scanPending = true;
         GameThreadDispatch::PostVoid([]()
         {
-            int failed = 0;
-            const int loaded = PluginManager::ScanForNewPlugins(&failed);
+            std::vector<PluginManager::ScanResult> results;
+            const int loaded = PluginManager::ScanForNewPlugins(&results);
             s_scanLoaded = loaded;
-            s_scanFailed = failed;
+            s_scanAttention = static_cast<int>(std::count_if(results.begin(), results.end(),
+                [](const PluginManager::ScanResult& r) { return r.status != PluginManager::ScanStatus::Live; }));
             s_scanDone = true;
+            UI::PluginScanWindow::Show(std::move(results));
             s_scanPending = false;
         });
     }
@@ -264,16 +268,16 @@ namespace UI::ModLoaderWindow
             if (ImGui::GetTime() - s_resultShownAt < 6.0)
             {
                 const int loaded = s_scanLoaded;
-                const int failed = s_scanFailed;
+                const int attention = s_scanAttention;
                 char msg[96];
                 if (loaded > 0)
                     snprintf(msg, sizeof(msg), "Loaded %d new plugin%s", loaded, loaded == 1 ? "" : "s");
                 else
                     snprintf(msg, sizeof(msg), "No new plugins");
-                if (failed > 0)
+                if (attention > 0)
                 {
                     const size_t len = strlen(msg);
-                    snprintf(msg + len, sizeof(msg) - len, ", %d failed (see the log)", failed);
+                    snprintf(msg + len, sizeof(msg) - len, ", %d need%s attention", attention, attention == 1 ? "s" : "");
                 }
 
                 ImGui::SameLine();

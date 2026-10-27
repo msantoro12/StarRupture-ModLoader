@@ -154,6 +154,10 @@ namespace Hooks::ExperienceLoadComplete
 			try { callback(); }
 			catch (...) { ModLoaderLogger::LogError(L"[ExperienceLoadComplete] Exception in late-registration callback"); }
 		}
+		else if (g_hasFired && PluginManager::IsStartupComplete())
+		{
+			PluginManager::NoteMissedEvent(PluginManager::MissedExperienceLoad);
+		}
 	}
 
 	void UnregisterPluginCallback(PluginExperienceLoadCompleteCallback callback)

@@ -207,6 +207,9 @@
     <ClInclude Include="UI\update_notice_window.h">
       <Filter>Source Files\UI\modloader</Filter>
     </ClInclude>
+    <ClInclude Include="UI\plugin_scan_window.h">
+      <Filter>Source Files\UI\modloader</Filter>
+    </ClInclude>
     <ClInclude Include="UI\tick_profiler_window.h">
       <Filter>Source Files\UI\modloader</Filter>
     </ClInclude>
@@ -588,6 +591,9 @@
       <Filter>Source Files\UI\modloader</Filter>
     </ClCompile>
     <ClCompile Include="UI\update_notice_window.cpp">
+      <Filter>Source Files\UI\modloader</Filter>
+    </ClCompile>
+    <ClCompile Include="UI\plugin_scan_window.cpp">
       <Filter>Source Files\UI\modloader</Filter>
     </ClCompile>
     <ClCompile Include="UI\tick_profiler_window.cpp">

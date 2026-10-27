@@ -586,7 +586,7 @@ namespace ModConsole
         for (const PluginManager::ScanResult& r : results)
         {
             out.Printf(r.status == PluginManager::ScanStatus::Live ? LineKind::Output : LineKind::Error,
-                       "%-26s %-14s %s", r.name.c_str(), PluginManager::ScanStatusLabel(r.status), r.action.c_str());
+                       "%-26s %-14s %s (%s)", r.name.c_str(), PluginManager::ScanStatusLabel(r.status), r.action.c_str(), r.fileName.c_str());
         }
     }
 

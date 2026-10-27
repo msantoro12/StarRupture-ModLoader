@@ -380,8 +380,9 @@ namespace PluginManager
 			rec.cachedAuthor        = info->author  ? info->author  : "";
 			rec.isOutOfDate         = true;
 			rec.needsModLoaderUpdate = (info->interfaceVersion > PLUGIN_INTERFACE_VERSION_MAX);
-			FreeLibrary(hModule);
+			// info points into the plugin's own image, so read it before the free.
 			if (why) { why->kind = LoadFailure::OutOfDate; why->interfaceVersion = info->interfaceVersion; }
+			FreeLibrary(hModule);
 			return false;
 		}
 
@@ -1176,27 +1177,31 @@ namespace PluginManager
 		return buffer;
 	}
 
-	// "Missed A, B, which had already fired. <remedy>". All three events fire
-	// again for every world (the hooks have no once-per-process guard), so a
-	// save load catches the plugin up; the any-world event also fires when the
-	// main menu world loads.
+	// "Registered for A and B after they had fired. <remedy>". All three events
+	// fire again for every world (the hooks have no once-per-process guard), so
+	// a save load catches the plugin up; the any-world event also fires when the
+	// main menu world loads. A plugin that checks the current world itself
+	// (BetterCheats, Codex and WAILA do) is already running, which registration
+	// alone cannot show.
 	static std::string LateAction(unsigned missed)
 	{
-		std::string events;
-		auto add = [&](unsigned bit, const char* text)
-		{
-			if (!(missed & bit)) return;
-			if (!events.empty()) events += ", ";
-			events += text;
-		};
-		add(MissedChimeraMain,    "the ChimeraMain world start");
-		add(MissedAnyWorld,       "the any-world start");
-		add(MissedExperienceLoad, "the experience load");
+		std::vector<const char*> events;
+		if (missed & MissedChimeraMain)    events.push_back("the ChimeraMain world start");
+		if (missed & MissedAnyWorld)       events.push_back("the any-world start");
+		if (missed & MissedExperienceLoad) events.push_back("the experience load");
 
-		return "Missed " + events + ", which had already fired. " +
+		std::string list;
+		for (size_t i = 0; i < events.size(); ++i)
+		{
+			if (i > 0) list += (i + 1 == events.size()) ? " and " : ", ";
+			list += events[i];
+		}
+
+		return "Registered for " + list + " after " + (events.size() == 1 ? "it" : "they") + " had fired. " +
 			((missed & (MissedChimeraMain | MissedExperienceLoad))
-				? "Load a save to catch up."
-				: "Load a save or return to the main menu to catch up.");
+				? "Load a save to catch up"
+				: "Load a save or return to the main menu to catch up") +
+			", unless the plugin checks the current world itself.";
 	}
 
 	// Result for a DLL LoadPlugin gave up on. The out-of-date and wrong-target
@@ -1211,10 +1216,23 @@ namespace PluginManager
 		switch (why.kind)
 		{
 		case LoadFailure::CouldNotLoad:
-			r.status = ScanStatus::Retry;
-			snprintf(text, sizeof(text),
-				"Windows could not load it (error %lu). It may be locked or still being copied; try again in a moment.",
-				why.win32Error);
+			// Only a file another process still holds is worth retrying; a missing
+			// dependency or the wrong architecture will fail the same way next time.
+			if (why.win32Error == ERROR_SHARING_VIOLATION || why.win32Error == ERROR_LOCK_VIOLATION ||
+				why.win32Error == ERROR_ACCESS_DENIED)
+			{
+				r.status = ScanStatus::Retry;
+				snprintf(text, sizeof(text),
+					"Windows could not load it (error %lu). It may be locked or still being copied; try again in a moment.",
+					why.win32Error);
+			}
+			else
+			{
+				r.status = ScanStatus::Failed;
+				snprintf(text, sizeof(text),
+					"Windows could not load it (error %lu). Check it is a 64-bit plugin and that its dependencies are present.",
+					why.win32Error);
+			}
 			break;
 		case LoadFailure::NotAPlugin:
 			r.status = ScanStatus::NotAPlugin;
@@ -1225,6 +1243,10 @@ namespace PluginManager
 			if (why.interfaceVersion > PLUGIN_INTERFACE_VERSION_MAX)
 				snprintf(text, sizeof(text),
 					"Built for plugin interface v%d, newer than this loader (%s accepts up to v%d). Update the mod loader.",
+					why.interfaceVersion, MODLOADER_BUILD_TAG, PLUGIN_INTERFACE_VERSION_MAX);
+			else if (PLUGIN_INTERFACE_VERSION_MIN == PLUGIN_INTERFACE_VERSION_MAX)
+				snprintf(text, sizeof(text),
+					"Built for plugin interface v%d, older than this loader (%s accepts v%d). Ask its author for an update.",
 					why.interfaceVersion, MODLOADER_BUILD_TAG, PLUGIN_INTERFACE_VERSION_MAX);
 			else
 				snprintf(text, sizeof(text),
@@ -1254,7 +1276,7 @@ namespace PluginManager
 		if (inited && missedEvents == 0)
 		{
 			r.status = ScanStatus::Live;
-			r.action = "Loaded and running.";
+			r.action = "Loaded. Nothing it registered in PluginInit had already fired.";
 		}
 		else if (inited)
 		{

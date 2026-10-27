@@ -106,9 +106,10 @@ is available.
 
 - **LOAD NEW** picks up plugin DLLs added to the Plugins folder since the game started, and a
   popup lists each one with what to do next. <sup>[✦](#msantoro12)</sup>
-  - **Loaded** is fully live. **Loaded late** missed a world or experience start that had
+  - **Loaded** means nothing it registered for in PluginInit had already fired (save-loaded
+    callbacks are not tracked). **Loaded late** registered for a world or experience start that had
     already fired; load a save to catch it up (the any-world start also re-fires on returning to
-    the main menu).
+    the main menu), unless the plugin checks the current world itself.
   - **Needs restart** is a new DLL in the Preload folder, which only loads at game start.
   - **Incompatible** names the plugin interface the DLL was built for and the range this loader accepts.
   - **Hooks failed** has a **WHY?** button for the [report](#pop-up-windows).

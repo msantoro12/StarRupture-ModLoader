@@ -95,8 +95,11 @@ namespace UI::PluginScanWindow
             ImGui::TextColored(UI::Theme::AccentColorVec4(1.0f), "%s", r.name.c_str());
             ImGui::SameLine();
             ImGui::TextColored(StatusColor(r.status), "%s", PluginManager::ScanStatusLabel(r.status));
-            ImGui::SameLine();
-            ImGui::TextDisabled("%s", r.fileName.c_str());
+            if (r.fileName != r.name)
+            {
+                ImGui::SameLine();
+                ImGui::TextDisabled("%s", r.fileName.c_str());
+            }
 
             ImGui::Indent();
             ImGui::TextWrapped("%s", r.action.c_str());

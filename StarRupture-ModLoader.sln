@@ -24,6 +24,8 @@ Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "Tests", "Tests", "{3C7F92A8
 EndProject
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "PreloadTest", "Tests\PreloadTest\PreloadTest.vcxproj", "{9A1C4E73-05B8-4D2F-B6A9-7E3D28C4F150}"
 EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "AobScan", "tools\AobScan\AobScan.vcxproj", "{D4F81B36-92C7-4A5E-8B03-6E1A7C95F2D0}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Client Debug|x64 = Client Debug|x64
@@ -122,6 +124,16 @@ Global
 		{9A1C4E73-05B8-4D2F-B6A9-7E3D28C4F150}.Release|x64.ActiveCfg = Client Release|x64
 		{9A1C4E73-05B8-4D2F-B6A9-7E3D28C4F150}.Server Debug|x64.ActiveCfg = Server Debug|x64
 		{9A1C4E73-05B8-4D2F-B6A9-7E3D28C4F150}.Server Release|x64.ActiveCfg = Server Release|x64
+		{D4F81B36-92C7-4A5E-8B03-6E1A7C95F2D0}.Client Debug|x64.ActiveCfg = Client Release|x64
+		{D4F81B36-92C7-4A5E-8B03-6E1A7C95F2D0}.Client Release|x64.ActiveCfg = Client Release|x64
+		{D4F81B36-92C7-4A5E-8B03-6E1A7C95F2D0}.Debug|x64.ActiveCfg = Client Release|x64
+		{D4F81B36-92C7-4A5E-8B03-6E1A7C95F2D0}.Local SDK Client Debug|x64.ActiveCfg = Client Release|x64
+		{D4F81B36-92C7-4A5E-8B03-6E1A7C95F2D0}.Local SDK Client Release|x64.ActiveCfg = Client Release|x64
+		{D4F81B36-92C7-4A5E-8B03-6E1A7C95F2D0}.Local SDK Server Debug|x64.ActiveCfg = Server Release|x64
+		{D4F81B36-92C7-4A5E-8B03-6E1A7C95F2D0}.Local SDK Server Release|x64.ActiveCfg = Server Release|x64
+		{D4F81B36-92C7-4A5E-8B03-6E1A7C95F2D0}.Release|x64.ActiveCfg = Client Release|x64
+		{D4F81B36-92C7-4A5E-8B03-6E1A7C95F2D0}.Server Debug|x64.ActiveCfg = Server Release|x64
+		{D4F81B36-92C7-4A5E-8B03-6E1A7C95F2D0}.Server Release|x64.ActiveCfg = Server Release|x64
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

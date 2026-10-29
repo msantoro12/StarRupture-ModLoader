@@ -258,7 +258,7 @@ DWORD WINAPI MainInitThreadProc(LPVOID)
     // once engine init has been seen (FEngineLoop::Init returned, or one of
     // its fallbacks fired): every native class is registered by then, and the
     // game thread is parked in the engine-init hook until the plugins are up,
-    // so nothing else is touching UObjects. A failed hook install or a
+    // so it is not changing the reflection data. A failed hook install or a
     // timed-out wait leaves the game thread running, so the check is skipped.
     if (Hooks::EngineInit::IsEngineInitialized())
         LayoutCheck::Run();

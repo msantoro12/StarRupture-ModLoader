@@ -108,8 +108,11 @@ namespace SdkGlobals
 
                 const int32_t num = array->NumElements;
                 out->num = num;
-                if (num <= 0 || num > array->MaxElements || array->NumChunks <= 0 || array->NumChunks > array->MaxChunks
-                    || array->NumChunks != (num + SDK::TUObjectArray::ElementsPerChunk - 1) / SDK::TUObjectArray::ElementsPerChunk)
+                // Enough chunks for the objects, no more than the maximum: an
+                // array pre-allocated by gc.PreAllocateUObjectArray has all of
+                // them from the start.
+                if (num <= 0 || num > array->MaxElements || array->NumChunks > array->MaxChunks
+                    || array->NumChunks < (num + SDK::TUObjectArray::ElementsPerChunk - 1) / SDK::TUObjectArray::ElementsPerChunk)
                     return false;
 
                 const int32_t count = (std::min)(num, kProbeObjects);

@@ -32,8 +32,8 @@
 // count -- without those two, being this strict would cost a full unaccelerated
 // pass per pattern on every launch.
 //
-// Kind checks are applied to the FINAL address (after resultOffset and
-// followRel32At), while uniqueness applies to the raw pattern matches. One
+// Kind checks are applied to the FINAL address (after resultOffset,
+// followRel32At and followRipDispAt), while uniqueness applies to the raw pattern matches. One
 // resolve, two independent verdicts -- the failure detail always says which of
 // them failed, because "it did not resolve" is not actionable on its own.
 // ---------------------------------------------------------------------------
@@ -62,6 +62,7 @@ namespace ScanValidation
 		HMODULE     module        = nullptr;  // null = the game exe (main module)
 		int32_t     resultOffset  = 0;        // added to the match before the kind check
 		int32_t     followRel32At = -1;       // >= 0: decode an E8/E9 rel32 here and use its target
+		int32_t     followRipDispAt = -1;     // >= 0: decode a MOV/LEA [rip+disp32] here and use its address
 		uint32_t    vtableSlots   = 0;        // VTable only; 0 means 1
 	};
 

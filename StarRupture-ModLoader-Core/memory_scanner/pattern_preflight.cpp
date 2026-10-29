@@ -81,6 +81,17 @@ namespace
 
 namespace PatternPreflight
 {
+    ScanValidation::Request MakeRequest(const ScanPatterns::PreflightEntry& entry)
+    {
+        ScanValidation::Request request;
+        request.name            = entry.name;
+        request.pattern         = entry.pattern;
+        request.kind            = ToValidationKind(entry.kind);
+        request.followRel32At   = entry.followRel32At;
+        request.followRipDispAt = entry.followRipDispAt;
+        return request;
+    }
+
     bool VerifyAllPatterns(std::wstring* outFailureDetails)
     {
         constexpr size_t total = sizeof(ScanPatterns::PreflightRegistry) / sizeof(ScanPatterns::PreflightRegistry[0]);
@@ -108,13 +119,7 @@ namespace PatternPreflight
             Splash::SetStatus(status);
             Splash::SetProgress(static_cast<float>(index) / static_cast<float>(total));
 
-            ScanValidation::Request request;
-            request.name           = entry.name;
-            request.pattern        = entry.pattern;
-            request.kind           = ToValidationKind(entry.kind);
-            request.followRel32At  = entry.followRel32At;
-
-            const ScanValidation::Result result = ScanValidation::Resolve(request);
+            const ScanValidation::Result result = ScanValidation::Resolve(MakeRequest(entry));
 
             if (result.Succeeded())
             {

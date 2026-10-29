@@ -546,6 +546,67 @@ namespace ScanPatterns
 	inline constexpr auto FBitReader_SerializeBits =
 		"48 89 5C 24 ?? 48 89 74 24 ?? 57 48 83 EC ?? F6 41 ?? ?? 49 8B F8 48 8B F2 48 8B D9 0F 85";
 
+#if defined(MODLOADER_CLIENT_BUILD)
+	// -----------------------------------------------------------------------
+	// Game-SDK globals  (client, see core/sdk_globals.h)
+	//
+	// The SDK ships these as fixed offsets (Offsets:: in Basic.hpp) that are
+	// right for exactly one game build. These patterns find the same things
+	// through the code that uses them, so the address follows that code across
+	// a patch. Three of the four are data: each pattern sits on an instruction
+	// that references the global rip-relatively, and followRipDispAt on the
+	// registry row decodes it.
+	//
+	// All optional at preflight. A miss leaves the SDK on its Offsets::
+	// values, which is all it ever used before these existed.
+	// -----------------------------------------------------------------------
+
+	// GObjects -- GUObjectArray.ObjObjects, the FChunkedFixedUObjectArray the
+	// SDK's TUObjectArrayWrapper reads. UObjectBaseInit pre-allocates the chunk
+	// table and stores it into ObjObjects.Objects, which is at offset 0, so the
+	// store's operand IS ObjObjects:
+	//   49 C1 E0 03        shl  r8, 3                (MaxChunks * sizeof(void*))
+	//   48 8B C8           mov  rcx, rax
+	//   48 89 05 rel32     mov  [ObjObjects.Objects], rax   <-- followRipDispAt = 7
+	//   E8 rel32           call                      (zero the new table)
+	inline constexpr auto GObjects_PreAllocate =
+		"49 C1 E0 03 48 8B C8 48 89 05 ?? ?? ?? ?? E8";
+
+	// GNames -- NamePoolData, the engine's FNamePool. The SDK itself never reads
+	// it (FName goes through AppendString below). Anchored in
+	// FNameEntryId::FromValidEName on the inlined GetNamePool(), which
+	// constructs the pool on first use:
+	//   48 8D 0D rel32     lea  rcx, [NamePoolData]          <-- followRipDispAt = 0
+	//   8B FA              mov  edi, edx
+	//   75 ..              jne  (already constructed)
+	//   E8 rel32           call FNamePool::FNamePool
+	//   48 8B C8           mov  rcx, rax
+	//   C6 05 rel32 01     mov  byte [bNamePoolInitialized], 1
+	// FName::AppendString loads the same address, so this is the pool the
+	// SDK's names come out of.
+	inline constexpr auto GNames_NamePoolData =
+		"48 8D 0D ?? ?? ?? ?? 8B FA 75 ?? E8 ?? ?? ?? ?? 48 8B C8 C6 05 ?? ?? ?? ?? 01";
+
+	// FName::AppendString -- the FString overload, which the SDK calls for every
+	// FName it turns into a string. Two more overloads (the FStringBuilderBase
+	// ones) sit right before it with the same prologue; the register moves after
+	// the bNamePoolInitialized check are what tell them apart:
+	//   48 8B F2 / 8B 19 / 48 8B F9   this one
+	//   48 8B FA / 8B 19 / 48 8B F1   the builder overloads
+	// Signature: void __fastcall FName::AppendString(const FName* this, FString& Out)
+	inline constexpr auto FName_AppendString =
+		"48 89 5C 24 ?? 48 89 74 24 ?? 57 48 83 EC 20 80 3D ?? ?? ?? ?? 00 48 8B F2 8B 19 48 8B F9 74";
+
+	// GWorld -- the engine's UWorld* global, as FEngineLoop::Tick loads it. The
+	// same shape the public GWorld signatures for UE4/UE5 games use:
+	//   48 8B 1D rel32     mov  rbx, [GWorld]                <-- followRipDispAt = 0
+	//   48 85 DB           test rbx, rbx
+	//   74 ..              je
+	//   41 B0 01           mov  r8b, 1
+	inline constexpr auto GWorld_EngineLoopTick =
+		"48 8B 1D ?? ?? ?? ?? 48 85 DB 74 ?? 41 B0 01";
+#endif
+
 	// What an entry's address is supposed to BE, checked against the image
 	// before the pattern is accepted. Values mirror ScanValidation::Kind
 	// (memory_scanner/scan_validation.h) so pattern_preflight.cpp can convert
@@ -590,6 +651,14 @@ namespace ScanPatterns
 		//
 		// `kind` is checked against the followed address, not the match.
 		int32_t followRel32At = -1;
+
+		// Byte offset within the match of a MOV or LEA whose [rip+disp32] operand
+		// is the address we want; -1 (the default) means unused. This is how a
+		// pattern finds a GLOBAL: data has no bytes of its own worth matching, so
+		// the pattern matches code that loads, stores or takes the address of it,
+		// and the displacement names it exactly. Set at most one of this and
+		// followRel32At. `kind` is checked against the decoded address.
+		int32_t followRipDispAt = -1;
 	};
 
 	inline constexpr PreflightEntry PreflightRegistry[] =
@@ -671,6 +740,15 @@ namespace ScanPatterns
 		// key -- not a reason to refuse to boot.
 		{ "UCrUW_MainMenuWidget::NativeConstruct",     UCrUW_MainMenuWidget_NativeConstruct,     false },
 		{ "UCrUW_PauseMenu::NativeConstruct",          UCrUW_PauseMenu_NativeConstruct,          false },
+		// Optional: the Game-SDK globals (core/sdk_globals.h). A miss leaves the
+		// SDK on its built-in Offsets:: values, which is what it used before.
+		{ "GObjects (GUObjectArray.ObjObjects)",       GObjects_PreAllocate,                     false,
+		                                               PatternKind::Data, -1, 7 },
+		{ "GNames (NamePoolData)",                     GNames_NamePoolData,                      false,
+		                                               PatternKind::Data, -1, 0 },
+		{ "FName::AppendString",                       FName_AppendString,                       false },
+		{ "GWorld",                                    GWorld_EngineLoopTick,                    false,
+		                                               PatternKind::Data, -1, 0 },
 #endif
 
 #if defined(MODLOADER_SERVER_BUILD)

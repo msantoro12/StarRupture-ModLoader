@@ -111,6 +111,7 @@ namespace
             { "AGone", "Mod.Gone", 0x10, 8, Kind::Class, {} },
             { "UBlueprint_C", "Blueprint_C.Blueprint_C", 0x10, 8, Kind::Blueprint, {} },
             { "FUnknown", "Mod.Unknown", 0x10, 8, Kind::Unknown, {} },
+            { "Lib_Call", "Mod.Lib.Call", 0x18, 8, Kind::FunctionParams, { { "ReturnValue", 0x10, 8, 0 } } },
             { "FThing", "Mod.Thing", 0x20, 8, Kind::ScriptStruct, {
                 { "Missing", 0x0, 4, 0 },
                 { "Size", 0x8, 4, 0 },
@@ -128,11 +129,13 @@ namespace
             { "NowBool", 0x12, 1, true, 0xFF },
             { "Unsized", 0x14, 12, false, 0 },
         } };
-        const std::map<std::string, LayoutCheck::LiveStruct> game = { { "Mod.Thing", thing } };
+        // A native UFunction reflects MinAlignment 1 whatever its parameters hold.
+        const LayoutCheck::LiveStruct call{ 0x18, 1, { { "ReturnValue", 0x10, 8, false, 0 } } };
+        const std::map<std::string, LayoutCheck::LiveStruct> game = { { "Mod.Thing", thing }, { "Mod.Lib.Call", call } };
         const LayoutCheck::Result result = CompareWith(sdk, game);
 
-        Check(result.classes == 4 && result.checked == 1 && result.mismatched == 1 && result.missing == 1
-            && result.deferred == 2, "4 classes: 1 checked and mismatched, 1 missing, 2 deferred");
+        Check(result.classes == 5 && result.checked == 2 && result.mismatched == 1 && result.missing == 1
+            && result.deferred == 2, "5 classes: 2 checked, 1 mismatched, 1 missing, 2 deferred");
         Check(Contains(result, "AGone (Mod.Gone): not found in the game"), "a missing class");
         Check(Contains(result, "FThing: alignment SDK 8, game 16"), "an alignment change");
         Check(Contains(result, "FThing::Missing: not found in the game"), "a missing member");
@@ -140,7 +143,7 @@ namespace
         Check(Contains(result, "FThing::Bit: bool mask SDK 0x02, game 0x04"), "a bit-field that moved bit");
         Check(Contains(result, "FThing::WasBool: a bool in the SDK, not in the game"), "a bool that is no longer one");
         Check(Contains(result, "FThing::NowBool: a bool in the game, not in the SDK"), "a member that became a bool");
-        Check(result.lines.size() == 7, "nothing else, and a size of 0 is not compared");
+        Check(result.lines.size() == 7, "nothing else: a size of 0 and a function's alignment are not compared");
     }
 }
 

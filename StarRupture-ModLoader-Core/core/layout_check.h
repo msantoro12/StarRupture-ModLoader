@@ -50,7 +50,7 @@ namespace LayoutCheck
         const char*           name;     // the SDK's C++ name, ACrCharacterPlayerBase
         const char*           path;     // Module.Name, or Module.Class.Function for Kind::FunctionParams
         uint32_t              sizeOf;
-        uint32_t              alignOf;  // 0: unknown, not compared
+        uint32_t              alignOf;  // 0: unknown; never compared for Kind::FunctionParams
         Kind                  kind;
         std::vector<TableRow> rows;
     };

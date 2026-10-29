@@ -20,6 +20,8 @@
 #include <hooks/input/input_hook.h>
 #include "../memory_scanner/pattern_preflight.h"
 #include "sdk_globals.h"
+#include "layout_check.h"
+#include "../hooks/game/engine_init/engine_init.h"
 #include "../utils/thread_utils.h"
 #include "../utils/pak_list.h"
 
@@ -250,6 +252,19 @@ DWORD WINAPI MainInitThreadProc(LPVOID)
     // modloader.log and cached for the crash dialog, where user-installed pak
     // mods are the most common real cause of "modloader" crashes.
     PakList::CaptureAndLog();
+
+#ifdef MODLOADER_CLIENT_BUILD
+    // Compare the SDK's class layouts with the game's reflection data. Only
+    // once engine init has been seen (FEngineLoop::Init returned, or one of
+    // its fallbacks fired): every native class is registered by then, and the
+    // game thread is parked in the engine-init hook until the plugins are up,
+    // so nothing else is touching UObjects. A failed hook install or a
+    // timed-out wait leaves the game thread running, so the check is skipped.
+    if (Hooks::EngineInit::IsEngineInitialized())
+        LayoutCheck::Run();
+    else
+        ModLoaderLogger::LogWarn(L"[LayoutCheck] Skipped: engine init was not observed, so the game thread is not parked");
+#endif
 
     // ------------------------------------------------------------------
     // Stage 3: Plugin loading and initialisation

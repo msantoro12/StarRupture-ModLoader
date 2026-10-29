@@ -160,3 +160,29 @@ build\tests\panel_unload_tests.exe
 ```
 
 It prints one line per test and exits 0 when every check passes.
+
+## LayoutCheckTests
+
+A console program like ConfigEditTests. It compiles the loader's own `core/layout_check.cpp` without
+`MODLOADER_CLIENT_BUILD`, which keeps the comparison and drops the part that walks the game, so
+nothing else is linked.
+
+`fixtures/` holds two layout tables generated from the Game-SDK at CL 126119 and CL 127004 for
+`ACrCharacterPlayerBase` and its reflected bases (see `tools/Update-LayoutTable.ps1` for the
+generator; these were made with `--used` naming just that class and `--namespace
+SrLayoutTable126119` / `SrLayoutTable127004`). One table plays the SDK the loader was built against,
+the other the running game. It covers:
+
+- The 127004 SDK on a 127004 game: every class checked, 0 mismatched, nothing logged.
+- The 126119 SDK on a 127004 game: `ACrCharacterPlayerBase` is the one changed class, with its size
+  (0x15E0 to 0x15F0) and `ADSMoveSpeed` (0x13A8 to 0x13B8) among the lines; its bases are unchanged.
+- One synthetic case for each kind of difference: a missing class, alignment, a missing member, a
+  member size, a bit-field mask, a bool that stopped or started being one; a Blueprint class and a
+  class of unknown kind are deferred, and a member size of 0 is not compared.
+
+```
+msbuild Tests\LayoutCheckTests\LayoutCheckTests.vcxproj /p:Configuration="Client Release" /p:Platform=x64
+build\tests\layout_check_tests.exe
+```
+
+It prints one line per check and exits 0 when every check passes.

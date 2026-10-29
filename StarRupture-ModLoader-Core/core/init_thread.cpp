@@ -19,6 +19,7 @@
 #endif
 #include <hooks/input/input_hook.h>
 #include "../memory_scanner/pattern_preflight.h"
+#include "sdk_globals.h"
 #include "../utils/thread_utils.h"
 #include "../utils/pak_list.h"
 
@@ -186,6 +187,8 @@ DWORD WINAPI MainInitThreadProc(LPVOID)
 #endif
         return 0;
     }
+
+    SdkGlobals::ResolveAndApply();
 
     LogToFile::Info("[init] Installing engine hooks...");
     const ULONGLONG hooksStart = GetTickCount64();

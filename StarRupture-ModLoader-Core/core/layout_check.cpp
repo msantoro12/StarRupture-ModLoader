@@ -58,7 +58,10 @@ namespace LayoutCheck
 
             if (live->size != static_cast<int32_t>(sdk.sizeOf))
                 result.lines.push_back(Format("%s: size SDK 0x%X, game 0x%X", sdk.name, sdk.sizeOf, live->size));
-            if (sdk.alignOf != 0 && live->minAlignment != static_cast<int32_t>(sdk.alignOf))
+            // A native UFunction's MinAlignment is 1 whatever its parameters
+            // hold, so only classes and structs have an alignment to compare.
+            if (sdk.kind != Kind::FunctionParams && sdk.alignOf != 0
+                && live->minAlignment != static_cast<int32_t>(sdk.alignOf))
                 result.lines.push_back(Format("%s: alignment SDK %u, game %d", sdk.name, sdk.alignOf, live->minAlignment));
 
             for (const TableRow& row : sdk.rows)

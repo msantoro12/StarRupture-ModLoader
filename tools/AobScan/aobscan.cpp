@@ -363,11 +363,12 @@ int wmain(int argc, wchar_t** argv)
 		// The same request PatternPreflight builds, aimed at the mapped image
 		// instead of the process's own main module.
 		ScanValidation::Request request;
-		request.name          = entry.name;
-		request.pattern       = entry.pattern;
-		request.kind          = static_cast<ScanValidation::Kind>(static_cast<int>(entry.kind));
-		request.followRel32At = entry.followRel32At;
-		request.module        = module;
+		request.name            = entry.name;
+		request.pattern         = entry.pattern;
+		request.kind            = static_cast<ScanValidation::Kind>(static_cast<int>(entry.kind));
+		request.followRel32At   = entry.followRel32At;
+		request.followRipDispAt = entry.followRipDispAt;
+		request.module          = module;
 
 		Row row;
 		row.entry  = &entry;

@@ -414,6 +414,15 @@
     <ClInclude Include="core\version_check.h">
       <Filter>Source Files\core</Filter>
     </ClInclude>
+    <ClInclude Include="core\sdk_globals.h">
+      <Filter>Source Files\core</Filter>
+    </ClInclude>
+    <ClInclude Include="core\layout_check.h">
+      <Filter>Source Files\core</Filter>
+    </ClInclude>
+    <ClInclude Include="core\layout_table.generated.h">
+      <Filter>Source Files\core</Filter>
+    </ClInclude>
     <ClInclude Include="core\engine_sync.h">
       <Filter>Source Files\core</Filter>
     </ClInclude>
@@ -513,6 +522,12 @@
       <Filter>Source Files\core</Filter>
     </ClCompile>
     <ClCompile Include="core\version_check.cpp">
+      <Filter>Source Files\core</Filter>
+    </ClCompile>
+    <ClCompile Include="core\sdk_globals.cpp">
+      <Filter>Source Files\core</Filter>
+    </ClCompile>
+    <ClCompile Include="core\layout_check.cpp">
       <Filter>Source Files\core</Filter>
     </ClCompile>
     <ClCompile Include="core\engine_sync.cpp">

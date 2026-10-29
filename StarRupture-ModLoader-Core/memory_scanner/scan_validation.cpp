@@ -157,13 +157,19 @@ namespace ScanValidation
 
 	namespace
 	{
-		// Applies resultOffset / followRel32At. Returns false with a reason when
+		// Applies resultOffset / followRel32At / followRipDispAt. Returns false with a reason when
 		// the transform cannot be done inside the image.
 		bool ApplyTransforms(const Request& req, HMODULE module, uintptr_t rawMatch,
 			uintptr_t& outAddress, std::string& outError)
 		{
 			const Scanner::ImageInfo image = Scanner::GetImageInfo(module);
 			uintptr_t addr = rawMatch;
+
+			if (req.followRel32At >= 0 && req.followRipDispAt >= 0)
+			{
+				outError = "followRel32At and followRipDispAt are both set; a request follows one or the other";
+				return false;
+			}
 
 			if (req.followRel32At >= 0)
 			{
@@ -191,6 +197,45 @@ namespace ScanValidation
 				if (!image.valid || addr < image.base || addr >= image.base + image.size)
 				{
 					outError = "the rel32 at +" + std::to_string(req.followRel32At)
+					         + " resolves to " + Hex(addr) + ", which is outside the image";
+					return false;
+				}
+			}
+			else if (req.followRipDispAt >= 0)
+			{
+				// A load, store or LEA through [rip+disp32]: an optional REX byte,
+				// then 8B / 89 / 8D, then a ModRM with mod=00 rm=101. None of the
+				// three carries an immediate, so the disp32 ends the instruction and
+				// the address is relative to the byte after it. Anything else is
+				// refused rather than guessed at -- an immediate after the disp32
+				// moves "the next instruction" and would skew the result silently.
+				const uintptr_t site = rawMatch + static_cast<uintptr_t>(req.followRipDispAt);
+				if (!image.valid || site + 7 > image.base + image.size)
+				{
+					outError = "followRipDispAt " + std::to_string(req.followRipDispAt)
+					         + " points outside the image";
+					return false;
+				}
+
+				const auto*   bytes  = reinterpret_cast<const uint8_t*>(site);
+				const size_t  rex    = (bytes[0] & 0xF0) == 0x40 ? 1 : 0;
+				const uint8_t opcode = bytes[rex];
+				const uint8_t modrm  = bytes[rex + 1];
+				if ((opcode != 0x8B && opcode != 0x89 && opcode != 0x8D) || (modrm & 0xC7) != 0x05)
+				{
+					outError = "followRipDispAt " + std::to_string(req.followRipDispAt)
+					         + " expected a MOV (8B/89) or LEA (8D) with a [rip+disp32] operand, found "
+					         + Hex(opcode) + " " + Hex(modrm);
+					return false;
+				}
+
+				int32_t disp32 = 0;
+				memcpy(&disp32, bytes + rex + 2, sizeof(disp32));
+				addr = site + rex + 6 + static_cast<uintptr_t>(static_cast<intptr_t>(disp32));
+
+				if (addr < image.base || addr >= image.base + image.size)
+				{
+					outError = "the [rip+disp32] at +" + std::to_string(req.followRipDispAt)
 					         + " resolves to " + Hex(addr) + ", which is outside the image";
 					return false;
 				}

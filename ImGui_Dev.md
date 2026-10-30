@@ -263,6 +263,8 @@ stays with the game, so Escape still closes the menu. The flag applies to the wi
 a child window inside a widget that did not opt in (`BeginChild`, a scrolling table) is an ImGui
 window of its own and still takes the mouse. While a ModLoader window has the cursor (F2, a
 plugin panel, the console), the flag changes nothing: widgets take the mouse as they always have.
+Mouse queries (`GetMousePos`, `IsMouseDown`, `IsMouseClicked`) report the menu cursor in every
+widget, opted in or not; only hovering and clicking the window itself is gated.
 
 To ask directly, `hooks->GameMenu->IsPauseMenuOpen()` reports the pause menu and
 `hooks->UI->IsOverlayOpen()` reports a ModLoader window with exclusive capture.
@@ -382,6 +384,10 @@ if (imgui->IsWindowFocused(0))
     if (imgui->IsKeyPressed(VK_UP, true))   --g_highlight;
 }
 ```
+
+Use the sided modifier codes (`VK_LSHIFT`, `VK_RCONTROL`, ...). `VK_SHIFT`, `VK_CONTROL`,
+`VK_MENU` and the `VK_OEM_*` keys other than `VK_OEM_COMMA` and `VK_OEM_PERIOD` always report
+false, and `VK_RETURN` is the main Enter key only.
 
 ---
 

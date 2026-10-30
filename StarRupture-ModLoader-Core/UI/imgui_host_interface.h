@@ -57,6 +57,11 @@ struct ImGuiRenderCallbacks
     // uiCapturing is true under exclusive capture. Returns true if a handler
     // consumed it and the game must not see it (never while uiCapturing).
     bool    (*DispatchMouseWheel)(UINT msg, WPARAM wParam, LPARAM lParam, bool uiCapturing);
+
+    // True while the game's pause menu is the active screen. The game shows
+    // its own cursor then, so ImGui is fed the mouse and keeps only the
+    // messages it wants; the keyboard stays with the game.
+    bool    (*IsPauseMenuOpen)();
 };
 
 // ---------------------------------------------------------------------------

@@ -14,6 +14,7 @@
 #include "ChimeraUI_classes.hpp"
 #include "ChimeraUI_parameters.hpp"
 
+#include <atomic>
 #include <vector>
 #include <cstring>
 
@@ -93,6 +94,18 @@ namespace Hooks::GameMenu
 		ButtonClicked_t   g_pauseClickOrig     = nullptr;
 		bool              g_mainInstalled      = false;
 		bool              g_pauseInstalled     = false;
+
+		// The pause menu the last NativeConstruct ran on, with the GObjects
+		// slot and class it is validated by.  CommonUI keeps the widget around
+		// between openings and frees it on its own schedule, so the pointer is
+		// only read after GObjects confirms that slot still holds the same
+		// live object.  Game thread only.
+		SDK::UCrUW_PauseMenu* g_pauseMenu      = nullptr;
+		int32_t               g_pauseMenuIndex = -1;
+		const SDK::UClass*    g_pauseMenuClass = nullptr;
+
+		// What Tick last saw, for readers on any thread.
+		std::atomic<bool>     g_pauseMenuOpen{ false };
 
 		// Renders a row list as hex for the log.  Sentinels are the values at
 		// or above kSentinelBase, so a glance at the line says which positions
@@ -512,6 +525,10 @@ namespace Hooks::GameMenu
 
 			if (self)
 			{
+				g_pauseMenu      = self;
+				g_pauseMenuIndex = self->Index;
+				g_pauseMenuClass = self->Class;
+
 				try
 				{
 					LabelRows(reinterpret_cast<FRawByteArray*>(&self->LeftButtons),
@@ -748,11 +765,43 @@ namespace Hooks::GameMenu
 			g_pauseClickOrig     = nullptr;
 			g_pauseInstalled     = false;
 		}
+
+		g_pauseMenu      = nullptr;
+		g_pauseMenuIndex = -1;
+		g_pauseMenuClass = nullptr;
+		g_pauseMenuOpen.store(false, std::memory_order_relaxed);
 	}
 
 	bool IsInstalled()
 	{
 		return g_mainInstalled || g_pauseInstalled;
+	}
+
+	void Tick()
+	{
+		bool open = false;
+
+		if (g_pauseMenu)
+		{
+			const SDK::UObject* live = SDK::UObject::GObjects->GetByIndex(g_pauseMenuIndex);
+			const bool alive = live == g_pauseMenu
+				&& live->Class == g_pauseMenuClass
+				&& !(live->Flags & SDK::EObjectFlags::BeginDestroyed)
+				&& !(live->Flags & SDK::EObjectFlags::FinishDestroyed)
+				&& !(live->Flags & SDK::EObjectFlags::MirroredGarbage);
+
+			if (alive)
+				open = g_pauseMenu->bIsActive;
+			else
+				g_pauseMenu = nullptr;
+		}
+
+		g_pauseMenuOpen.store(open, std::memory_order_relaxed);
+	}
+
+	bool IsPauseMenuOpen()
+	{
+		return g_pauseMenuOpen.load(std::memory_order_relaxed);
 	}
 }
 

@@ -13,4 +13,8 @@ void ShutdownClientUI();
 // copy of the logic would quietly agree with the reader instead of the loader.
 bool ShouldCaptureInputNow();
 bool ShouldPassthroughInputNow();
+
+// True while the pause menu is open and nothing has exclusive capture: ImGui
+// gets the mouse, and only windows that opted in may take it.
+bool ShouldSharePauseMenuMouseNow();
 #endif

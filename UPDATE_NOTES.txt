@@ -1,3 +1,5 @@
+Plugin windows can opt in to being clicked and dragged over the Escape menu
+Plugins can tell when the Escape menu or a loader window is open
 Plugins Updated window now lists what changed in each plugin
 Loader update prompt shows what is new
 A hang inside a plugin's tick or overlay draw callback now names that plugin in the log

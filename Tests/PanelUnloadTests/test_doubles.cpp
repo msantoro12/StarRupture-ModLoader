@@ -47,3 +47,10 @@ namespace UI::Theme
 
     void EndChamferedWindow() {}
 }
+
+// plugin_widget_registry.cpp asks this whether widgets share the pause
+// menu's mouse; no test opens the pause menu.
+bool ShouldSharePauseMenuMouseNow()
+{
+    return false;
+}

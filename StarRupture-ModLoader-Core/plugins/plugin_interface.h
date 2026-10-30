@@ -677,9 +677,31 @@
 //      difference except that the crash is gone and a freed slot becomes
 //      reusable a frame or two later.
 //
+// v71 (2026-10-30): Read-only UI state, so a plugin can tell what is on
+//      screen without detecting it itself. Every addition is appended at the
+//      BOTTOM of its struct, so nothing a v70 plugin reads by offset moved and
+//      MIN stays at 70.
+//
+//      Added IPluginGameMenu::IsPauseMenuOpen (the game's Escape menu is
+//      active) and IPluginUIEvents::IsOverlayOpen (a loader or plugin
+//      window has exclusive input capture). Both are safe from any thread.
+//
+//      Added IModLoaderImGui::IsKeyPressed, taking a Win32 virtual-key code.
+//      Keybinds are not dispatched while a text field has focus, so a plugin
+//      with a search box had no way to read Up/Down to move a highlight.
+//
+//      Added PluginWindowFlags_PauseMenuMouseInputs. While the pause menu is
+//      open and no window has exclusive capture, ImGui is fed the mouse (the
+//      game shows its own cursor there), but only a widget with this flag
+//      takes it: it can be hovered, clicked and dragged, and a click on it is
+//      kept from the menu. Every other widget window stays click-through, as
+//      before (child windows inside it are ImGui windows of their own).
+//      The keyboard stays with the game. Nothing changes under exclusive
+//      capture.
+//
 #define PLUGIN_INTERFACE_VERSION_MIN 70
-#define PLUGIN_INTERFACE_VERSION_MAX 70
-#define PLUGIN_INTERFACE_VERSION 70
+#define PLUGIN_INTERFACE_VERSION_MAX 71
+#define PLUGIN_INTERFACE_VERSION 71
 
 enum class PluginLogLevel { Trace = 0, Debug = 1, Info = 2, Warn = 3, Error = 4 };
 enum class ConfigValueType { String, Integer, Float, Boolean, Keybind };
@@ -1648,6 +1670,18 @@ struct IModLoaderImGui
 	// IPluginInputEvents::RegisterMouseWheel (v70) for the wheel at any time.
 	float (*GetMouseWheel)();
 	float (*GetMouseWheelH)();
+
+	// --- v71 ---
+	// ImGui::IsKeyPressed for a Win32 virtual-key code (VK_UP, VK_RETURN,
+	// 'A', ...); repeat also reports ImGui's key repeat while held. Use the
+	// sided modifier codes (VK_LSHIFT, VK_RCONTROL, ...). VK_SHIFT,
+	// VK_CONTROL, VK_MENU and the VK_OEM_* keys other than VK_OEM_COMMA and
+	// VK_OEM_PERIOD always report false; VK_RETURN is the main Enter key only.
+	// ImGui sees every key the game window receives, so this works where a
+	// keybind does not: while one of your text fields has focus. Call it from
+	// your render callback, gated on your window being focused, or it fires
+	// for keys meant for the game.
+	bool (*IsKeyPressed)(int vk, bool repeat);
 };
 
 typedef void (*PluginImGuiRenderCallback)(IModLoaderImGui* imgui);
@@ -1771,6 +1805,10 @@ struct IPluginImGuiTextures
 #define PluginWindowFlags_NoBackground      (1 << 7)
 #define PluginWindowFlags_NoSavedSettings   (1 << 8)
 #define PluginWindowFlags_NoMouseInputs     (1 << 9)
+// v71, loader-only (ImGui never sees it): the widget takes the mouse while
+// the game's pause menu is open and no window has exclusive capture. Without
+// it the widget's window is click-through there; its child windows are not.
+#define PluginWindowFlags_PauseMenuMouseInputs (1 << 30)
 
 // Optional size/position hints for RegisterWidget windows.
 // Set width/height to 0 for no size hint. Set pos_x/pos_y to -1 to skip positioning.
@@ -1785,7 +1823,7 @@ struct PluginWindowHints
 	float pivot_y;
 	int   size_cond;
 	int   pos_cond;
-	int   extra_window_flags;  // v31: OR'd into ImGuiWindowFlags; 0 = default
+	int   extra_window_flags;  // v31: OR'd into ImGuiWindowFlags (except PauseMenuMouseInputs); 0 = default
 };
 
 struct PluginPanelDesc
@@ -1860,6 +1898,13 @@ struct IPluginUIEvents
 	// including during PluginShutdown.
 	void* (*AcquireInputPassthrough)();
 	void  (*ReleaseInputPassthrough)(void* token);
+
+	// --- v71 ---
+	// True while a loader or plugin window has exclusive input capture: the
+	// mod loader window, a console or profiler window, any open plugin panel,
+	// or an AcquireInputCapture token. The cursor is ImGui's and the game is
+	// frozen. Safe from any thread.
+	bool (*IsOverlayOpen)();
 };
 
 // ---------------------------------------------------------------------------
@@ -2713,6 +2758,15 @@ struct IPluginGameMenu
 	// registered, they just will not appear. Worth checking if a menu row is
 	// the only way into your UI.
 	bool (*IsAvailable)();
+
+	// --- v71 ---
+	// True while the game's pause menu (the Escape screen) is active, as its
+	// CommonUI activation flag reports; false in the main menu and in play.
+	// On a screen the menu opens (options and so on) the game decides whether
+	// that flag stays set, so do not rely on either answer there. Sampled
+	// once per game tick, so it lags by up to a frame. Safe from any thread.
+	// Always false when the pause hook did not install.
+	bool (*IsPauseMenuOpen)();
 };
 
 // ---------------------------------------------------------------------------

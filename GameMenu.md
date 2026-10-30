@@ -182,10 +182,16 @@ struct IPluginGameMenu {
 };
 ```
 
-`IsPauseMenuOpen()` (v71) is true while the pause menu itself is the active screen: false on the
-screens it opens (options and so on), in the main menu and in play. The loader samples it once
-per game tick, so it is safe to call from any thread, including a render callback. It is always
-false when the pause hook did not install.
+`IsPauseMenuOpen()` (v71) is true while the pause menu is active, as its CommonUI activation flag
+reports, and false in the main menu and in play. On a screen the menu opens (options and so on)
+the game decides whether that flag stays set, so do not rely on either answer there. The loader
+samples it once per game tick, so it is safe to call from any thread, including a render
+callback. It is always false when the pause hook did not install.
+
+Over the pause menu, widgets are click-through unless they opt in with
+`PluginWindowFlags_PauseMenuMouseInputs`; an opted-in widget can be hovered, clicked and dragged
+there, and the keyboard stays with the game. With the F2 window open nothing changes. See
+[ImGui_Dev.md](ImGui_Dev.md#6-over-the-pause-menu-v71).
 
 ---
 

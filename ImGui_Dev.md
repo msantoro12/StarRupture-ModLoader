@@ -235,11 +235,37 @@ player's chosen position persists between sessions.
 ### 6. Over the pause menu (v71)
 
 While the game's pause menu is open and no ModLoader window has the cursor, the game shows its
-own cursor and the loader feeds ImGui the mouse. A widget there can be hovered, clicked and
-dragged with no code on your side; a click on it is kept from the menu, and the keyboard stays
-with the game, so Escape still closes the menu. Pass `PluginWindowFlags_NoInputs` for a widget
-that must stay click-through. To ask directly, `hooks->GameMenu->IsPauseMenuOpen()` reports the
-pause menu and `hooks->UI->IsOverlayOpen()` reports a ModLoader window with exclusive capture.
+own cursor. Widgets are click-through there by default, so the menu buttons under them keep
+working. To let players hover, click and drag a widget over the menu, opt in with
+`PluginWindowFlags_PauseMenuMouseInputs` in its window hints:
+
+```cpp
+static const PluginWindowHints k_myHints = {
+    0.0f, 0.0f,     // width, height: no size hint
+    -1.0f, -1.0f,   // pos_x, pos_y: no placement
+    0.0f, 0.0f,     // pivot
+    0, 0,           // size_cond, pos_cond
+    PluginWindowFlags_PauseMenuMouseInputs | (1 << 6)   // 1 << 6: ImGuiWindowFlags_AlwaysAutoResize
+};
+
+static const PluginWidgetDesc k_myWidget = {
+    "My Plugin HUD",
+    MyWidgetRender,
+    &k_myHints
+};
+```
+
+A widget without hints is auto-sized; one with hints is not unless it asks, hence the `1 << 6`.
+
+A click on an opted-in widget is kept from the menu; a click anywhere else reaches the menu. While
+one of its popups is open, ImGui keeps the first click outside it to close the popup. The keyboard
+stays with the game, so Escape still closes the menu. The flag applies to the widget's own window:
+a child window inside a widget that did not opt in (`BeginChild`, a scrolling table) is an ImGui
+window of its own and still takes the mouse. While a ModLoader window has the cursor (F2, a
+plugin panel, the console), the flag changes nothing: widgets take the mouse as they always have.
+
+To ask directly, `hooks->GameMenu->IsPauseMenuOpen()` reports the pause menu and
+`hooks->UI->IsOverlayOpen()` reports a ModLoader window with exclusive capture.
 
 ---
 

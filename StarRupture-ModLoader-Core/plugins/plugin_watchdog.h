@@ -22,7 +22,7 @@
 
 namespace PluginWatchdog
 {
-    // Starts the periodic check. Call once, before the first engine tick.
+    // Starts the periodic check. Call once, during startup.
     void Start();
 
     // Stops the check and waits for one in progress. Call once no plugin code

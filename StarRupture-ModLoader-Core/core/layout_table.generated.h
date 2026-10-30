@@ -7,7 +7,7 @@
 namespace SrLayoutTable {
 
 inline constexpr uint32_t kFormatVersion = 1;
-inline constexpr uint32_t kBuiltCL = 127004;
+inline constexpr uint32_t kBuiltCL = 126119;
 inline constexpr uint32_t kDetail = 1;  // 0: offsets only; 1: Row::size and Row::boolMask are filled
 inline constexpr uint32_t kGranularity = 0;  // 0: every member of each class is listed; 1: only chosen members
 inline constexpr uint32_t kNameCount = 1347;

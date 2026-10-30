@@ -8,7 +8,7 @@ namespace CompatReport
     namespace
     {
         // Bumped on any change to the report's fields.
-        constexpr int kReportFormat = 1;
+        constexpr int kReportFormat = 2;
 
         void AppendString(std::string& out, const std::string& text)
         {
@@ -98,7 +98,7 @@ namespace CompatReport
             AppendString(o, inputs.exeName);
             o += ", \"pattern\": ";
             AppendString(o, miss.pattern);
-            o += std::string(", \"required\": ") + Bool(miss.required) + ", \"ambiguous\": " + Bool(miss.ambiguous);
+            o += std::string(", \"required\": ") + Bool(miss.required) + ", \"found\": " + Bool(miss.found);
         }, false);
 
         AppendArray(out, "globals", inputs.globals, [](std::string& o, const GlobalRva& global)
@@ -107,7 +107,8 @@ namespace CompatReport
             AppendString(o, global.name);
             o += std::string(", \"resolved\": ") + Bool(global.resolved)
                 + ", \"rva\": " + std::to_string(global.rva)
-                + ", \"sdkOffset\": " + std::to_string(global.sdkOffset);
+                + ", \"sdkOffset\": " + std::to_string(global.sdkOffset)
+                + ", \"rejected\": " + Bool(global.rejected);
         }, false);
 
         AppendArray(out, "changes", layout.changes, [](std::string& o, const LayoutCheck::Change& change)
@@ -150,7 +151,7 @@ namespace CompatReport
         constexpr DWORD  kHashChunkBytes = 1 << 20;
         constexpr size_t kSha256Bytes    = 32;
 
-        std::string Utf8(const std::wstring& text)
+        std::string WideToUtf8(const std::wstring& text)
         {
             const int size = WideCharToMultiByte(CP_UTF8, 0, text.c_str(), static_cast<int>(text.size()), nullptr, 0, nullptr, nullptr);
             if (size <= 0)
@@ -211,12 +212,12 @@ namespace CompatReport
         GetModuleFileNameW(nullptr, exePath, MAX_PATH);
         const wchar_t* lastSlash = wcsrchr(exePath, L'\\');
 
-        Inputs inputs{ Utf8(GetGameVersionString()), Utf8(lastSlash ? lastSlash + 1 : exePath),
+        Inputs inputs{ WideToUtf8(GetGameVersionString()), WideToUtf8(lastSlash ? lastSlash + 1 : exePath),
             Sha256OfFile(exePath), SrLayoutTable::kBuiltCL, {}, {}, &layout };
         for (const PatternPreflight::Miss& miss : PatternPreflight::Misses())
             inputs.patternMisses.push_back(PatternMiss{ miss.name, miss.pattern, miss.required, miss.structural });
         for (const SdkGlobals::Resolution& global : SdkGlobals::Resolutions())
-            inputs.globals.push_back(GlobalRva{ global.name, global.resolved, global.rva, global.sdkOffset });
+            inputs.globals.push_back(GlobalRva{ global.name, global.resolved, global.rva, global.sdkOffset, global.rejected });
 
         const std::string cl = ClOf(inputs.productVersion);
         const std::wstring fileName = L"compat-report-" + std::wstring(cl.begin(), cl.end()) + L".json";

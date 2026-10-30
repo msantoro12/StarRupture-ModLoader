@@ -179,8 +179,11 @@ namespace LayoutCheck
             for (int32_t i = 0; i < search.objects; ++i)
             {
                 SDK::UObject* object = objects->GetByIndex(i);
+                // The SDK's operator& on these flags means "has all bits", so a
+                // combined mask would match nothing: test each flag on its own.
                 if (!object || !object->Class
-                    || !object->HasTypeFlag(SDK::EClassCastFlags::Class | SDK::EClassCastFlags::ScriptStruct))
+                    || !(object->HasTypeFlag(SDK::EClassCastFlags::Class)
+                         || object->HasTypeFlag(SDK::EClassCastFlags::ScriptStruct)))
                     continue;
 
                 const SDK::UObject* package = object->Outer;

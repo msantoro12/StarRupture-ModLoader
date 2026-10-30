@@ -178,8 +178,14 @@ struct IPluginGameMenu {
     bool                (*RemoveEntry)(const IPluginSelf* self, GameMenuEntryHandle handle);
     int                 (*RemoveAllEntries)(const IPluginSelf* self);
     bool                (*IsAvailable)();
+    bool                (*IsPauseMenuOpen)();   // v71
 };
 ```
+
+`IsPauseMenuOpen()` (v71) is true while the pause menu itself is the active screen: false on the
+screens it opens (options and so on), in the main menu and in play. The loader samples it once
+per game tick, so it is safe to call from any thread, including a render callback. It is always
+false when the pause hook did not install.
 
 ---
 

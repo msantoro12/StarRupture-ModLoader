@@ -232,6 +232,15 @@ if (hooks->Input)
 The widget window position and size are saved to `modloader_imgui.ini` automatically, so the
 player's chosen position persists between sessions.
 
+### 6. Over the pause menu (v71)
+
+While the game's pause menu is open and no ModLoader window has the cursor, the game shows its
+own cursor and the loader feeds ImGui the mouse. A widget there can be hovered, clicked and
+dragged with no code on your side; a click on it is kept from the menu, and the keyboard stays
+with the game, so Escape still closes the menu. Pass `PluginWindowFlags_NoInputs` for a widget
+that must stay click-through. To ask directly, `hooks->GameMenu->IsPauseMenuOpen()` reports the
+pause menu and `hooks->UI->IsOverlayOpen()` reports a ModLoader window with exclusive capture.
+
 ---
 
 ## Config-Change Notifications
@@ -332,6 +341,21 @@ if (hooks->Input)
   return value is ignored, so ImGui keeps scrolling. The game is not receiving input then anyway.
 - Registrations are dropped automatically when the plugin is unloaded or reloaded, so a stale
   handler cannot be called. Unregister in `PluginShutdown` anyway.
+
+### Keys inside your own window (v71)
+
+Keybinds are not dispatched while a text field has focus, so they cannot move a highlight in a
+search list. `IModLoaderImGui::IsKeyPressed(vk, repeat)` reads ImGui's key state for a Win32
+virtual-key code and works while you type. Call it from your render callback, only while your
+window is focused, or it also fires for keys meant for the game:
+
+```cpp
+if (imgui->IsWindowFocused(0))
+{
+    if (imgui->IsKeyPressed(VK_DOWN, true)) ++g_highlight;
+    if (imgui->IsKeyPressed(VK_UP, true))   --g_highlight;
+}
+```
 
 ---
 
@@ -462,6 +486,7 @@ imgui->ColorEdit4("Color", col4);   // RGBA
 | `SetTooltip(text)` | Show a tooltip when the previous widget is hovered |
 | `IsItemHovered()` | True if the mouse is over the previous widget |
 | `SetNextItemWidth(w)` | Override width of the next widget; pass `-1` to fill remaining space |
+| `IsKeyPressed(vk, repeat)` | (v71) True on the frame a Win32 virtual key goes down; `repeat` adds the held-key repeats |
 
 ---
 

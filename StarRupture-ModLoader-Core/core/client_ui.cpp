@@ -56,6 +56,15 @@ bool ShouldPassthroughInputNow()
     return UI::PluginPanelRegistry::AnyInputPassthroughRequested();
 }
 
+bool ShouldSharePauseMenuMouseNow()
+{
+    // The pause menu shows the game's own cursor, and the ImGui host feeds
+    // ImGui the mouse there unless exclusive capture owns it. Only windows
+    // that opted in take it; everything else is drawn click-through, so the
+    // menu under it keeps its clicks.
+    return !ShouldCaptureInputNow() && Hooks::GameMenu::IsPauseMenuOpen();
+}
+
 void InitClientUI()
 {
     const std::wstring iniPath = GetModLoaderDirPath(L"modloader.ini");

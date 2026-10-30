@@ -304,10 +304,11 @@ static LRESULT CALLBACK HookedWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM
 	const bool capturing = exclusive || cooperative;
 
 	// The game's pause menu shows the game's own cursor, so ImGui can be fed
-	// the mouse without owning it: windows over the menu (a plugin's pinned
-	// widgets) can be hovered, clicked and dragged, and only the clicks that
-	// land on them are kept from the menu. The keyboard stays with the game,
-	// so Escape still closes the menu. Exclusive capture overrides it.
+	// the mouse without owning it: windows over the menu that opted in (see
+	// ShouldSharePauseMenuMouseNow; the rest are drawn click-through) can be
+	// hovered, clicked and dragged, and only the clicks that land on them are
+	// kept from the menu. The keyboard stays with the game, so Escape still
+	// closes the menu. Exclusive capture overrides it.
 	const bool menuCursor = !exclusive &&
 		(g_callbacks.IsPauseMenuOpen ? g_callbacks.IsPauseMenuOpen() : false);
 
@@ -1366,7 +1367,10 @@ static HRESULT STDMETHODCALLTYPE HookedPresent(IDXGISwapChain* swapChain, UINT s
 		// Pause menu closed without exclusive capture taking over: ImGui stops
 		// being fed the mouse, so park it off-screen and release any held
 		// button, or a widget under the last position stays hovered or keeps
-		// dragging (the menu can close mid-drag on Escape).
+		// dragging (the menu can close mid-drag on Escape). The Win32 backend
+		// still polls the OS cursor on its own while it is not tracking the
+		// mouse, as it does after F2 closes, so the parked position may not
+		// last; the button release is what ends the drag.
 		const bool menuCursor = !uiOpen &&
 			(g_callbacks.IsPauseMenuOpen ? g_callbacks.IsPauseMenuOpen() : false);
 		if (g_prevMenuCursor && !menuCursor && !uiOpen)

@@ -330,11 +330,13 @@ namespace Hooks::CrashDialog
 
         if (choiceMode)
         {
-            // The game hasn't run yet, so there's no fresh StarRupture.log to
-            // show -- offer the start/quit choice instead.
+            // There's no fresh StarRupture.log to show (the game hasn't run, or
+            // in layout mode has only just initialised) -- offer the start/quit
+            // choice instead. Layout mode keeps the loader and switches only
+            // the plugins off.
             AppendControl(buf, kBtnStyle, 0,
                 kDlgW - 179, kBtnY, 110, 14, IDC_START_WITHOUT_ML, kClassButton,
-                L"Start Game Without ModLoader");
+                layoutMode ? L"Start Game Without Plugins" : L"Start Game Without ModLoader");
             AppendControl(buf, kBtnStyle, 0,
                 kDlgW - 61, kBtnY, 54, 14, IDC_QUIT_GAME, kClassButton, L"Quit Game");
         }

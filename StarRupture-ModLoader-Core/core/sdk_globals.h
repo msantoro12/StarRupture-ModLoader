@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <vector>
 
 // The Game-SDK's build-specific globals, found by pattern.
 //
@@ -35,7 +36,17 @@ namespace SdkGlobals
     // engine init, with the game thread still parked.
     bool VerifyGObjects();
 
-    // The pattern-resolved address of the engine's GWorld pointer, or 0 when
-    // it did not resolve (and always on a server build).
-    uintptr_t GWorldAddress();
+    // One global as ResolveAndApply found it, for the compatibility report.
+    struct Resolution
+    {
+        const char* name;       // as the SDK's Offsets:: spells it
+        bool        resolved;
+        uint64_t    rva;        // 0 when not resolved; kept when rejected
+        int32_t     sdkOffset;  // Offsets::<name>
+        bool        rejected;   // resolved, but VerifyGObjects threw the hit away
+                                // and the SDK uses Offsets:: (GObjects only)
+    };
+
+    // Every global ResolveAndApply looked for, in order. Client builds only.
+    const std::vector<Resolution>& Resolutions();
 }

@@ -151,6 +151,12 @@ namespace PluginManager
     // Game thread only: PluginInit runs here.
     int ScanForNewPlugins(std::vector<ScanResult>* outResults = nullptr);
 
+    // Refuses every plugin DLL load from now on -- startup, ReloadPlugin and
+    // ScanForNewPlugins alike. Set by the init thread, before any plugin
+    // loads, when the startup layout check finds the game no longer matches
+    // the SDK.
+    void RefusePluginLoads();
+
     // Increments every time a plugin is loaded, unloaded or reloaded.
     //
     // For UI that caches anything derived from a plugin: store the value alongside

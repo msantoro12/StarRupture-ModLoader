@@ -92,11 +92,23 @@ namespace PatternPreflight
         return request;
     }
 
+    namespace
+    {
+        // Written by VerifyAllPatterns on the init thread, read after it.
+        std::vector<Miss> g_misses;
+    }
+
+    const std::vector<Miss>& Misses()
+    {
+        return g_misses;
+    }
+
     bool VerifyAllPatterns(std::wstring* outFailureDetails)
     {
         constexpr size_t total = sizeof(ScanPatterns::PreflightRegistry) / sizeof(ScanPatterns::PreflightRegistry[0]);
 
         const bool skipValidation = SkipValidationRequested();
+        g_misses.clear();
 
         ModLoaderLogger::LogInfo(L"[Preflight] Verifying %zu modloader scan patterns...", total);
         if (skipValidation)
@@ -135,6 +147,7 @@ namespace PatternPreflight
             const bool isFatal   = entry.required && !tolerated;
 
             Failure failure{ entry.name, result.detail, structural };
+            g_misses.push_back(Miss{ entry.name, entry.pattern, entry.required, structural });
 
             if (isFatal)
             {

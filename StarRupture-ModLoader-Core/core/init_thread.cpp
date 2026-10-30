@@ -22,9 +22,53 @@
 #include "../memory_scanner/pattern_preflight.h"
 #include "sdk_globals.h"
 #include "layout_check.h"
+#include "compat_report.h"
+#include "../plugins/plugin_manager.h"
+#include "../preload/preload_manager.h"
 #include "../hooks/game/engine_init/engine_init.h"
 #include "../utils/thread_utils.h"
 #include "../utils/pak_list.h"
+
+#ifdef MODLOADER_CLIENT_BUILD
+// Safe-off after a layout mismatch: the SDK reads the wrong bytes on this game
+// build, so no plugin code may run. Called on the init thread with the game
+// thread parked in the engine-init hook. That park ends on its own after a
+// timeout, so plugin loads are refused and the preload plugins shut down
+// before the dialog waits on the player. The loader's hooks stay in, and the
+// few that still read SDK types (WorldBeginPlay's GetWorld) are safe only
+// while the exact-CL version gate holds.
+static void EnterLayoutSafeOff(const LayoutCheck::Result& layout)
+{
+    PluginManager::RefusePluginLoads();
+    PreloadManager::Shutdown();
+    ModLoaderLogger::LogError(L"[init] Layout mismatch -- plugins are switched off for this session");
+
+    const std::wstring reportName = CompatReport::Write(layout);
+    Splash::Close();
+
+    // CRLF: the crash dialog's edit control does not render bare '\n'.
+    std::wstring details = L"Your game build:  " + GetGameVersionString() + L"\r\n";
+    if (!reportName.empty())
+        details += L"Report:           ModLoader\\" + reportName + L"\r\n";
+    details += L"\r\n";
+    for (const std::string& line : layout.lines)
+        details += std::wstring(line.begin(), line.end()) + L"\r\n";
+
+    const auto choice = Hooks::CrashDialog::Show(Hooks::CrashDialog::Mode::LayoutMismatch, details);
+    if (choice == Hooks::CrashDialog::Result::QuitGame)
+    {
+        ModLoaderLogger::LogInfo(L"[init] User chose to quit the game after the layout mismatch");
+        ExitProcess(0);
+    }
+    ModLoaderLogger::LogInfo(L"[init] User chose to start the game without plugins");
+
+    // Let the game thread go, and tell shutdown there is nothing to wait for.
+    if (g_pluginsReadyEvent)
+        SetEvent(g_pluginsReadyEvent);
+    if (g_pluginsLoadedEvent)
+        SetEvent(g_pluginsLoadedEvent);
+}
+#endif
 
 // Lets the game main thread run again at the end of Stage 1. Two ways it can
 // be stopped, decided in Core_Attach:
@@ -262,10 +306,20 @@ DWORD WINAPI MainInitThreadProc(LPVOID)
     // game thread is parked in the engine-init hook until the plugins are up,
     // so it is not changing the reflection data. A failed hook install or a
     // timed-out wait leaves the game thread running, so the check is skipped.
+    // A mismatch switches plugins off and ends the boot here.
     if (Hooks::EngineInit::IsEngineInitialized())
-        LayoutCheck::Run();
+    {
+        LayoutCheck::Result layout;
+        if (LayoutCheck::Run(layout) && LayoutCheck::RequiresSafeOff(layout))
+        {
+            EnterLayoutSafeOff(layout);
+            return 0;
+        }
+    }
     else
+    {
         ModLoaderLogger::LogWarn(L"[LayoutCheck] Skipped: engine init was not observed, so the game thread is not parked");
+    }
 #endif
 
     // ------------------------------------------------------------------

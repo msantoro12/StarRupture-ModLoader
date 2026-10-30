@@ -1,3 +1,4 @@
 Plugins Updated window now lists what changed in each plugin
 Loader update prompt shows what is new
 A hang inside a plugin's tick or overlay draw callback now names that plugin in the log
+Plugins switch off, with a report, when a game update moves the data they read

@@ -6,7 +6,9 @@
 // game, so the comparison sees exactly what a loader built for one build
 // would see on the other. See Tests/README.md.
 
+#include "compat_report.h"
 #include "layout_check.h"
+#include "layout_table.generated.h"
 
 #include "fixtures/layout_table_126119.h"
 #include "fixtures/layout_table_127004.h"
@@ -79,6 +81,7 @@ namespace
         Check(result.checked == result.classes, "every class is checked");
         Check(result.mismatched == 0 && result.missing == 0 && result.deferred == 0, "0 mismatched, 0 missing, 0 deferred");
         Check(result.lines.empty(), "nothing to log");
+        Check(!LayoutCheck::RequiresSafeOff(result), "plugins stay on");
     }
 
     void ContentUpdateMovesThePlayer()
@@ -101,6 +104,73 @@ namespace
                 break;
             }
         }
+    }
+
+    // The forced mismatch: a loader built on 126119 running on 127004. The
+    // check must switch plugins off, and the report must say what moved.
+    void MismatchSwitchesPluginsOffAndReports()
+    {
+        std::printf("Safe-off and the compatibility report (126119 SDK on a 127004 game)\n");
+        const LayoutCheck::Result result = CompareWith(kTable126119(), AsGame(kTable127004()));
+        Check(LayoutCheck::RequiresSafeOff(result), "plugins are switched off");
+        Check(result.changes.size() == result.lines.size(), "one report entry per log line");
+
+        const CompatReport::Inputs inputs{ "1.0.0.0-CL-127004", "StarRupture-Win64-Shipping.exe", std::string(64, 'a'), 126119,
+            { { "Some_Pattern", "48 8B \"05\"", false, true } },
+            { { "GObjects", true, 0x1000, 0x1000, false }, { "GWorld", false, 0, 0x2000, false },
+              { "GNames", true, 0x3000, 0x4000, true } },
+            &result };
+        const std::string json = CompatReport::Build(inputs);
+        const auto has = [&json](const char* text) { return json.find(text) != std::string::npos; };
+
+        Check(has("\"productVersion\": \"1.0.0.0-CL-127004\""), "the game's ProductVersion");
+        Check(has("\"exe\": { \"name\": \"StarRupture-Win64-Shipping.exe\", \"sha256\": \"aaaaaaaa"), "the exe's name and SHA-256");
+        Check(has("\"sdkCL\": 126119"), "the SDK's CL");
+        Check(has("{ \"name\": \"Some_Pattern\", \"module\": \"StarRupture-Win64-Shipping.exe\", \"pattern\": \"48 8B \\\"05\\\"\", \"required\": false, \"found\": true }"),
+            "a missed pattern, quotes escaped");
+        Check(has("{ \"name\": \"GObjects\", \"resolved\": true, \"rva\": 4096, \"sdkOffset\": 4096, \"rejected\": false }")
+            && has("{ \"name\": \"GWorld\", \"resolved\": false, \"rva\": 0, \"sdkOffset\": 8192, \"rejected\": false }"), "each global's RVA, resolved or not");
+        Check(has("{ \"name\": \"GNames\", \"resolved\": true, \"rva\": 12288, \"sdkOffset\": 16384, \"rejected\": true }"),
+            "a rejected hit keeps its RVA and is flagged");
+        Check(has("{ \"class\": \"ACrCharacterPlayerBase\", \"member\": \"\", \"field\": \"size\", \"sdk\": 5600, \"game\": 5616 }"),
+            "the class size, old and new");
+        Check(has("{ \"class\": \"ACrCharacterPlayerBase\", \"member\": \"ADSMoveSpeed\", \"field\": \"offset\", \"sdk\": 5032, \"game\": 5048 }"),
+            "the moved member, old and new offset");
+        Check(json.size() < 100 * 1024, "under 100 KB");
+
+        Check(CompatReport::ClOf("1.0.0.0-CL-127004") == "127004" && CompatReport::ClOf("1.0.0.0") == "unknown"
+            && CompatReport::ClOf("1.0-CL-") == "unknown", "the CL for the file name");
+    }
+
+    // Dumper-7 comments a static array with the size of one element; the
+    // table holds the whole member, as the game reflects it.
+    void StaticArrayIsTheWholeMember()
+    {
+        std::printf("Static arrays\n");
+        using LayoutCheck::Kind;
+
+        const auto table = LayoutCheck::ReadTable(SrLayoutTable::kNames, SrLayoutTable::kClasses, SrLayoutTable::kRows);
+        bool found = false;
+        for (const LayoutCheck::TableClass& c : table)
+        {
+            for (const LayoutCheck::TableRow& row : c.rows)
+            {
+                if (std::string(c.name) == "UWorld" && std::string(row.name) == "LineBatchers")
+                    found = row.offset == 0xF0 && row.size == 0x20;
+            }
+        }
+        Check(found, "the loader's table has UWorld::LineBatchers[4] as 0x20 bytes at 0xF0");
+
+        // ULineBatchComponent* LineBatchers[4]: ElementSize 8, ArrayDim 4.
+        const LayoutCheck::LiveStruct world{ 0x100, 8, { { "LineBatchers", 0xF0, 8 * 4, false, 0 } } };
+        const std::map<std::string, LayoutCheck::LiveStruct> game = { { "Engine.World", world } };
+        const std::vector<LayoutCheck::TableClass> whole = { { "UWorld", "Engine.World", 0x100, 8, Kind::Class, { { "LineBatchers", 0xF0, 0x20, 0 } } } };
+        const std::vector<LayoutCheck::TableClass> element = { { "UWorld", "Engine.World", 0x100, 8, Kind::Class, { { "LineBatchers", 0xF0, 0x8, 0 } } } };
+
+        const LayoutCheck::Result wholeResult = CompareWith(whole, game);
+        Check(wholeResult.lines.empty() && !LayoutCheck::RequiresSafeOff(wholeResult), "the whole member matches the game");
+        Check(Contains(CompareWith(element, game), "UWorld::LineBatchers: size SDK 0x8, game 0x20"),
+            "one element's size is the old false positive");
     }
 
     void EachDifferenceIsReported()
@@ -151,6 +221,8 @@ int main()
 {
     SameBuildMatches();
     ContentUpdateMovesThePlayer();
+    MismatchSwitchesPluginsOffAndReports();
+    StaticArrayIsTheWholeMember();
     EachDifferenceIsReported();
 
     if (g_failures)

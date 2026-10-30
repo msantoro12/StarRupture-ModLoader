@@ -2,6 +2,7 @@
 
 #include <cstdarg>
 #include <cstdio>
+#include <utility>
 
 namespace LayoutCheck
 {
@@ -26,6 +27,13 @@ namespace LayoutCheck
             }
             return nullptr;
         }
+
+        void Record(Result& result, const char* className, const char* member, const char* field,
+            uint32_t sdk, int32_t game, std::string line)
+        {
+            result.changes.push_back(Change{ className, member, field, sdk, game });
+            result.lines.push_back(std::move(line));
+        }
     }
 
     Result Compare(const std::vector<TableClass>& table,
@@ -49,7 +57,8 @@ namespace LayoutCheck
             {
                 ++result.missing;
                 result.changedClasses.push_back(sdk.name);
-                result.lines.push_back(Format("%s (%s): not found in the game", sdk.name, sdk.path));
+                Record(result, sdk.name, "", kChangeMissing, 0, 0,
+                    Format("%s (%s): not found in the game", sdk.name, sdk.path));
                 continue;
             }
 
@@ -57,36 +66,41 @@ namespace LayoutCheck
             const size_t linesBefore = result.lines.size();
 
             if (live->size != static_cast<int32_t>(sdk.sizeOf))
-                result.lines.push_back(Format("%s: size SDK 0x%X, game 0x%X", sdk.name, sdk.sizeOf, live->size));
+                Record(result, sdk.name, "", "size", sdk.sizeOf, live->size,
+                    Format("%s: size SDK 0x%X, game 0x%X", sdk.name, sdk.sizeOf, live->size));
             // A native UFunction's MinAlignment is 1 whatever its parameters
             // hold, so only classes and structs have an alignment to compare.
             if (sdk.kind != Kind::FunctionParams && sdk.alignOf != 0
                 && live->minAlignment != static_cast<int32_t>(sdk.alignOf))
-                result.lines.push_back(Format("%s: alignment SDK %u, game %d", sdk.name, sdk.alignOf, live->minAlignment));
+                Record(result, sdk.name, "", "alignment", sdk.alignOf, live->minAlignment,
+                    Format("%s: alignment SDK %u, game %d", sdk.name, sdk.alignOf, live->minAlignment));
 
             for (const TableRow& row : sdk.rows)
             {
                 const LiveProperty* property = FindProperty(*live, row.name);
                 if (!property)
                 {
-                    result.lines.push_back(Format("%s::%s: not found in the game", sdk.name, row.name));
+                    Record(result, sdk.name, row.name, kChangeMissing, 0, 0,
+                        Format("%s::%s: not found in the game", sdk.name, row.name));
                     continue;
                 }
 
                 if (property->offset != static_cast<int32_t>(row.offset))
-                    result.lines.push_back(Format("%s::%s: offset SDK 0x%X, game 0x%X",
-                        sdk.name, row.name, row.offset, property->offset));
+                    Record(result, sdk.name, row.name, "offset", row.offset, property->offset,
+                        Format("%s::%s: offset SDK 0x%X, game 0x%X", sdk.name, row.name, row.offset, property->offset));
                 if (row.size != 0 && property->size != static_cast<int32_t>(row.size))
-                    result.lines.push_back(Format("%s::%s: size SDK 0x%X, game 0x%X",
-                        sdk.name, row.name, row.size, property->size));
+                    Record(result, sdk.name, row.name, "size", row.size, property->size,
+                        Format("%s::%s: size SDK 0x%X, game 0x%X", sdk.name, row.name, row.size, property->size));
 
                 if (row.boolMask != 0 && !property->isBool)
-                    result.lines.push_back(Format("%s::%s: a bool in the SDK, not in the game", sdk.name, row.name));
+                    Record(result, sdk.name, row.name, "isBool", 1, 0,
+                        Format("%s::%s: a bool in the SDK, not in the game", sdk.name, row.name));
                 else if (row.boolMask != 0 && property->fieldMask != row.boolMask)
-                    result.lines.push_back(Format("%s::%s: bool mask SDK 0x%02X, game 0x%02X",
-                        sdk.name, row.name, row.boolMask, property->fieldMask));
+                    Record(result, sdk.name, row.name, "boolMask", row.boolMask, static_cast<int32_t>(property->fieldMask),
+                        Format("%s::%s: bool mask SDK 0x%02X, game 0x%02X", sdk.name, row.name, row.boolMask, property->fieldMask));
                 else if (row.boolMask == 0 && property->isBool)
-                    result.lines.push_back(Format("%s::%s: a bool in the game, not in the SDK", sdk.name, row.name));
+                    Record(result, sdk.name, row.name, "isBool", 0, 1,
+                        Format("%s::%s: a bool in the game, not in the SDK", sdk.name, row.name));
             }
 
             if (result.lines.size() != linesBefore)
@@ -240,14 +254,14 @@ namespace LayoutCheck
         }
     }
 
-    void Run()
+    bool Run(Result& out)
     {
         const auto start = std::chrono::steady_clock::now();
 
         if (!SdkGlobals::VerifyGObjects())
         {
             ModLoaderLogger::LogError(L"[LayoutCheck] Skipped: GObjects does not look valid");
-            return;
+            return false;
         }
 
         const std::vector<TableClass> table = ReadTable(SrLayoutTable::kNames, SrLayoutTable::kClasses, SrLayoutTable::kRows);
@@ -271,10 +285,10 @@ namespace LayoutCheck
         if (!CollectGuarded(&search, &exceptionCode))
         {
             ModLoaderLogger::LogError(L"[LayoutCheck] Skipped: exception 0x%08lX while reading reflection data", exceptionCode);
-            return;
+            return false;
         }
 
-        const Result result = Compare(table, [&search](const TableClass& sdk) -> const LiveStruct*
+        Result result = Compare(table, [&search](const TableClass& sdk) -> const LiveStruct*
         {
             const auto it = search.live.find(sdk.path);
             return it == search.live.end() ? nullptr : &it->second;
@@ -291,6 +305,9 @@ namespace LayoutCheck
             L" -- GObjects pass %.1f ms (%d objects, %d types), %.1f ms in all",
             SrLayoutTable::kBuiltCL, result.classes, result.checked, result.mismatched, result.missing, result.deferred,
             search.walkMs, search.objects, search.types, totalMs);
+
+        out = std::move(result);
+        return true;
     }
 }
 

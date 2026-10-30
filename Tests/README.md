@@ -163,9 +163,9 @@ It prints one line per test and exits 0 when every check passes.
 
 ## LayoutCheckTests
 
-A console program like ConfigEditTests. It compiles the loader's own `core/layout_check.cpp` without
-`MODLOADER_CLIENT_BUILD`, which keeps the comparison and drops the part that walks the game, so
-nothing else is linked.
+A console program like ConfigEditTests. It compiles the loader's own `core/layout_check.cpp` and
+`core/compat_report.cpp` without `MODLOADER_CLIENT_BUILD`, which keeps the comparison and the
+report's JSON and drops the parts that touch the game, so nothing else is linked.
 
 `fixtures/` holds two layout tables generated from the Game-SDK at CL 126119 and CL 127004 for
 `ACrCharacterPlayerBase` and its reflected bases (see `tools/Update-LayoutTable.ps1` for the
@@ -176,6 +176,13 @@ the other the running game. It covers:
 - The 127004 SDK on a 127004 game: every class checked, 0 mismatched, nothing logged.
 - The 126119 SDK on a 127004 game: `ACrCharacterPlayerBase` is the one changed class, with its size
   (0x15E0 to 0x15F0) and `ADSMoveSpeed` (0x13A8 to 0x13B8) among the lines; its bases are unchanged.
+- The same mismatch forced through to safe-off: `RequiresSafeOff` is true (and false for the matching
+  build), and the compatibility report's JSON carries the ProductVersion, the exe hash, a missed
+  pattern with its quotes escaped, each global's RVA, and the class size and `ADSMoveSpeed` offset,
+  old and new. The CL in the report's file name comes from the ProductVersion.
+- Static arrays: the loader's own `core/layout_table.generated.h` holds `UWorld::LineBatchers[4]` as
+  0x20 bytes, the whole member, which matches a game reflecting `ElementSize` 8 times `ArrayDim` 4;
+  the size of one element, as Dumper-7 comments it, is the old false positive.
 - One synthetic case for each kind of difference: a missing class, alignment, a missing member, a
   member size, a bit-field mask, a bool that stopped or started being one; a Blueprint class and a
   class of unknown kind are deferred, and a member size of 0 is not compared.

@@ -15,7 +15,8 @@
 // logs every class whose layout no longer matches: after a game update that
 // is the list of SDK types that now read the wrong bytes.
 //
-// It only logs. Nothing is disabled or blocked on its result.
+// On a mismatch the init thread switches plugins off (RequiresSafeOff) and
+// writes the compatibility report (compat_report.h).
 namespace LayoutCheck
 {
     // Called once from the init thread after FEngineLoop::Init has returned,
@@ -23,7 +24,11 @@ namespace LayoutCheck
     // any plugin loads. Client builds only: layout_check.cpp is not compiled
     // into the server build, and without MODLOADER_CLIENT_BUILD (the offline
     // test) only the comparison below is.
-    void Run();
+    //
+    // False, and logged, when the check could not run (GObjects invalid, an
+    // exception while reading reflection data); out is then left as it was.
+    struct Result;
+    bool Run(Result& out);
 
     // ---- The comparison, kept apart from the game so it can be tested ------
 
@@ -92,6 +97,19 @@ namespace LayoutCheck
         std::vector<LiveProperty> properties;    // its own ChildProperties, not its super's
     };
 
+    // Change::field for a class or member the game no longer has.
+    inline constexpr const char* kChangeMissing = "missing";
+
+    // One difference, for the compatibility report.
+    struct Change
+    {
+        std::string className;  // the SDK's C++ name
+        std::string member;     // empty: the class itself
+        std::string field;      // kChangeMissing, "size", "alignment", "offset", "boolMask" or "isBool"
+        uint32_t    sdk;        // the SDK's value (isBool: 1 or 0)
+        int32_t     game;       // the game's value
+    };
+
     struct Result
     {
         int classes    = 0;  // in the table
@@ -101,7 +119,15 @@ namespace LayoutCheck
         int deferred   = 0;  // not checked at startup (Blueprint classes, unknown kind)
         std::vector<std::string> changedClasses;  // SDK names of the mismatched and missing classes
         std::vector<std::string> lines;           // one per difference, ready to log
+        std::vector<Change>      changes;         // the same differences, one each
     };
+
+    // A class the game no longer has, or one whose layout moved, means the SDK
+    // reads the wrong bytes there: plugins must not run.
+    inline bool RequiresSafeOff(const Result& result)
+    {
+        return result.mismatched > 0 || result.missing > 0;
+    }
 
     // Compares every table class with what `find` returns for it (nullptr:
     // not in the game).

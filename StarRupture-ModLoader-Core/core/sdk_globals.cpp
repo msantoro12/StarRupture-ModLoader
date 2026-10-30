@@ -24,8 +24,8 @@ namespace SdkGlobals
 
         // Set by ResolveAndApply on the init thread before any hook is
         // installed; read-only afterwards.
-        bool      g_gObjectsOverridden = false;
-        uintptr_t g_gWorldAddress      = 0;
+        bool                    g_gObjectsOverridden = false;
+        std::vector<Resolution> g_resolutions;
 
         // The registry row for a pattern, so the request is the one preflight
         // verified -- the same transform, the same kind check.
@@ -187,9 +187,12 @@ namespace SdkGlobals
         if (Resolve(gNames))
             LogOnly(gNames, base);
         if (Resolve(gWorld))
-        {
             LogOnly(gWorld, base);
-            g_gWorldAddress = gWorld.address;
+
+        for (const Global* global : { &gObjects, &gNames, &appendString, &gWorld })
+        {
+            g_resolutions.push_back(Resolution{ global->name, global->address != 0,
+                global->address ? global->address - base : 0, global->sdkOffset });
         }
 
         ModLoaderLogger::LogInfo(L"[SdkGlobals] SDK uses the %s GObjects and the %s FName::AppendString",
@@ -217,9 +220,9 @@ namespace SdkGlobals
         return CheckObjectArray(L"built-in", builtIn);
     }
 
-    uintptr_t GWorldAddress()
+    const std::vector<Resolution>& Resolutions()
     {
-        return g_gWorldAddress;
+        return g_resolutions;
     }
 }
 
@@ -229,7 +232,6 @@ namespace SdkGlobals
 {
     void ResolveAndApply() {}
     bool VerifyGObjects() { return true; }
-    uintptr_t GWorldAddress() { return 0; }
 }
 
 #endif

@@ -1,2 +1,3 @@
 Plugins Updated window now lists what changed in each plugin
 Loader update prompt shows what is new
+Plugins switch off, with a report, when a game update moves the data they read

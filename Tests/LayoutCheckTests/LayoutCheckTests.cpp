@@ -117,7 +117,8 @@ namespace
 
         const CompatReport::Inputs inputs{ "1.0.0.0-CL-127004", "StarRupture-Win64-Shipping.exe", std::string(64, 'a'), 126119,
             { { "Some_Pattern", "48 8B \"05\"", false, true } },
-            { { "GObjects", true, 0x1000, 0x1000 }, { "GWorld", false, 0, 0x2000 } },
+            { { "GObjects", true, 0x1000, 0x1000, false }, { "GWorld", false, 0, 0x2000, false },
+              { "GNames", true, 0x3000, 0x4000, true } },
             &result };
         const std::string json = CompatReport::Build(inputs);
         const auto has = [&json](const char* text) { return json.find(text) != std::string::npos; };
@@ -125,10 +126,12 @@ namespace
         Check(has("\"productVersion\": \"1.0.0.0-CL-127004\""), "the game's ProductVersion");
         Check(has("\"exe\": { \"name\": \"StarRupture-Win64-Shipping.exe\", \"sha256\": \"aaaaaaaa"), "the exe's name and SHA-256");
         Check(has("\"sdkCL\": 126119"), "the SDK's CL");
-        Check(has("{ \"name\": \"Some_Pattern\", \"module\": \"StarRupture-Win64-Shipping.exe\", \"pattern\": \"48 8B \\\"05\\\"\", \"required\": false, \"ambiguous\": true }"),
+        Check(has("{ \"name\": \"Some_Pattern\", \"module\": \"StarRupture-Win64-Shipping.exe\", \"pattern\": \"48 8B \\\"05\\\"\", \"required\": false, \"found\": true }"),
             "a missed pattern, quotes escaped");
-        Check(has("{ \"name\": \"GObjects\", \"resolved\": true, \"rva\": 4096, \"sdkOffset\": 4096 }")
-            && has("{ \"name\": \"GWorld\", \"resolved\": false, \"rva\": 0, \"sdkOffset\": 8192 }"), "each global's RVA, resolved or not");
+        Check(has("{ \"name\": \"GObjects\", \"resolved\": true, \"rva\": 4096, \"sdkOffset\": 4096, \"rejected\": false }")
+            && has("{ \"name\": \"GWorld\", \"resolved\": false, \"rva\": 0, \"sdkOffset\": 8192, \"rejected\": false }"), "each global's RVA, resolved or not");
+        Check(has("{ \"name\": \"GNames\", \"resolved\": true, \"rva\": 12288, \"sdkOffset\": 16384, \"rejected\": true }"),
+            "a rejected hit keeps its RVA and is flagged");
         Check(has("{ \"class\": \"ACrCharacterPlayerBase\", \"member\": \"\", \"field\": \"size\", \"sdk\": 5600, \"game\": 5616 }"),
             "the class size, old and new");
         Check(has("{ \"class\": \"ACrCharacterPlayerBase\", \"member\": \"ADSMoveSpeed\", \"field\": \"offset\", \"sdk\": 5032, \"game\": 5048 }"),

@@ -18,15 +18,16 @@ namespace CompatReport
         std::string name;
         std::string pattern;
         bool        required;
-        bool        ambiguous;  // found, but not provably the right match
+        bool        found;      // the pattern matched, but not provably the right place
     };
 
     struct GlobalRva
     {
         std::string name;
         bool        resolved;
-        uint64_t    rva;        // 0 when not resolved
+        uint64_t    rva;        // 0 when not resolved; kept when rejected
         int32_t     sdkOffset;  // the SDK's Offsets:: value
+        bool        rejected;   // resolved, but the loader used sdkOffset instead
     };
 
     struct Inputs

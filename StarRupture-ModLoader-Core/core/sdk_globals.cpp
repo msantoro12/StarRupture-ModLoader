@@ -9,6 +9,7 @@
 #include "../memory_scanner/scan_validation.h"
 
 #include <algorithm>
+#include <cstring>
 
 namespace SdkGlobals
 {
@@ -23,7 +24,8 @@ namespace SdkGlobals
         };
 
         // Set by ResolveAndApply on the init thread before any hook is
-        // installed; read-only afterwards.
+        // installed, and by VerifyGObjects on the same thread; read-only
+        // afterwards.
         bool                    g_gObjectsOverridden = false;
         std::vector<Resolution> g_resolutions;
 
@@ -192,7 +194,7 @@ namespace SdkGlobals
         for (const Global* global : { &gObjects, &gNames, &appendString, &gWorld })
         {
             g_resolutions.push_back(Resolution{ global->name, global->address != 0,
-                global->address ? global->address - base : 0, global->sdkOffset });
+                global->address ? global->address - base : 0, global->sdkOffset, false });
         }
 
         ModLoaderLogger::LogInfo(L"[SdkGlobals] SDK uses the %s GObjects and the %s FName::AppendString",
@@ -216,6 +218,11 @@ namespace SdkGlobals
         // SDK's own value, the policy for every other kind of miss.
         SDK::UObject::GObjects.InitManually(reinterpret_cast<void*>(builtIn));
         g_gObjectsOverridden = false;
+        for (Resolution& entry : g_resolutions)
+        {
+            if (std::strcmp(entry.name, "GObjects") == 0)
+                entry.rejected = true;
+        }
         ModLoaderLogger::LogWarn(L"[SdkGlobals] Falling back to the built-in Offsets::GObjects");
         return CheckObjectArray(L"built-in", builtIn);
     }

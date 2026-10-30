@@ -6,6 +6,7 @@
 #include "imgui/imgui.h"
 #include "plugin_call_tracker.h"
 #include "logging/logger.h"
+#include "plugins/plugin_watchdog.h"
 #include <mutex>
 #include <list>
 #include <vector>
@@ -152,6 +153,7 @@ namespace UI::PluginWidgetRegistry
             // Called without the lock, so the widget can call back into this
             // registry; tracked so an unload waits for it. Relocks on scope exit.
             PluginCallTracker::Scope call(s_calls, lock, ref.entry, entry.owner);
+            PluginWatchdog::Scope watch(reinterpret_cast<const void*>(entry.desc->renderFn), "widget render");
 
             ImGuiWindowFlags flags = kWidgetFlagsBase;
             const PluginWindowHints* hints = entry.desc->windowHints;

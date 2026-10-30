@@ -261,6 +261,9 @@
     <ClInclude Include="plugins\plugin_manager.h">
       <Filter>Source Files\plugins</Filter>
     </ClInclude>
+    <ClInclude Include="plugins\plugin_watchdog.h">
+      <Filter>Source Files\plugins</Filter>
+    </ClInclude>
     <ClInclude Include="plugins\pak_registry.h">
       <Filter>Source Files\plugins</Filter>
     </ClInclude>
@@ -654,6 +657,9 @@
       <Filter>Source Files\plugins</Filter>
     </ClCompile>
     <ClCompile Include="plugins\plugin_manager.cpp">
+      <Filter>Source Files\plugins</Filter>
+    </ClCompile>
+    <ClCompile Include="plugins\plugin_watchdog.cpp">
       <Filter>Source Files\plugins</Filter>
     </ClCompile>
     <ClCompile Include="plugins\pak_registry.cpp">

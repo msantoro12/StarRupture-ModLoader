@@ -512,6 +512,7 @@
     <ClInclude Include="plugins\known_gobjects.generated.h" />
     <ClInclude Include="plugins\plugin_hook_report.h" />
     <ClInclude Include="plugins\plugin_manager.h" />
+    <ClInclude Include="plugins\plugin_watchdog.h" />
     <ClInclude Include="plugins\pak_registry.h" />
     <ClInclude Include="UI\splash_window.h" />
     <ClInclude Include="utils\pak_list.h" />
@@ -699,6 +700,7 @@
     <ClCompile Include="console\server_console.cpp" />
     <ClCompile Include="plugins\plugin_hook_report.cpp" />
     <ClCompile Include="plugins\plugin_manager.cpp" />
+    <ClCompile Include="plugins\plugin_watchdog.cpp" />
     <ClCompile Include="plugins\pak_registry.cpp" />
     <ClCompile Include="UI\splash_window.cpp" />
   </ItemGroup>

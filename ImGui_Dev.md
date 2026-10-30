@@ -509,7 +509,10 @@ static void MyPanelRender(IModLoaderImGui* imgui)
 
 - **Callbacks are called on the render thread** (inside `IDXGISwapChain::Present`). Do not call
   SDK functions, allocate engine memory, or take locks that the game thread might be holding.
-  Use `hooks->Engine->RegisterOnTick` for game-thread work and share state via a lock or atomic.
+  Use `hooks->Engine->RegisterOnTick` for game-thread work and share state via an atomic, or a
+  lock the game thread only holds briefly. Never hold that lock across slow game-thread work (a
+  texture upload, a scene capture): the frame waits on it, and if that work waits on the frame the
+  game hangs. If the lock can be busy for longer, `try_lock` it and skip that frame.
 
 - **Static state is fine.** Panel and widget render callbacks run every frame (widgets always;
   panels while open). `static` local variables inside them persist across frames, which is the

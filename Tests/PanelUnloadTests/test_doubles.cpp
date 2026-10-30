@@ -22,11 +22,16 @@ namespace PluginManager
 }
 
 // The registries report a render that outlived the unload wait through this.
+// The watchdog warns through LogWarn, which no test reaches.
 namespace ModLoaderLogger
 {
     void LogError(const wchar_t*, ...)
     {
         ++TestDoubles::loggedErrors;
+    }
+
+    void LogWarn(const wchar_t*, ...)
+    {
     }
 }
 

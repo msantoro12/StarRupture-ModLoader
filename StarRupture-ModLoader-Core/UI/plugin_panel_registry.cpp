@@ -7,6 +7,7 @@
 #include "theme.h"
 #include "plugin_call_tracker.h"
 #include "plugins/plugin_manager.h"
+#include "plugins/plugin_watchdog.h"
 #include "logging/logger.h"
 #include <mutex>
 #include <list>
@@ -89,6 +90,7 @@ namespace UI::PluginPanelRegistry
                 continue;
 
             PluginCallTracker::Scope call(s_calls, lock, reinterpret_cast<const void*>(cb.callback), cb.owner);
+            PluginWatchdog::Scope watch(reinterpret_cast<const void*>(cb.callback), "panel-closed callback");
             cb.callback(handle);
         }
     }
@@ -539,6 +541,7 @@ namespace UI::PluginPanelRegistry
                 // for the length of a plugin's render. The call is tracked
                 // instead, so an unload waits for it before the module goes.
                 PluginCallTracker::Scope call(s_calls, lock, ref.entry, panel.owner);
+                PluginWatchdog::Scope watch(reinterpret_cast<const void*>(panel.desc->renderFn), "panel render");
 
                 ImGui::SetNextWindowSize(ImVec2(480, 360), ImGuiCond_FirstUseEver);
 

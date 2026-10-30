@@ -7,6 +7,7 @@
 #include "../scan_patterns.h"
 #include "../world_begin_play/world_begin_play.h"
 #include "utils/game_thread_dispatch.h"
+#include "plugins/plugin_watchdog.h"
 #include <vector>
 #include <algorithm>
 #include <cstring>
@@ -125,6 +126,7 @@ namespace Hooks::EngineTick
 
 				try
 				{
+					PluginWatchdog::Scope watch(reinterpret_cast<const void*>(g_pluginCallbacks[i]), "tick callback");
 					g_pluginCallbacks[i](deltaSeconds);
 				}
 				catch (...)

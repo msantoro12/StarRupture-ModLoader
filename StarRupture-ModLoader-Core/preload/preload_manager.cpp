@@ -701,10 +701,11 @@ namespace PreloadManager
 				CallShutdownSEH(entry->shutdown);
 		}
 
-		// Deliberately no FreeLibrary. The loader is shutting down, the process
-		// is on its way out, and unmapping a module that may still have a thread
-		// or a callback in flight buys nothing at this point. The hooks are
-		// gone, which is the part that would have crashed.
+		// Deliberately no FreeLibrary. The loader is shutting down (or, for the
+		// layout safe-off, the plugins are being switched off for the session),
+		// and unmapping a module that may still have a thread or a callback in
+		// flight buys nothing at this point. The hooks are gone, which is the
+		// part that would have crashed.
 		g_running.clear();
 	}
 

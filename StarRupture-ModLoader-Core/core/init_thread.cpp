@@ -33,8 +33,9 @@
 // build, so no plugin code may run. Called on the init thread with the game
 // thread parked in the engine-init hook. That park ends on its own after a
 // timeout, so plugin loads are refused and the preload plugins shut down
-// before the dialog waits on the player. The loader's hooks stay in: with no
-// plugin behind them they only pass through.
+// before the dialog waits on the player. The loader's hooks stay in, and the
+// few that still read SDK types (WorldBeginPlay's GetWorld) are safe only
+// while the exact-CL version gate holds.
 static void EnterLayoutSafeOff(const LayoutCheck::Result& layout)
 {
     PluginManager::RefusePluginLoads();

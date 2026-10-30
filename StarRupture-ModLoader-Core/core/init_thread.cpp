@@ -13,6 +13,7 @@
 #include "../UI/splash_window.h"
 #include "../hooks/game/world_begin_play/world_begin_play.h"
 #include "../hooks/game/engine_tick/engine_tick.h"
+#include "../plugins/plugin_watchdog.h"
 #ifdef MODLOADER_CLIENT_BUILD
 #include "../hooks/input/input_processor.h"
 #include "../hooks/game/crash_reporter/crash_dialog.h"
@@ -238,6 +239,7 @@ DWORD WINAPI MainInitThreadProc(LPVOID)
 
     Hooks::WorldBeginPlay::Install();
     Hooks::EngineTick::Install();
+    PluginWatchdog::Start();
     LogToFile::Info("[init] WorldBeginPlay + EngineTick hooks installed");
 
     WaitForEnginePhase();

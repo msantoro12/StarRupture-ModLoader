@@ -9,7 +9,6 @@
 #include "CoreUObject_classes.hpp"
 #include "plugins/plugin_manager.h"
 #include "hooks/game/engine_init/engine_init.h"
-#include "core/sdk_globals.h"
 #include <vector>
 #include <algorithm>
 
@@ -74,15 +73,6 @@ namespace Hooks::WorldBeginPlay
 		else
 		{
 			ModLoaderLogger::LogWarn(L"[WorldBeginPlay]   GetWorld() returned null after original ran");
-		}
-
-		// TEMPORARY, remove before any PR: checks that the SDK's GetWorld()
-		// reads the same GWorld the pattern scan resolved.
-		if (const uintptr_t gWorld = SdkGlobals::GWorldAddress())
-		{
-			auto* const engineWorld = *reinterpret_cast<SDK::UWorld* const*>(gWorld);
-			ModLoaderLogger::LogInfo(L"[GWorldProbe] TEMPORARY: SDK GetWorld()=%p, engine GWorld=%p (%s)",
-			                         inWorld, engineWorld, inWorld == engineWorld ? L"same" : L"DIFFERENT");
 		}
 
 		// Record any-world fired state for late-registration replay.

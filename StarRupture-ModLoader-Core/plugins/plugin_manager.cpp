@@ -1,5 +1,6 @@
 #include "plugin_manager.h"
 
+#include <atomic>
 #include <memory>
 
 #include "plugin_interface.h"
@@ -35,6 +36,9 @@ namespace PluginManager
 	// Must be plain POD functions with no C++ objects (C2712).
 	struct PluginCrashCtx { DWORD code; uintptr_t addr; CONTEXT context; };
 	static PluginCrashCtx g_lastPluginCrash;
+
+	// Set once by RefusePluginLoads on the init thread; read wherever a load starts.
+	static std::atomic<bool> g_refuseLoads{ false };
 
 	static LONG PluginCrashFilter(EXCEPTION_POINTERS* ep)
 	{
@@ -284,6 +288,13 @@ namespace PluginManager
 	// On failure: any resources acquired are released and the record is left clean.
 	static bool LoadPluginIntoRecord(LoadedPlugin& rec)
 	{
+		if (g_refuseLoads.load())
+		{
+			ModLoaderLogger::LogWarn(L"Plugin loading is off (the game's layout does not match this ModLoader) -- skipping: %s",
+				rec.fileName.c_str());
+			return false;
+		}
+
 		ModLoaderLogger::LogMessage(L"Loading plugin: %s", rec.fileName.c_str());
 
 		LoadLibrarySEHResult loadResult = LoadLibrarySEH(rec.fileName.c_str());
@@ -1090,6 +1101,11 @@ namespace PluginManager
 
 		ModLoaderLogger::LogMessage(L"ScanForNewPlugins: %d new DLL(s) loaded, %d initialized", loadedCount, initedCount);
 		return initedCount;
+	}
+
+	void RefusePluginLoads()
+	{
+		g_refuseLoads.store(true);
 	}
 
 	HANDLE GetPluginsInitializedEvent()

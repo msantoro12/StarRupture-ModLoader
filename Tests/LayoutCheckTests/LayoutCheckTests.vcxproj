@@ -8,9 +8,10 @@
 
     msbuild Tests\LayoutCheckTests\LayoutCheckTests.vcxproj /p:Configuration="Client Release" /p:Platform=x64
 
-  It compiles the loader's own core\layout_check.cpp without
-  MODLOADER_CLIENT_BUILD, which leaves the comparison and drops the part that
-  walks the game, so no SDK and no logger are linked. Output goes to
+  It compiles the loader's own core\layout_check.cpp and core\compat_report.cpp
+  without MODLOADER_CLIENT_BUILD, which leaves the comparison and the report's
+  JSON and drops the parts that touch the game, so no SDK and no logger are
+  linked. Output goes to
   build\tests\layout_check_tests.exe.
 -->
 <Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
@@ -102,6 +103,9 @@
   <ItemGroup Label="Loader sources under test">
     <ClCompile Include="$(CoreDir)core\layout_check.cpp" />
     <ClInclude Include="$(CoreDir)core\layout_check.h" />
+    <ClCompile Include="$(CoreDir)core\compat_report.cpp" />
+    <ClInclude Include="$(CoreDir)core\compat_report.h" />
+    <ClInclude Include="$(CoreDir)core\layout_table.generated.h" />
   </ItemGroup>
   <ItemGroup>
     <None Include="..\README.md" />

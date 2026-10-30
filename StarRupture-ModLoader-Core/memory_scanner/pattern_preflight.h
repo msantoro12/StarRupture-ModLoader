@@ -14,6 +14,7 @@
 #include "memory_scanner/scan_validation.h"
 
 #include <string>
+#include <vector>
 
 namespace ScanPatterns { struct PreflightEntry; }
 
@@ -24,6 +25,18 @@ namespace PatternPreflight
     // human-readable summary of the missing patterns, suitable for display in
     // the crash dialog.
     bool VerifyAllPatterns(std::wstring* outFailureDetails = nullptr);
+
+    // A row the last VerifyAllPatterns could not verify, required or not.
+    struct Miss
+    {
+        const char* name;
+        const char* pattern;
+        bool        required;
+        bool        structural;  // found, but wrong or ambiguous; false: not found
+    };
+
+    // Read by the compatibility report, after preflight has run.
+    const std::vector<Miss>& Misses();
 
     // The request preflight makes for one registry row. Anything that resolves
     // a registry pattern after preflight builds its request here, so the

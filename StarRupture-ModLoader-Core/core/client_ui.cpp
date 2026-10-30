@@ -7,6 +7,7 @@
 #include "../hooks/game/world_begin_play/world_begin_play.h"
 #include "../hooks/game/engine_tick/engine_tick.h"
 #include "../hooks/game/framegen_pause/framegen_pause.h"
+#include "../hooks/game/game_menu/game_menu.h"
 #include "../hooks/game/game_menu/game_menu_registry.h"
 #include "../hooks/input/input_processor.h"
 #include "../hooks/input/input_hook.h"
@@ -161,6 +162,7 @@ void InitClientUI()
         {
             return Hooks::MouseWheel::Dispatch(msg, wParam, lParam, uiCapturing);
         };
+        cbs.IsPauseMenuOpen = []() -> bool { return Hooks::GameMenu::IsPauseMenuOpen(); };
         cbs.GetFontFamily = []() -> const char*
         {
             return UI::GlobalSettings::GetFontFamily();
@@ -215,6 +217,8 @@ void InitClientUI()
 
     static auto s_onTick = [](float deltaSeconds)
     {
+        Hooks::GameMenu::Tick();
+
         // DLSS Frame Generation flicker workaround (see FrameGenPause) --
         // checked every tick regardless of pawn/world state below, since an
         // overlay window can be open at the main menu too.

@@ -84,6 +84,16 @@ namespace Hooks::GameMenu
 
 	// True when at least one menu is hooked and entries will appear.
 	bool IsInstalled();
+
+	// Samples whether the pause menu (the Escape screen) is the active
+	// screen.  The pause hook remembers the widget it constructed; this
+	// checks GObjects still holds it and reads its CommonUI activation flag.
+	// Game thread only -- call it once per tick.
+	void Tick();
+
+	// What the last Tick saw.  Safe from any thread.  False when the pause
+	// hook is not installed.
+	bool IsPauseMenuOpen();
 }
 
 #endif // MODLOADER_CLIENT_BUILD

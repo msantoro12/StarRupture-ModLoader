@@ -39,6 +39,7 @@
 #include "hooks/game/hud_post_render/hud_post_render.h"
 #include "hooks/game/debug_draw/debug_draw.h"
 #include "hooks/game/game_menu/game_menu_registry.h"
+#include "core/client_ui.h"
 #endif
 #if defined(MODLOADER_SERVER_BUILD) || defined(MODLOADER_CLIENT_BUILD)
 #include "hooks/game/session_info/session_info.h"
@@ -1239,7 +1240,12 @@ namespace ModLoaderLogger
 		UI::PluginPanelRegistry::ReleaseInputPassthrough(token);
 	}
 
-	// UI sub-interface struct (v16, extended v43/v51)
+	static bool HooksIsOverlayOpen()
+	{
+		return ShouldCaptureInputNow();
+	}
+
+	// UI sub-interface struct (v16, extended v43/v51/v71)
 	static IPluginUIEvents g_uiEvents = {
 		HooksRegisterPanel,
 		HooksUnregisterPanel,
@@ -1255,7 +1261,8 @@ namespace ModLoaderLogger
 		HooksAcquireInputCapture,           // v43
 		HooksReleaseInputCapture,           // v43
 		HooksAcquireInputPassthrough,       // v51
-		HooksReleaseInputPassthrough        // v51
+		HooksReleaseInputPassthrough,       // v51
+		HooksIsOverlayOpen                  // v71
 	};
 
 	// --- HUD sub-interface wrappers (v16, client only) ---

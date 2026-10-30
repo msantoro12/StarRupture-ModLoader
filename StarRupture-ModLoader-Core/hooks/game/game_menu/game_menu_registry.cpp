@@ -231,11 +231,17 @@ namespace GameMenu::Registry
 			return ::Hooks::GameMenu::IsInstalled();
 		}
 
+		bool IfaceIsPauseMenuOpen()
+		{
+			return ::Hooks::GameMenu::IsPauseMenuOpen();
+		}
+
 		IPluginGameMenu g_interface = {
 			IfaceAddEntry,
 			IfaceRemoveEntry,
 			IfaceRemoveAllEntries,
-			IfaceIsAvailable
+			IfaceIsAvailable,
+			IfaceIsPauseMenuOpen   // v71
 		};
 	}
 

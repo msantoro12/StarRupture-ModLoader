@@ -48,6 +48,8 @@ static ImGuiRenderCallbacks g_callbacks = {};
 // Forward declarations
 // ---------------------------------------------------------------------------
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
+// Defined in imgui_impl_win32.cpp but not declared in its header.
+ImGuiKey ImGui_ImplWin32_KeyEventToImGuiKey(WPARAM wParam, LPARAM lParam);
 static HRESULT STDMETHODCALLTYPE HookedPresent(IDXGISwapChain* swapChain, UINT syncInterval, UINT flags);
 static void ReclaimRetiredTextures();
 static void    STDMETHODCALLTYPE HookedECL(ID3D12CommandQueue* pQueue, UINT NumCmdLists, ID3D12CommandList* const* ppCmdLists);
@@ -252,6 +254,7 @@ namespace
 // ---------------------------------------------------------------------------
 static bool g_hadGameClip = false;   // game had a real cursor clip before we cleared it
 static bool g_prevUiOpen  = false;   // previous frame's ShouldCaptureInput()
+static bool g_prevMenuCursor = false; // previous frame's pause-menu mouse sharing
 
 // A clip covering the whole virtual desktop is Windows' way of saying
 // "unclipped", so treat that as no clip.
@@ -300,8 +303,17 @@ static LRESULT CALLBACK HookedWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM
 
 	const bool capturing = exclusive || cooperative;
 
+	// The game's pause menu shows the game's own cursor, so ImGui can be fed
+	// the mouse without owning it: windows over the menu (a plugin's pinned
+	// widgets) can be hovered, clicked and dragged, and only the clicks that
+	// land on them are kept from the menu. The keyboard stays with the game,
+	// so Escape still closes the menu. Exclusive capture overrides it.
+	const bool menuCursor = !exclusive &&
+		(g_callbacks.IsPauseMenuOpen ? g_callbacks.IsPauseMenuOpen() : false);
+
 	// Only feed mouse messages into ImGui while it actually owns the cursor
-	// (i.e. the simulated mouse is shown). Otherwise ImGui's IO mouse state
+	// (i.e. the simulated mouse is shown) or the pause menu shows the game's.
+	// Otherwise ImGui's IO mouse state
 	// is left pointing at wherever the cursor was frozen when the UI closed,
 	// and an always-rendered widget/button under that stale position would
 	// still register hover/click from camera-look/fire input that is only
@@ -327,7 +339,7 @@ static LRESULT CALLBACK HookedWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM
 		break;
 	}
 
-	if (exclusive || !isMouseMsg)
+	if (exclusive || menuCursor || !isMouseMsg)
 	{
 		std::lock_guard<std::recursive_mutex> lock(g_imguiMutex);
 		if (ImGui_ImplWin32_WndProcHandler(hWnd, msg, wParam, lParam))
@@ -352,24 +364,24 @@ static LRESULT CALLBACK HookedWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM
 			return 0;
 	}
 
-	if (capturing)
+	if (capturing || menuCursor)
 	{
-		// In cooperative mode the game keeps everything ImGui is not actively
-		// using, so consult ImGui's own per-frame arbitration flags. They are
-		// plain bools refreshed in NewFrame; read them under the same lock the
-		// render thread holds while writing them.
+		// Outside exclusive capture the game keeps everything ImGui is not
+		// actively using, so consult ImGui's own per-frame arbitration flags.
+		// They are plain bools refreshed in NewFrame; read them under the same
+		// lock the render thread holds while writing them.
 		bool wantMouse    = true;
 		bool wantKeyboard = true;
-		if (cooperative)
+		if (!exclusive)
 		{
-			// ImGui is not fed the mouse at all in cooperative mode (it has no
-			// cursor to aim with), so the game keeps every mouse message. Only
-			// keyboard is arbitrated, for a plugin that has focused a text field
-			// while an exclusive surface was also open.
+			// Cooperative mode does not feed ImGui the mouse (it has no cursor
+			// to aim with), so the game keeps every mouse message there and
+			// only keyboard is arbitrated, for a plugin that has focused a
+			// text field. Over the pause menu it is the other way round.
 			std::lock_guard<std::recursive_mutex> lock(g_imguiMutex);
 			const ImGuiIO& io = ImGui::GetIO();
-			wantMouse    = false;
-			wantKeyboard = io.WantCaptureKeyboard || io.WantTextInput;
+			wantMouse    = menuCursor && io.WantCaptureMouse;
+			wantKeyboard = cooperative && (io.WantCaptureKeyboard || io.WantTextInput);
 		}
 
 		switch (msg)
@@ -383,15 +395,23 @@ static LRESULT CALLBACK HookedWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM
 		case WM_RBUTTONDOWN: case WM_RBUTTONUP: case WM_RBUTTONDBLCLK:
 		case WM_MBUTTONDOWN: case WM_MBUTTONUP: case WM_MBUTTONDBLCLK:
 		case WM_XBUTTONDOWN: case WM_XBUTTONUP: case WM_XBUTTONDBLCLK:
-		case WM_MOUSEMOVE:   case WM_MOUSEWHEEL: case WM_MOUSEHWHEEL:
-		case WM_INPUT:      // UE5 uses raw input for camera delta -- swallow it
+		case WM_MOUSEWHEEL:  case WM_MOUSEHWHEEL:
 			if (wantMouse) return 0;
 			break;
 
-		// Always swallowed, in both modes: UE5 hides the cursor from here, and
+		// Over the pause menu the game draws the cursor, so it keeps
+		// tracking movement even while ImGui has the clicks.
+		case WM_MOUSEMOVE:
+		case WM_INPUT:      // UE5 uses raw input for camera delta -- swallow it
+			if (wantMouse && !menuCursor) return 0;
+			break;
+
+		// Swallowed whenever we capture: UE5 hides the cursor from here, and
 		// our own cursor has to stay visible for the UI to be usable at all.
+		// Over the pause menu the cursor is the game's, so it is left alone.
 		case WM_SETCURSOR:
-			return 0;
+			if (capturing) return 0;
+			break;
 
 		default:
 			break;
@@ -1343,6 +1363,20 @@ static HRESULT STDMETHODCALLTYPE HookedPresent(IDXGISwapChain* swapChain, UINT s
 		}
 		g_prevUiOpen = uiOpen;
 
+		// Pause menu closed without exclusive capture taking over: ImGui stops
+		// being fed the mouse, so park it off-screen and release any held
+		// button, or a widget under the last position stays hovered or keeps
+		// dragging (the menu can close mid-drag on Escape).
+		const bool menuCursor = !uiOpen &&
+			(g_callbacks.IsPauseMenuOpen ? g_callbacks.IsPauseMenuOpen() : false);
+		if (g_prevMenuCursor && !menuCursor && !uiOpen)
+		{
+			frameIO.AddMousePosEvent(-FLT_MAX, -FLT_MAX);
+			for (int button = 0; button < ImGuiMouseButton_COUNT; ++button)
+				frameIO.AddMouseButtonEvent(button, false);
+		}
+		g_prevMenuCursor = menuCursor;
+
 		// Rebuild font atlas if the user changed the font family.
 		// Must happen before NewFrame to avoid using a destroyed font texture.
 		if (g_pendingFontRebuild.exchange(false))
@@ -1818,6 +1852,11 @@ namespace ImGuiWrappers
 	// existing mouse queries, which only cover buttons and position.
 	static float GetMouseWheel()  { return ImGui::GetIO().MouseWheel; }
 	static float GetMouseWheelH() { return ImGui::GetIO().MouseWheelH; }
+	static bool IsKeyPressed(int vk, bool repeat)
+	{
+		const ImGuiKey key = ImGui_ImplWin32_KeyEventToImGuiKey(static_cast<WPARAM>(vk), 0);
+		return key != ImGuiKey_None && ImGui::IsKeyPressed(key, repeat);
+	}
 
 	// v35 child windows (original placement)
 	static bool BeginChild(const char* id, float sx, float sy, bool border)
@@ -3161,6 +3200,7 @@ static void PopulateImGuiAPI()
 	// v52
 	g_imguiAPI.GetMouseWheel = ImGuiWrappers::GetMouseWheel;
 	g_imguiAPI.GetMouseWheelH = ImGuiWrappers::GetMouseWheelH;
+	g_imguiAPI.IsKeyPressed = ImGuiWrappers::IsKeyPressed;
 }
 
 // ---------------------------------------------------------------------------

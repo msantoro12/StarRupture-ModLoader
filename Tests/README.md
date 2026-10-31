@@ -193,3 +193,29 @@ build\tests\layout_check_tests.exe
 ```
 
 It prints one line per check and exits 0 when every check passes.
+
+## KeyAndThreadTests
+
+A console program like PanelUnloadTests, for the two queries interface v72 gives a plugin's tick:
+`IPluginInputEvents::IsKeyHeld` and `IPluginEngineEvents::IsGameThread`. It compiles the loader's
+own `hooks/input/keybind_registry.cpp` and `utils/game_thread_dispatch.cpp`. The keyboard and the
+foreground window are test doubles: the project's `pch.h` stands in for the loader's and points
+`GetAsyncKeyState` and `GetForegroundWindow` at `test_doubles.cpp`, so the test holds keys and moves
+focus without touching the real desktop. It covers:
+
+- `IsGameThread`: false on every thread before the first tick, the one that will tick included;
+  after a `Drain`, true on that thread and in a task posted to it, false on any other.
+- `IsKeyHeld`: single keys, case-insensitive names, modifier chords, `Shift+K` while Ctrl is held as
+  well (false: a name with modifiers needs exactly those, as its keybind callbacks do), a bare name
+  while modifiers are held (true), a modifier bound as a plain key, mouse buttons, the
+  layout-dependent `Tilde`.
+- `IsKeyHeld` is false for an unknown or empty name with every key down, when another window or no
+  window has focus, and before the game window exists. It makes no allocation, and it gives a
+  consistent answer from four threads while a fifth moves the focus.
+
+```
+msbuild Tests\KeyAndThreadTests\KeyAndThreadTests.vcxproj /p:Configuration="Client Release" /p:Platform=x64
+build\tests\key_and_thread_tests.exe
+```
+
+It prints one line per test and exits 0 when every check passes.

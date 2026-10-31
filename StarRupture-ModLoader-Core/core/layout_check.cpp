@@ -167,35 +167,53 @@ namespace LayoutCheck
             return it->second;
         }
 
+        LiveProperty Describe(const SDK::FProperty* property)
+        {
+            const bool isBool = property->ClassPrivate
+                && (property->ClassPrivate->CastFlags & static_cast<uint64_t>(SDK::EClassCastFlags::BoolProperty)) != 0;
+            return LiveProperty{
+                property->Name.GetRawString(),
+                property->Offset,
+                property->ElementSize * property->ArrayDim,
+                isBool,
+                isBool ? static_cast<const SDK::FBoolProperty*>(property)->FieldMask : 0u };
+        }
+
         LiveStruct Snapshot(const SDK::UStruct* type)
         {
             LiveStruct live{ type->Size, type->MinAlignment, {} };
             for (const SDK::FField* field = type->ChildProperties; field; field = field->Next)
-            {
-                const auto* property = static_cast<const SDK::FProperty*>(field);
-                const bool isBool = field->ClassPrivate
-                    && (field->ClassPrivate->CastFlags & static_cast<uint64_t>(SDK::EClassCastFlags::BoolProperty)) != 0;
-                live.properties.push_back(LiveProperty{
-                    field->Name.GetRawString(),
-                    property->Offset,
-                    property->ElementSize * property->ArrayDim,
-                    isBool,
-                    isBool ? static_cast<const SDK::FBoolProperty*>(field)->FieldMask : 0u });
-            }
+                live.properties.push_back(Describe(static_cast<const SDK::FProperty*>(field)));
             return live;
         }
 
+        // Every native class and script struct, by short name and by
+        // Module.Name, as GObjects indices, for field requests: the objects
+        // themselves are looked up again, and checked, on each use.
+        struct TypeIndex
+        {
+            std::unordered_map<std::string, std::vector<int32_t>> byName;
+            std::unordered_map<std::string, int32_t> byPath;
+            int32_t objects = -1;   // GObjects count when built; -1 = not built
+        };
+
+        std::mutex g_typesLock;
+        TypeIndex  g_types;
+
         // One pass over GObjects: every native class and script struct that
-        // sits directly in a /Script/ package is named Module.Name and looked
-        // up; nothing else has its name decoded. Function parameter blocks are
-        // then found in their owning class's Children.
-        void Collect(Search& search)
+        // sits directly in a /Script/ package is named Module.Name, looked up,
+        // and (with an index) indexed; nothing else has its name decoded.
+        // Function parameter blocks are then found in their owning class's
+        // Children.
+        void Collect(Search& search, TypeIndex* index)
         {
             std::unordered_map<const SDK::UObject*, std::string> modules;
 
             const auto walkStart = std::chrono::steady_clock::now();
             SDK::TUObjectArray* objects = SDK::UObject::GObjects.GetTypedPtr();
             search.objects = objects->Num();
+            if (index)
+                *index = TypeIndex{ {}, {}, search.objects };
             for (int32_t i = 0; i < search.objects; ++i)
             {
                 SDK::UObject* object = objects->GetByIndex(i);
@@ -215,9 +233,16 @@ namespace LayoutCheck
                     continue;
 
                 ++search.types;
-                auto it = search.structs.find(module + "." + object->Name.GetRawString());
+                std::string name = object->Name.GetRawString();
+                std::string path = module + "." + name;
+                auto it = search.structs.find(path);
                 if (it != search.structs.end() && !it->second)
                     it->second = static_cast<SDK::UStruct*>(object);
+                if (index)
+                {
+                    index->byPath.emplace(std::move(path), i);
+                    index->byName[std::move(name)].push_back(i);
+                }
             }
             search.walkMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - walkStart).count();
 
@@ -245,11 +270,11 @@ namespace LayoutCheck
 
         // Collect under SEH: reflection data that is not what the SDK says it
         // is ends the check with a log line instead of taking the game down.
-        bool CollectGuarded(Search* search, DWORD* exceptionCode)
+        bool CollectGuarded(Search* search, TypeIndex* index, DWORD* exceptionCode)
         {
             __try
             {
-                Collect(*search);
+                Collect(*search, index);
                 return true;
             }
             __except (EXCEPTION_EXECUTE_HANDLER)
@@ -287,11 +312,19 @@ namespace LayoutCheck
             }
         }
 
+        // The same pass indexes every type for field requests (LiveFieldOf).
+        TypeIndex index;
         DWORD exceptionCode = 0;
-        if (!CollectGuarded(&search, &exceptionCode))
+        if (!CollectGuarded(&search, &index, &exceptionCode))
         {
             ModLoaderLogger::LogError(L"[LayoutCheck] Skipped: exception 0x%08lX while reading reflection data", exceptionCode);
             return false;
+        }
+        ModLoaderLogger::LogInfo(L"[Map] Field index: %zu types from %d objects, in the layout check's GObjects pass",
+            index.byPath.size(), index.objects);
+        {
+            std::lock_guard<std::mutex> lock(g_typesLock);
+            g_types = std::move(index);
         }
 
         Result result = Compare(table, [&search](const TableClass& sdk) -> const LiveStruct*
@@ -321,46 +354,15 @@ namespace LayoutCheck
 {
     namespace
     {
-        // Every native class and script struct, by short name and by
-        // Module.Name, as GObjects indices: the objects themselves are looked
-        // up again, and checked, on each use.
-        struct TypeIndex
-        {
-            std::unordered_map<std::string, std::vector<int32_t>> byName;
-            std::unordered_map<std::string, int32_t> byPath;
-            int32_t objects = -1;   // GObjects count when built; -1 = not built
-        };
-
-        std::mutex g_typesLock;
-        TypeIndex  g_types;
-
+        // The layout check's pass builds the index (Run). This builds it on
+        // its own only when that pass did not run, or when types registered
+        // since leave a request unanswered.
         void BuildTypeIndex(TypeIndex& index)
         {
-            const auto start = std::chrono::steady_clock::now();
-            std::unordered_map<const SDK::UObject*, std::string> modules;
-            index = TypeIndex{};
-            SDK::TUObjectArray* objects = SDK::UObject::GObjects.GetTypedPtr();
-            index.objects = objects->Num();
-            for (int32_t i = 0; i < index.objects; ++i)
-            {
-                SDK::UObject* object = objects->GetByIndex(i);
-                if (!object || !object->Class
-                    || !(object->HasTypeFlag(SDK::EClassCastFlags::Class)
-                         || object->HasTypeFlag(SDK::EClassCastFlags::ScriptStruct)))
-                    continue;
-                const SDK::UObject* package = object->Outer;
-                if (!package || package->Outer)
-                    continue;
-                const std::string& module = ModuleOf(package, modules);
-                if (module.empty())
-                    continue;
-                std::string name = object->Name.GetRawString();
-                index.byPath.emplace(module + "." + name, i);
-                index.byName[std::move(name)].push_back(i);
-            }
-            ModLoaderLogger::LogInfo(L"[Map] Field index: %zu types from %d objects in %.1f ms",
-                index.byPath.size(), index.objects,
-                std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count());
+            Search search;
+            Collect(search, &index);
+            ModLoaderLogger::LogInfo(L"[Map] Field index: %zu types from %d objects in %.1f ms (a pass of its own)",
+                index.byPath.size(), index.objects, search.walkMs);
         }
 
         // The object still at `i`, if it is still the type `name`.
@@ -438,11 +440,11 @@ namespace LayoutCheck
                 answer.error = "no member " + member + " in it or its supers";
                 return;
             }
-            answer.offset = property->Offset;
-            answer.size   = static_cast<uint32_t>(property->ElementSize * property->ArrayDim);
-            answer.isBool = property->ClassPrivate
-                && (property->ClassPrivate->CastFlags & static_cast<uint64_t>(SDK::EClassCastFlags::BoolProperty)) != 0;
-            answer.boolMask = answer.isBool ? static_cast<const SDK::FBoolProperty*>(property)->FieldMask : 0;
+            const LiveProperty live = Describe(property);
+            answer.offset   = live.offset;
+            answer.size     = static_cast<uint32_t>(live.size);
+            answer.isBool   = live.isBool;
+            answer.boolMask = live.fieldMask;
         }
 
         void Lookup(const std::string& className, const std::string& member, VersionMap::LiveField& answer)

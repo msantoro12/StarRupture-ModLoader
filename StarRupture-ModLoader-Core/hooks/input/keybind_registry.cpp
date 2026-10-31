@@ -666,6 +666,32 @@ namespace Hooks::Input
 	}
 
 	// -----------------------------------------------------------------------
+	// IsKeyHeld (v72) -- polled state, for a plugin's tick
+	//
+	// The name goes through ParseComboString, as RegisterKeybindByName's does,
+	// and the modifiers follow DispatchCombo's rule for a named entry: a name
+	// with modifier tokens needs exactly those held ("Shift+K" is not held
+	// while Ctrl is down too), and a name without any is held whatever else
+	// is. Nothing is locked or allocated, so any thread may call it.
+	// -----------------------------------------------------------------------
+	bool IsKeyHeld(const char* keyName)
+	{
+		// GetAsyncKeyState reads the keyboard, not the game's input, so a key
+		// held in another window would read as held here without this.
+		const HWND game = UI::ImGuiBackend::GetGameWindow();
+		if (!game || GetForegroundWindow() != game)
+			return false;
+
+		EModKeyModifiers wanted = EModKeyMod_None;
+		const EModKey key = ParseComboString(keyName, wanted);
+		const int vk = ModKeyToVK(key);
+		if (key == EModKey::Unknown || vk == 0 || !(GetAsyncKeyState(vk) & 0x8000))
+			return false;
+
+		return wanted == EModKeyMod_None || SampleCurrentModifiers() == wanted;
+	}
+
+	// -----------------------------------------------------------------------
 	// Combo registration (v28)
 	// -----------------------------------------------------------------------
 	void RegisterKeybindCombo(EModKey key, EModKeyModifiers mods, EModKeyEvent event, PluginKeybindComboCallback callback)

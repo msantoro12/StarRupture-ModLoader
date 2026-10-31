@@ -88,3 +88,7 @@ IMGUI_HOST_API void                   ImGuiHost_RequestFontRebuild();
 // bound to "P" must not close its own panel when the player types "Port"
 // into a text box inside that panel.
 IMGUI_HOST_API bool                   ImGuiHost_IsTextInputActive();
+
+// The game window the overlay draws on, or null before the first Present.
+// Any thread.
+IMGUI_HOST_API HWND                   ImGuiHost_GetGameWindow();

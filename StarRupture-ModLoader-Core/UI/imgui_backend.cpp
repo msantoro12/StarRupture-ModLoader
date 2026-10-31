@@ -106,7 +106,9 @@ namespace
 	UINT                       g_rtvDescSize = 0;
 	DXGI_FORMAT                g_rtvFormat = DXGI_FORMAT_UNKNOWN;
 
-	HWND    g_hwnd = nullptr;
+	// Atomic because ImGuiHost_GetGameWindow hands it to any thread (the keybind
+	// registry's IsKeyHeld); set once, on the render thread, at first Present.
+	std::atomic<HWND> g_hwnd{ nullptr };
 	WNDPROC g_origWndProc = nullptr;
 
 	IModLoaderImGui g_imguiAPI = {};
@@ -1092,7 +1094,7 @@ static bool InitD3D12Resources(IDXGISwapChain* swapChain)
 
 	IMGUI_LOG_INFO("[ImGuiBackend] D3D12 resources initialized (buffers=%u hwnd=0x%llX)",
 		g_frameCount,
-		static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(g_hwnd)));
+		static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(g_hwnd.load())));
 
 	g_initialized = true;
 	return true;
@@ -3409,6 +3411,11 @@ extern "C" __declspec(dllexport) IModLoaderImGui* ImGuiHost_GetImGuiAPI()
 extern "C" __declspec(dllexport) IPluginImGuiTextures* ImGuiHost_GetTextureAPI()
 {
 	return &g_textureAPI;
+}
+
+extern "C" __declspec(dllexport) HWND ImGuiHost_GetGameWindow()
+{
+	return g_hwnd.load();
 }
 
 extern "C" __declspec(dllexport) bool ImGuiHost_IsTextInputActive()

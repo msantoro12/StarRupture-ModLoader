@@ -1155,12 +1155,6 @@ namespace ModLoaderLogger
 		         static_cast<unsigned>(key), static_cast<unsigned>(mods), static_cast<unsigned>(event));
 	}
 
-	// v72. Not wired to the keyboard yet: no key reads as held.
-	static bool HooksIsKeyHeld(const char* /*keyName*/)
-	{
-		return false;
-	}
-
 	// Input sub-interface struct (v15, extended v28/v29)
 	static IPluginInputEvents g_inputEvents = {
 		HooksRegisterKeybind,
@@ -1171,7 +1165,7 @@ namespace ModLoaderLogger
 		HooksUnregisterKeybindCombo,  // v28
 		Hooks::MouseWheel::Register,  // v70
 		Hooks::MouseWheel::Unregister, // v70
-		HooksIsKeyHeld                 // v72
+		Hooks::Input::IsKeyHeld        // v72
 	};
 
 	// --- UI sub-interface wrappers (v15, client only) ---

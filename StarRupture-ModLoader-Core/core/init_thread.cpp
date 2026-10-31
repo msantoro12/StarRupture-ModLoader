@@ -22,6 +22,8 @@
 #include "../memory_scanner/pattern_preflight.h"
 #include "sdk_globals.h"
 #include "layout_check.h"
+#include "../memory_scanner/version_map.h"
+#include "../hooks/game/version_map.generated.h"
 #include "compat_report.h"
 #include "../plugins/plugin_manager.h"
 #include "../preload/preload_manager.h"
@@ -307,19 +309,44 @@ DWORD WINAPI MainInitThreadProc(LPVOID)
     // so it is not changing the reflection data. A failed hook install or a
     // timed-out wait leaves the game thread running, so the check is skipped.
     // A mismatch switches plugins off and ends the boot here.
-    if (Hooks::EngineInit::IsEngineInitialized())
+    //
+    // On a build other than the SDK's own, plugins run only on what was
+    // checked: a check that could not run, or an SDK still on its built-in
+    // Offsets:: for GObjects or FName::AppendString, switches them off too.
     {
         LayoutCheck::Result layout;
-        if (LayoutCheck::Run(layout) && LayoutCheck::RequiresSafeOff(layout))
+        bool ran = false;
+        if (Hooks::EngineInit::IsEngineInitialized())
         {
-            EnterLayoutSafeOff(layout);
-            return 0;
+            ran = LayoutCheck::Run(layout);
+            if (ran && LayoutCheck::RequiresSafeOff(layout))
+            {
+                EnterLayoutSafeOff(layout);
+                return 0;
+            }
+        }
+        else
+        {
+            ModLoaderLogger::LogWarn(L"[LayoutCheck] Skipped: engine init was not observed, so the game thread is not parked");
+        }
+
+        if (VersionMap::RunningExe().cl != VersionMap::kBuiltCL)
+        {
+            LayoutCheck::Result unchecked;
+            if (!ran)
+                unchecked.lines.push_back("The layout check did not run, and this is not the build the SDK was made for");
+            if (!SdkGlobals::SdkOnResolvedGlobals())
+                unchecked.lines.push_back("GObjects or FName::AppendString was not found on this build");
+            if (!unchecked.lines.empty())
+            {
+                EnterLayoutSafeOff(unchecked);
+                return 0;
+            }
         }
     }
-    else
-    {
-        ModLoaderLogger::LogWarn(L"[LayoutCheck] Skipped: engine init was not observed, so the game thread is not parked");
-    }
+
+    // Field requests read the game's reflection data from here on.
+    VersionMap::SetLiveFieldSource(LayoutCheck::LiveFieldOf);
 #endif
 
     // ------------------------------------------------------------------

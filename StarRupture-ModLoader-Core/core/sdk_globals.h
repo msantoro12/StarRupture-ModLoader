@@ -59,4 +59,10 @@ namespace SdkGlobals
     // found, and gives null when it found none. The server build, which runs
     // on kBuiltCL only, keeps the SDK's getter.
     SDK::UWorld* GetWorld();
+
+    // True when the SDK walks objects and names through the GObjects and
+    // FName::AppendString that ResolveAndApply found (and VerifyGObjects
+    // kept), not through Offsets::. Offsets:: holds only on the SDK's own
+    // build, so on any other build plugins must not run without this.
+    bool SdkOnResolvedGlobals();
 }

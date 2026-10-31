@@ -30,6 +30,7 @@ namespace SdkGlobals
         // installed, and by VerifyGObjects on the same thread; read-only
         // afterwards.
         bool                    g_gObjectsOverridden = false;
+        bool                    g_appendStringApplied = false;
         std::vector<Resolution> g_resolutions;
         uintptr_t               g_gWorld = 0;   // the engine's GWorld variable; 0 = not found
 
@@ -184,6 +185,7 @@ namespace SdkGlobals
         {
             LogApplied(appendString, base);
             SDK::FName::InitManually(reinterpret_cast<void*>(appendString.address));
+            g_appendStringApplied = true;
         }
 
         // GNames and GWorld stop at the log line. The SDK never reads GNames
@@ -239,6 +241,11 @@ namespace SdkGlobals
         return g_resolutions;
     }
 
+    bool SdkOnResolvedGlobals()
+    {
+        return g_gObjectsOverridden && g_appendStringApplied;
+    }
+
     SDK::UWorld* GetWorld()
     {
         if (VersionMap::RunningExe().cl == VersionMap::kBuiltCL)
@@ -255,6 +262,7 @@ namespace SdkGlobals
 {
     void ResolveAndApply() {}
     bool VerifyGObjects() { return true; }
+    bool SdkOnResolvedGlobals() { return false; }
     SDK::UWorld* GetWorld() { return SDK::UWorld::GetWorld(); }
 }
 

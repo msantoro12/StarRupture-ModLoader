@@ -1,6 +1,7 @@
 #include "config_manager.h"
 #include "config_edit.h"
 #include "logging/logger.h"
+#include <algorithm>
 #include <string>
 #include <fstream>
 #include <sstream>
@@ -439,17 +440,12 @@ namespace ModLoaderLogger
 			std::string choices;
 			if (entry.type == ConfigValueType::Choice)
 			{
-				const size_t bar = comment.find('|');
-				if (bar != std::string::npos)
+				comment.resize((std::min)(comment.find('|'), comment.size()));
+				for (const std::string& choice : ConfigEdit::GetChoices(&entry))
 				{
-					for (size_t i = bar + 1; i < comment.size(); ++i)
-					{
-						if (comment[i] == '|')
-							choices += " | ";
-						else
-							choices += comment[i];
-					}
-					comment.resize(bar);
+					if (!choices.empty())
+						choices += " | ";
+					choices += choice;
 				}
 			}
 

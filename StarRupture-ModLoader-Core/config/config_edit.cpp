@@ -1,6 +1,49 @@
 #include "pch.h"
 #include "config_edit.h"
 
+#include <cstdlib>
+#include <cstring>
+
+namespace ConfigEdit
+{
+    std::vector<std::string> GetChoices(const ConfigEntry* entry)
+    {
+        std::vector<std::string> choices;
+        if (!entry || entry->type != ConfigValueType::Choice || !entry->description)
+            return choices;
+
+        const char* part = strchr(entry->description, '|');
+        while (part)
+        {
+            ++part;
+            const char* end = strchr(part, '|');
+            const char* last = end ? end : part + strlen(part);
+            // GetPrivateProfileString trims a value it reads back, so a choice
+            // has to be trimmed too or it would never match once stored.
+            while (part < last && (*part == ' ' || *part == '\t')) ++part;
+            while (last > part && (last[-1] == ' ' || last[-1] == '\t')) --last;
+            if (last > part)
+                choices.emplace_back(part, static_cast<size_t>(last - part));
+            part = end;
+        }
+        return choices;
+    }
+
+    bool SameValue(const char* a, const char* b)
+    {
+        if (!a) a = "";
+        if (!b) b = "";
+        if (strcmp(a, b) == 0)
+            return true;
+
+        char* endA = nullptr;
+        char* endB = nullptr;
+        const double x = strtod(a, &endA);
+        const double y = strtod(b, &endB);
+        return endA != a && *endA == '\0' && endB != b && *endB == '\0' && x == y;
+    }
+}
+
 #ifdef MODLOADER_CLIENT_BUILD
 
 #include "config_manager.h"
@@ -172,25 +215,6 @@ namespace ConfigEdit
                 return &e;
         }
         return nullptr;
-    }
-
-    std::vector<std::string> GetChoices(const ConfigEntry* entry)
-    {
-        std::vector<std::string> choices;
-        if (!entry || entry->type != ConfigValueType::Choice || !entry->description)
-            return choices;
-
-        const char* part = strchr(entry->description, '|');
-        while (part)
-        {
-            ++part;
-            const char* end = strchr(part, '|');
-            const size_t length = end ? static_cast<size_t>(end - part) : strlen(part);
-            if (length > 0)
-                choices.emplace_back(part, length);
-            part = end;
-        }
-        return choices;
     }
 
     void SetEntryBlocking(const char* pluginName, const char* section, const char* key,

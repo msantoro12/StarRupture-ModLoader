@@ -325,16 +325,20 @@ static const ConfigEntry CONFIG_ENTRIES[] = {
   treat one the same way when you read it. The INI comment lists the choices for anyone editing
   the file by hand.
 - **Hidden.** Values your plugin saves by itself, such as where a window was dragged. The page
-  draws no field for them. Each section holding any ends with a **Saved state** row naming them,
-  and its **Clear** button sets each one back to its default, calling your config-change callback
-  for every value it changes. The button is greyed out while they all hold their defaults. The
-  value is plain text in the INI, so read and write it with whichever `Read*`/`Write*` suits it.
+  draws no field for them. Each section holding any ends with a **Saved state** row (its tooltip
+  names them), and its **Clear** button sets each one back to its default, calling your
+  config-change callback for every value it changes. The button is greyed out while they all hold
+  their defaults. The value is plain text in the INI, so read and write it with whichever
+  `Read*`/`Write*` suits it: a number counts as its default when it has the same value, so
+  `WriteFloat`'s `-1.000000` matches a default of `"-1"`.
 
 Listen for the Hidden keys if your plugin keeps their values in memory, so a Clear takes effect
 straight away: put the window back, forget the remembered position.
 
-Both are v71. A v70 loader refuses a v71 plugin, so a plugin that uses them never meets a loader
-that does not know them.
+Both are v71, and a v70 loader refuses a v71 plugin. A v71 loader built before these two types
+were added draws a Choice as a text field, with the choices left in its description, and a Hidden
+entry as a text field. The values still read and write as text, so nothing breaks; the page only
+looks unfinished.
 
 ---
 

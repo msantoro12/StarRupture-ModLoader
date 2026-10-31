@@ -820,13 +820,14 @@ namespace UI::ModLoaderWindow
     static constexpr const char* kSavedStateLabel = "Saved state";
 
     // The row a section's Hidden entries (v71) get instead of one each: they
-    // are values the plugin saves by itself, so the row names them and offers
-    // a single Clear that puts every one back to its default. Draws nothing
-    // for a section without any. Same columns as RenderConfigEntry.
+    // are values the plugin saves by itself, so the row offers a single Clear
+    // that puts every one back to its default, and names them in its tooltip.
+    // Draws nothing for a section without any. Same columns as
+    // RenderConfigEntry.
     static void RenderSavedStateRow(size_t sectionStart, size_t sectionEnd, const ConfigSchema* schema,
                                     const char* pluginName)
     {
-        std::string keys;
+        bool any     = false;
         bool changed = false;
         for (size_t j = sectionStart; j < sectionEnd; ++j)
         {
@@ -834,12 +835,11 @@ namespace UI::ModLoaderWindow
             const ConfigEntry* e  = ConfigEdit::FindSchemaEntry(schema, kv.section, kv.key);
             if (!e || e->type != ConfigValueType::Hidden) continue;
 
-            if (!keys.empty()) keys += ", ";
-            keys += kv.key;
-            if (strcmp(kv.value, e->defaultValue ? e->defaultValue : "") != 0)
+            any = true;
+            if (!ConfigEdit::SameValue(kv.value, e->defaultValue))
                 changed = true;
         }
-        if (keys.empty())
+        if (!any)
             return;
 
         ImGui::TableNextRow();
@@ -851,7 +851,7 @@ namespace UI::ModLoaderWindow
         ImGui::TableSetColumnIndex(1);
         ImGui::AlignTextToFramePadding();
         ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyle().Colors[ImGuiCol_TextDisabled]);
-        ImGui::TextWrapped("Kept by the plugin itself: %s. Clear puts them back to their defaults.", keys.c_str());
+        ImGui::TextWrapped("Values the plugin saves by itself, such as where its windows were dragged.");
         ImGui::PopStyleColor();
 
         ImGui::TableSetColumnIndex(2);
@@ -865,16 +865,27 @@ namespace UI::ModLoaderWindow
                 ConfigKV&          kv = s_configEntries[j];
                 const ConfigEntry* e  = ConfigEdit::FindSchemaEntry(schema, kv.section, kv.key);
                 if (!e || e->type != ConfigValueType::Hidden) continue;
+                if (ConfigEdit::SameValue(kv.value, e->defaultValue)) continue;
 
-                const char* def = e->defaultValue ? e->defaultValue : "";
-                if (strcmp(kv.value, def) == 0) continue;
-
-                strncpy_s(kv.value, def, _TRUNCATE);
+                strncpy_s(kv.value, e->defaultValue ? e->defaultValue : "", _TRUNCATE);
                 NotifyConfigChangedLive(pluginName, kv);
                 CommitConfigChange(pluginName, kv);
             }
         }
         ImGui::EndDisabled();
+
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_AllowWhenDisabled))
+        {
+            std::string keys;
+            for (size_t j = sectionStart; j < sectionEnd; ++j)
+            {
+                const ConfigEntry* e = ConfigEdit::FindSchemaEntry(schema, s_configEntries[j].section, s_configEntries[j].key);
+                if (!e || e->type != ConfigValueType::Hidden) continue;
+                if (!keys.empty()) keys += ", ";
+                keys += s_configEntries[j].key;
+            }
+            ImGui::SetTooltip("Puts these back to their defaults: %s", keys.c_str());
+        }
     }
 
     // Returns true if the given VK is a modifier key (Ctrl/Shift/Alt left or right).
@@ -1261,6 +1272,11 @@ namespace UI::ModLoaderWindow
                 // deterministic from the "Rebind" string alone) combine
                 // into the three sub-column x's.
                 float keyColW         = 0.0f;
+                // Widest Choice dropdown on the page, sized by ImGui's own
+                // rule for a combo that fits its preview
+                // (ImGuiComboFlags_WidthFitPreview): the arrow, the text and
+                // FramePadding either side, taken for the longest choice.
+                float choiceW         = 0.0f;
                 bool  hasRangedSlider = false;
                 for (const ConfigKV& kv : s_configEntries)
                 {
@@ -1290,6 +1306,14 @@ namespace UI::ModLoaderWindow
                     {
                         hasRangedSlider = true;
                     }
+                    else if (se->type == ConfigValueType::Choice)
+                    {
+                        for (const std::string& choice : ConfigEdit::GetChoices(se))
+                        {
+                            const float w = fh + ImGui::CalcTextSize(choice.c_str()).x + framePadX * 2.0f;
+                            if (w > choiceW) choiceW = w;
+                        }
+                    }
                 }
                 if (labelColWidth <= 0.0f) labelColWidth = pageOutlierThreshold; // every label on the page was an outlier
                 if (labelColWidth < kLabelColMin) labelColWidth = kLabelColMin;
@@ -1298,14 +1322,15 @@ namespace UI::ModLoaderWindow
 
                 // controlFloor: what Control needs regardless of the
                 // slider -- a keybind row's own full width (bind label +
-                // Rebind + Block + toggle) or a lone toggle, whichever is
-                // larger anywhere on the page, or the plain-input floor if
-                // neither applies. The slider (if the page has one) is
+                // Rebind + Block + toggle), a lone toggle or the widest
+                // dropdown, whichever is larger anywhere on the page, or the
+                // plain-input floor if none applies. The slider (if the page has one) is
                 // layered on top of this, and is the only part allowed to
                 // shrink below its own max.
                 float controlFloor = kMinControlW;
                 if (toggleW     > controlFloor) controlFloor = toggleW;
                 if (keybindRowW > controlFloor) controlFloor = keybindRowW;
+                if (choiceW     > controlFloor) controlFloor = choiceW;
 
                 if (pageMaxWordW > 0.0f)
                 {

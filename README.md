@@ -126,8 +126,8 @@ is available.
 - Press and release a modifier alone to bind just that modifier. <sup>[✦](#msantoro12)</sup>
 - **Block** stops the game also reacting to the combo.
 - A setting with a fixed set of choices is a dropdown. <sup>[✦](#msantoro12)</sup>
-- **Saved state** lists values a plugin keeps by itself, such as where its windows were dragged.
-  **Clear** puts them back to their defaults. <sup>[✦](#msantoro12)</sup>
+- **Saved state** stands for values a plugin keeps by itself, such as where its windows were
+  dragged. **Clear** puts them back to their defaults. <sup>[✦](#msantoro12)</sup>
 - The reset arrow restores the default. A plugin's `[General] Enabled` has none, nor does a
   setting without a default.
 - The plugin hears each change as you make it. The `.ini` is written when you let go of a slider

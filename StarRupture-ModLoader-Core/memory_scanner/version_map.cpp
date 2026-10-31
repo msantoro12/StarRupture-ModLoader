@@ -9,7 +9,6 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
-#include <cwctype>
 #include <unordered_map>
 
 namespace VersionMap
@@ -93,7 +92,7 @@ namespace VersionMap
 	{
 		size_t end = productVersion.size();
 		size_t start = end;
-		while (start > 0 && iswdigit(productVersion[start - 1]))
+		while (start > 0 && productVersion[start - 1] >= L'0' && productVersion[start - 1] <= L'9')
 			--start;
 		if (start == end || start < 3 || productVersion.compare(start - 3, 3, L"CL-") != 0 || end - start > 9
 			|| productVersion[start] == L'0')

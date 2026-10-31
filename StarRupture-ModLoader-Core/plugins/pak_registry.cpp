@@ -1,4 +1,5 @@
 #include "pch.h"
+#include "core/sdk_globals.h"
 #include "pak_registry.h"
 
 #include "plugins/plugin_interface.h"
@@ -490,7 +491,7 @@ namespace PakRegistry
     // ModActor now rather than at the next map load.
     static void SpawnModActorIfWorldLive(int slot)
     {
-        SDK::UWorld* current = SDK::UWorld::GetWorld();
+        SDK::UWorld* current = SdkGlobals::GetWorld();
         SDK::UWorld* last = nullptr;
         {
             std::lock_guard<std::recursive_mutex> lk(s_mutex);
@@ -1116,7 +1117,7 @@ namespace PakRegistry
         auto job = std::make_shared<Job>(Job{ static_cast<SDK::UClass*>(actorClass), MakeTransform(location, rotation), nullptr });
         if (!RunOnGameThread([job]()
         {
-            SDK::UWorld* world = SDK::UWorld::GetWorld();
+            SDK::UWorld* world = SdkGlobals::GetWorld();
             if (!world)
             {
                 ModLoaderLogger::LogWarn(L"[Pak] SpawnActor: no world");

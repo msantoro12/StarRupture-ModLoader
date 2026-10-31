@@ -1,4 +1,5 @@
 #include "console_commands.h"
+#include "core/sdk_globals.h"
 
 #include <windows.h>
 
@@ -905,7 +906,7 @@ namespace ModConsole
                 loc.z = atof(args[first + 2].c_str());
                 return "the given coordinates";
             }
-            if (SDK::UWorld* world = SDK::UWorld::GetWorld())
+            if (SDK::UWorld* world = SdkGlobals::GetWorld())
             {
                 if (SDK::APawn* pawn = SDK::UGameplayStatics::GetPlayerPawn(world, 0))
                 {
@@ -1009,7 +1010,7 @@ namespace ModConsole
         {
             static SDK::UUserWidget* s_widget = nullptr;   // the last one opened by this command
 
-            SDK::UWorld* world = SDK::UWorld::GetWorld();
+            SDK::UWorld* world = SdkGlobals::GetWorld();
             SDK::APlayerController* pc = world ? SDK::UGameplayStatics::GetPlayerController(world, 0) : nullptr;
             if (!world || !pc)
             {

@@ -1,4 +1,5 @@
 #include "pch.h"
+#include "core/sdk_globals.h"
 #if defined(MODLOADER_SERVER_BUILD) || defined(MODLOADER_CLIENT_BUILD)
 
 #include "session_info.h"
@@ -37,7 +38,7 @@ namespace Hooks::SessionInfo
     // world has begun play.
     static SDK::AActor* GetAnyActor()
     {
-        SDK::UWorld* world = SDK::UWorld::GetWorld();
+        SDK::UWorld* world = SdkGlobals::GetWorld();
         if (!world)
             return nullptr;
 

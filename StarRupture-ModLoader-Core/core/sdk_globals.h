@@ -3,6 +3,8 @@
 #include <cstdint>
 #include <vector>
 
+namespace SDK { class UWorld; }
+
 // The Game-SDK's build-specific globals, found by pattern.
 //
 // The SDK carries GObjects, GNames, FName::AppendString and GWorld as fixed
@@ -49,4 +51,12 @@ namespace SdkGlobals
 
     // Every global ResolveAndApply looked for, in order. Client builds only.
     const std::vector<Resolution>& Resolutions();
+
+    // The current world, for the loader's own code; use it in place of
+    // SDK::UWorld::GetWorld(). The SDK reads Offsets::GWorld, an address that
+    // holds only on the build the SDK was dumped for (VersionMap::kBuiltCL).
+    // On any other build this reads the engine's GWorld that ResolveAndApply
+    // found, and gives null when it found none. The server build, which runs
+    // on kBuiltCL only, keeps the SDK's getter.
+    SDK::UWorld* GetWorld();
 }

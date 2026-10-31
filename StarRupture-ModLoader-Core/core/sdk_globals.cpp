@@ -7,6 +7,9 @@
 #include "../logging/logger.h"
 #include "../memory_scanner/pattern_preflight.h"
 #include "../memory_scanner/scan_validation.h"
+#include "../memory_scanner/version_map.h"
+#include "../hooks/game/version_map.generated.h"
+#include "Engine_classes.hpp"
 
 #include <algorithm>
 #include <cstring>
@@ -28,6 +31,7 @@ namespace SdkGlobals
         // afterwards.
         bool                    g_gObjectsOverridden = false;
         std::vector<Resolution> g_resolutions;
+        uintptr_t               g_gWorld = 0;   // the engine's GWorld variable; 0 = not found
 
         // The registry row for a pattern, so the request is the one preflight
         // verified -- the same transform, the same kind check.
@@ -189,7 +193,10 @@ namespace SdkGlobals
         if (Resolve(gNames))
             LogOnly(gNames, base);
         if (Resolve(gWorld))
+        {
             LogOnly(gWorld, base);
+            g_gWorld = gWorld.address;
+        }
 
         for (const Global* global : { &gObjects, &gNames, &appendString, &gWorld })
         {
@@ -231,14 +238,24 @@ namespace SdkGlobals
     {
         return g_resolutions;
     }
+
+    SDK::UWorld* GetWorld()
+    {
+        if (VersionMap::RunningExe().cl == VersionMap::kBuiltCL)
+            return SDK::UWorld::GetWorld();
+        return g_gWorld ? *reinterpret_cast<SDK::UWorld**>(g_gWorld) : nullptr;
+    }
 }
 
 #else
+
+#include "Engine_classes.hpp"
 
 namespace SdkGlobals
 {
     void ResolveAndApply() {}
     bool VerifyGObjects() { return true; }
+    SDK::UWorld* GetWorld() { return SDK::UWorld::GetWorld(); }
 }
 
 #endif

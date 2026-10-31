@@ -1,4 +1,5 @@
 #include "pch.h"
+#include "core/sdk_globals.h"
 #include "network_channel.h"
 #include "packet_fragmentation.h"
 #include "net_timeout.h"
@@ -453,7 +454,7 @@ namespace
     {
         __try
         {
-            SDK::UWorld* world = SDK::UWorld::GetWorld();
+            SDK::UWorld* world = SdkGlobals::GetWorld();
             if (!world || !world->NetDriver) return nullptr;
             return world->NetDriver->ServerConnection;
         }
@@ -548,7 +549,7 @@ namespace
         if (!conn) return false;
         __try
         {
-            SDK::UWorld* world = SDK::UWorld::GetWorld();
+            SDK::UWorld* world = SdkGlobals::GetWorld();
             if (!world || !world->NetDriver) return false;
 
             auto* conns = &world->NetDriver->ClientConnections;
@@ -1187,7 +1188,7 @@ namespace
 #ifdef MODLOADER_CLIENT_BUILD
         if (!playerController) return false;
 
-        SDK::UWorld* world = SDK::UWorld::GetWorld();
+        SDK::UWorld* world = SdkGlobals::GetWorld();
         if (!world) return false;
 
         void* localPC = SDK::UGameplayStatics::GetPlayerController(world, 0);
@@ -1301,7 +1302,7 @@ namespace
 
         std::string env = BuildEnvelope(self->name, typeTag, data, size);
 
-        SDK::UWorld* world = SDK::UWorld::GetWorld();
+        SDK::UWorld* world = SdkGlobals::GetWorld();
         if (!world)
         {
             ModLoaderLogger::LogWarn(L"[NetworkChannel] SendPacketToAllClients: UWorld not available");
@@ -2607,7 +2608,7 @@ std::vector<NetworkChannel::ClientManifest> NetworkChannel::GetClientManifests()
     // Enumerate live controllers so a connected client that has NOT reported
     // still shows up -- "who is missing a manifest" is the question this is most
     // often asked to answer.
-    SDK::UWorld* world = SDK::UWorld::GetWorld();
+    SDK::UWorld* world = SdkGlobals::GetWorld();
     if (!world) return out;
 
     SDK::TArray<SDK::AActor*> actors;

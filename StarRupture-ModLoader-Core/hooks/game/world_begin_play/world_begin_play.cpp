@@ -1,4 +1,5 @@
 #include "pch.h"
+#include "core/sdk_globals.h"
 #include "world_begin_play.h"
 #include "logging/logger.h"
 #include "memory_scanner/scanner.h"
@@ -17,7 +18,7 @@ namespace Hooks::WorldBeginPlay
 	// UCrSessionWorldLoaderSubsystem::OnWorldBeginPlay()
 	// x64 __fastcall member function: RCX = this (subsystem) only.
 	// There is NO UWorld* parameter -- the subsystem fetches the world internally.
-	// The world is retrieved via SDK::UWorld::GetWorld() after the original runs.
+	// The world is retrieved via SdkGlobals::GetWorld() after the original runs.
 	using OnWorldBeginPlay_t = void(__fastcall*)(void* subsystemThis);
 
 	static Hook g_hook;
@@ -62,7 +63,7 @@ namespace Hooks::WorldBeginPlay
 		}
 
 		// Fetch the world via the engine's own getter now that the original has run.
-		auto* inWorld = static_cast<SDK::UWorld*>(SDK::UWorld::GetWorld());
+		auto* inWorld = static_cast<SDK::UWorld*>(SdkGlobals::GetWorld());
 		std::string worldName;
 		if (inWorld)
 		{

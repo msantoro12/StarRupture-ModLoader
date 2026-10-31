@@ -562,6 +562,12 @@ namespace VersionMap
 				}
 			}
 
+			if (value.offset < 0)
+			{
+				error = how + " gives a negative offset";
+				return false;
+			}
+
 			if (check)
 			{
 				const bool same = sizeRow ? value.size == request.size : haveBuilt && SameField(built, value, bitfield);

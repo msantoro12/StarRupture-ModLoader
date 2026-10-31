@@ -119,13 +119,16 @@ namespace LayoutCheck
 #include "layout_table.generated.h"
 #include "sdk_globals.h"
 #include "../hooks/game/engine_init/engine_init.h"
+#include "../hooks/game/object_properties/object_properties.h"
 #include "../logging/logger.h"
 #include "../memory_scanner/version_map.h"
 #include "CoreUObject_classes.hpp"
 
 #include <windows.h>
 
+#include <algorithm>
 #include <chrono>
+#include <cstring>
 #include <mutex>
 #include <unordered_map>
 
@@ -371,34 +374,53 @@ namespace LayoutCheck
             return static_cast<const SDK::UStruct*>(object);
         }
 
-        // className is "/Script/Chimera.ACrX" or "ACrX".
+        // className is a Dumper-7 name, "ACrX", or "/Script/Chimera.ACrX".
+        // The game's own name has no prefix letter (CrX); the letter says
+        // which kind it is (F: a script struct, A or U: a class), which
+        // settles a class and a struct that share a name.
         VersionMap::LiveField FindType(const TypeIndex& index, const std::string& className,
             const SDK::UStruct*& type)
         {
             VersionMap::LiveField answer;
             type = nullptr;
             constexpr char kScript[] = "/Script/";
-            if (className.rfind(kScript, 0) == 0)
+            const bool byPath = className.rfind(kScript, 0) == 0;
+            const size_t dot = byPath ? className.rfind('.') : std::string::npos;
+            const std::string module = byPath && dot != std::string::npos
+                ? className.substr(sizeof(kScript) - 1, dot - (sizeof(kScript) - 1)) : std::string();
+            const std::string sdkName = byPath ? (dot == std::string::npos ? std::string() : className.substr(dot + 1)) : className;
+            if (sdkName.size() < 2 || !strchr("AUF", sdkName[0]))
             {
-                const std::string path = className.substr(sizeof(kScript) - 1);
-                const auto it = index.byPath.find(path);
+                answer.error = className + " is not a Dumper-7 class or struct name (ACrX, UCrX, FCrX)";
+                return answer;
+            }
+            const std::string name = sdkName.substr(1);
+            const SDK::EClassCastFlags kind = sdkName[0] == 'F' ? SDK::EClassCastFlags::ScriptStruct : SDK::EClassCastFlags::Class;
+
+            std::vector<const SDK::UStruct*> found;
+            if (byPath)
+            {
+                const auto it = index.byPath.find(module + "." + name);
                 if (it != index.byPath.end())
-                    type = TypeAt(it->second, path.substr(path.rfind('.') + 1));
+                    if (const SDK::UStruct* t = TypeAt(it->second, name))
+                        found.push_back(t);
             }
-            else
+            else if (const auto it = index.byName.find(name); it != index.byName.end())
             {
-                const auto it = index.byName.find(className);
-                if (it != index.byName.end() && it->second.size() > 1)
-                {
-                    answer.error = className + " is the name of " + std::to_string(it->second.size())
-                        + " native types; name it by /Script/<Module>." + className;
-                    return answer;
-                }
-                if (it != index.byName.end())
-                    type = TypeAt(it->second.front(), className);
+                for (int32_t i : it->second)
+                    if (const SDK::UStruct* t = TypeAt(i, name))
+                        found.push_back(t);
             }
-            if (!type)
-                answer.error = "no native class or struct " + className;
+            found.erase(std::remove_if(found.begin(), found.end(),
+                [kind](const SDK::UStruct* t) { return !t->HasTypeFlag(kind); }), found.end());
+
+            if (found.size() > 1)
+                answer.error = className + " is the name of " + std::to_string(found.size())
+                    + " native types; name it by /Script/<Module>." + sdkName;
+            else if (found.empty())
+                answer.error = "no native " + std::string(sdkName[0] == 'F' ? "struct " : "class ") + className;
+            else
+                type = found.front();
             return answer;
         }
 
@@ -409,22 +431,18 @@ namespace LayoutCheck
                 answer.size = static_cast<uint32_t>(type->Size);
                 return;
             }
-            for (const SDK::UStruct* s = type; s; s = s->SuperStruct)
+            const SDK::FProperty* property = Hooks::ObjectProperties::FindPropertyByName(
+                const_cast<SDK::UStruct*>(type), member.c_str());
+            if (!property)
             {
-                for (const SDK::FField* field = s->ChildProperties; field; field = field->Next)
-                {
-                    if (field->Name.GetRawString() != member)
-                        continue;
-                    const auto* property = static_cast<const SDK::FProperty*>(field);
-                    answer.offset = property->Offset;
-                    answer.size   = static_cast<uint32_t>(property->ElementSize * property->ArrayDim);
-                    answer.isBool = field->ClassPrivate
-                        && (field->ClassPrivate->CastFlags & static_cast<uint64_t>(SDK::EClassCastFlags::BoolProperty)) != 0;
-                    answer.boolMask = answer.isBool ? static_cast<const SDK::FBoolProperty*>(field)->FieldMask : 0;
-                    return;
-                }
+                answer.error = "no member " + member + " in it or its supers";
+                return;
             }
-            answer.error = "no member " + member + " in it or its supers";
+            answer.offset = property->Offset;
+            answer.size   = static_cast<uint32_t>(property->ElementSize * property->ArrayDim);
+            answer.isBool = property->ClassPrivate
+                && (property->ClassPrivate->CastFlags & static_cast<uint64_t>(SDK::EClassCastFlags::BoolProperty)) != 0;
+            answer.boolMask = answer.isBool ? static_cast<const SDK::FBoolProperty*>(property)->FieldMask : 0;
         }
 
         void Lookup(const std::string& className, const std::string& member, VersionMap::LiveField& answer)

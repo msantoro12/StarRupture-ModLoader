@@ -247,23 +247,25 @@ namespace ModLoaderLogger
 			const bool required = (local.flags & PLUGIN_SCAN_FLAG_OPTIONAL) == 0;
 
 			// v72. The loader's version map holds no keys yet, so a map key is
-			// answered by the plugin's own locators, and with none of those it
+			// answered by the plugin's own rows and pattern, and with neither it
 			// fails.
-			const bool mapKey = (local.flags & PLUGIN_SCAN_FLAG_MAP_KEY) != 0;
+			const bool mapKey     = (local.flags & PLUGIN_SCAN_FLAG_MAP_KEY) != 0;
+			const bool hasPattern = local.pattern && local.pattern[0];
+			const bool hasRows    = local.candidates && local.candidateCount > 0;
 			if (mapKey && local.hookName && local.hookName[0])
 			{
-				if (!local.pattern || !local.pattern[0])
+				if (!hasPattern && !hasRows)
 				{
 					const std::string detail = std::string(local.hookName)
-						+ ": not in the loader's map, and the request has no pattern of its own";
+						+ ": not in the loader's map, and the request has no pattern or rows of its own";
 					PluginHookReport::RecordFailure(self, local.hookName, detail.c_str(), required);
 					return 0;
 				}
-				ModLoaderLogger::LogInfo(L"[Map] %S: %S: not in the loader's map; own pattern",
-					self->name ? self->name : "?", local.hookName);
+				ModLoaderLogger::LogInfo(L"[Map] %S: %S: not in the loader's map; own %S",
+					self->name ? self->name : "?", local.hookName, hasPattern ? "pattern" : "rows");
 			}
 
-			if (!local.hookName || !local.hookName[0] || !local.pattern || !local.pattern[0])
+			if (!local.hookName || !local.hookName[0] || (!hasPattern && !(mapKey && hasRows)))
 			{
 				PluginHookReport::RecordFailure(self, local.hookName ? local.hookName : "(unnamed)",
 					"Resolve called with an empty hookName or pattern", required);
@@ -272,7 +274,7 @@ namespace ModLoaderLogger
 
 			ScanValidation::Request validation;
 			validation.name         = local.hookName;
-			validation.pattern      = local.pattern;
+			validation.pattern      = hasPattern ? local.pattern : "";
 			validation.kind         = ToValidationKind(local.kind);
 			validation.module       = local.module;
 			validation.resultOffset = local.resultOffset;

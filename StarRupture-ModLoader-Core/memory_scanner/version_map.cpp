@@ -303,7 +303,8 @@ namespace VersionMap
 
 		// --- 2. Agreement -----------------------------------------------------------
 		std::vector<Tried> tried;
-		tried.push_back({ "built pattern", request, {} });
+		if (!request.pattern.empty())   // a map-key request may carry rows only
+			tried.push_back({ "built pattern", request, {} });
 		for (const Candidate& c : candidates)
 		{
 			// An address-only row applies to its own exe, which is the exact row's.

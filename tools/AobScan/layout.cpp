@@ -21,7 +21,8 @@
 //
 // Results: OK; NOTYPE (no class of that name with a body); AMBIGUOUS (more than
 // one class of that name, laid out differently); NOMEMBER (the class and its
-// bases have no data member of that name); BADKEY.
+// bases have no data member of that name); BITFIELD (the member is a bitfield
+// wider than one bit, which FBoolProperty cannot describe); BADKEY.
 //
 // Output is the keys as given and numbers only. Type and member names are read
 // from the PDB to find the keys and are never printed: the PDB is not ours to
@@ -197,10 +198,15 @@ namespace
 				DWORD bit = 0;
 				if (Get(child, TI_GET_BITPOSITION, &bit))
 				{
-					const uint64_t bits = Length(child);
+					// FBoolProperty describes a one-bit field only.
+					if (Length(child) != 1)
+					{
+						out.result = "BITFIELD";
+						return true;
+					}
 					out.offset   = baseOffset + offset + bit / 8;
 					out.size     = 1;
-					out.boolMask = static_cast<uint32_t>(((1ull << bits) - 1) << (bit % 8)) & 0xFF;
+					out.boolMask = 1u << (bit % 8);
 				}
 				else
 				{
@@ -259,8 +265,13 @@ namespace
 		if (!in)
 			return false;
 		std::string line;
+		bool first = true;
 		while (std::getline(in, line))
 		{
+			// Windows PowerShell 5.1 writes UTF-8 with a byte-order mark.
+			if (first && line.compare(0, 3, "\xEF\xBB\xBF") == 0)
+				line.erase(0, 3);
+			first = false;
 			while (!line.empty() && (line.back() == '\r' || line.back() == ' ' || line.back() == '\t'))
 				line.pop_back();
 			size_t start = line.find_first_not_of(" \t");
@@ -330,9 +341,9 @@ namespace AobScan
 	int ScanLayout(const wchar_t* exePath, const wchar_t* keysPath, bool json)
 	{
 		std::vector<Key> keys;
-		if (!ReadKeys(keysPath, keys))
+		if (!ReadKeys(keysPath, keys) || keys.empty())
 		{
-			fprintf(stderr, "sr-aobscan: %ls: cannot read the key list\n", keysPath);
+			fprintf(stderr, "sr-aobscan: %ls: cannot read the key list, or it has no keys\n", keysPath);
 			return kExitBadInput;
 		}
 

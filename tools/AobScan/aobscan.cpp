@@ -41,7 +41,7 @@
 //
 // --layout reads the offset, size and bool mask of each listed class member
 // from the PDB next to the exe (layout.cpp). Exit code 0 when every key
-// resolved, 1 when one did not, 2 when there is no matching PDB.
+// resolved, 1 when one did not, 2 when there is no matching PDB or no key.
 //
 // --suggest proposes a replacement for every MISSING or AMBIGUOUS pattern
 // (suggest.cpp), using the PDB next to the exe when there is one, and

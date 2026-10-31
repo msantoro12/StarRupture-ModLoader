@@ -13,9 +13,12 @@
 // too, in this order:
 //   * A member: the exact name; then ignoring case, as FName compares
 //     (UniqueID / UniqueId); then with "_DEPRECATED" appended, which the
-//     reflected name of a deprecated property drops.
+//     reflected name of a deprecated property drops; then, for a name ending in
+//     "_<digits>", without that suffix, which Dumper-7 adds to a member whose
+//     name collides with another identifier (Outer_0 for Outer).
 //   * A class: the exact name; then the template behind one of the engine's
-//     double-precision aliases (FVector is UE::Math::TVector<double>); then, for
+//     math aliases (FVector is UE::Math::TVector<double>, FVector3f is
+//     UE::Math::TVector<float>); then, for
 //     Dumper-7's "Owner_Function" parameter struct, the struct UnrealHeaderTool
 //     generated for it, "Owner_eventFunction_Parms", splitting at each '_' in
 //     turn, since the owner's name may hold one.
@@ -52,7 +55,7 @@ namespace
 	constexpr DWORD kBtBool          = 10;
 	constexpr int   kMaxBaseDepth    = 32;
 
-	// The engine's double-precision math aliases (Engine/Source/Runtime/Core/Public/Math).
+	// The engine's math aliases (Engine/Source/Runtime/Core/Public/Math/MathFwd.h).
 	constexpr struct { const char* alias; const wchar_t* type; } kMathAliases[] = {
 		{ "FBox",      L"UE::Math::TBox<double>" },
 		{ "FBox2D",    L"UE::Math::TBox2<double>" },
@@ -65,6 +68,17 @@ namespace
 		{ "FVector",   L"UE::Math::TVector<double>" },
 		{ "FVector2D", L"UE::Math::TVector2<double>" },
 		{ "FVector4",  L"UE::Math::TVector4<double>" },
+		{ "FBox3f",    L"UE::Math::TBox<float>" },
+		{ "FBox2f",    L"UE::Math::TBox2<float>" },
+		{ "FMatrix44f", L"UE::Math::TMatrix<float>" },
+		{ "FPlane4f",  L"UE::Math::TPlane<float>" },
+		{ "FQuat4f",   L"UE::Math::TQuat<float>" },
+		{ "FRotator3f", L"UE::Math::TRotator<float>" },
+		{ "FSphere3f", L"UE::Math::TSphere<float>" },
+		{ "FTransform3f", L"UE::Math::TTransform<float>" },
+		{ "FVector3f", L"UE::Math::TVector<float>" },
+		{ "FVector2f", L"UE::Math::TVector2<float>" },
+		{ "FVector4f", L"UE::Math::TVector4<float>" },
 	};
 
 	// Any address works: the exe is not mapped, DbgHelp reads it from disk.
@@ -187,9 +201,16 @@ namespace
 		bool Member(DWORD udt, const std::wstring& member, Answer& out) const
 		{
 			const std::wstring deprecated = member + L"_DEPRECATED";
-			return Find(udt, [&](const std::wstring& n) { return n == member; }, 0, 0, out)
+			if (Find(udt, [&](const std::wstring& n) { return n == member; }, 0, 0, out)
 			    || Find(udt, [&](const std::wstring& n) { return _wcsicmp(n.c_str(), member.c_str()) == 0; }, 0, 0, out)
-			    || Find(udt, [&](const std::wstring& n) { return _wcsicmp(n.c_str(), deprecated.c_str()) == 0; }, 0, 0, out);
+			    || Find(udt, [&](const std::wstring& n) { return _wcsicmp(n.c_str(), deprecated.c_str()) == 0; }, 0, 0, out))
+				return true;
+			const size_t sep = member.rfind(L'_');
+			if (sep == std::wstring::npos || sep == 0 || sep + 1 == member.size()
+			    || member.find_first_not_of(L"0123456789", sep + 1) != std::wstring::npos)
+				return false;
+			const std::wstring renamed = member.substr(0, sep);
+			return Find(udt, [&](const std::wstring& n) { return _wcsicmp(n.c_str(), renamed.c_str()) == 0; }, 0, 0, out);
 		}
 
 	private:

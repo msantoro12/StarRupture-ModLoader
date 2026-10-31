@@ -14,8 +14,8 @@
 //   * A member: the exact name; then ignoring case, as FName compares
 //     (UniqueID / UniqueId); then with "_DEPRECATED" appended, which the
 //     reflected name of a deprecated property drops; then, for a name ending in
-//     "_<digits>", without that suffix, which Dumper-7 adds to a member whose
-//     name collides with another identifier (Outer_0 for Outer).
+//     "_<n>", without that suffix and in the same case, which Dumper-7 adds to a
+//     member whose name collides with another identifier (Outer_0 for Outer).
 //   * A class: the exact name; then the template behind one of the engine's
 //     math aliases (FVector is UE::Math::TVector<double>, FVector3f is
 //     UE::Math::TVector<float>); then, for
@@ -79,6 +79,17 @@ namespace
 		{ "FVector3f", L"UE::Math::TVector<float>" },
 		{ "FVector2f", L"UE::Math::TVector2<float>" },
 		{ "FVector4f", L"UE::Math::TVector4<float>" },
+		{ "FBox3d",    L"UE::Math::TBox<double>" },
+		{ "FBox2d",    L"UE::Math::TBox2<double>" },
+		{ "FMatrix44d", L"UE::Math::TMatrix<double>" },
+		{ "FPlane4d",  L"UE::Math::TPlane<double>" },
+		{ "FQuat4d",   L"UE::Math::TQuat<double>" },
+		{ "FRotator3d", L"UE::Math::TRotator<double>" },
+		{ "FSphere3d", L"UE::Math::TSphere<double>" },
+		{ "FTransform3d", L"UE::Math::TTransform<double>" },
+		{ "FVector3d", L"UE::Math::TVector<double>" },
+		{ "FVector2d", L"UE::Math::TVector2<double>" },
+		{ "FVector4d", L"UE::Math::TVector4<double>" },
 	};
 
 	// Any address works: the exe is not mapped, DbgHelp reads it from disk.
@@ -205,12 +216,14 @@ namespace
 			    || Find(udt, [&](const std::wstring& n) { return _wcsicmp(n.c_str(), member.c_str()) == 0; }, 0, 0, out)
 			    || Find(udt, [&](const std::wstring& n) { return _wcsicmp(n.c_str(), deprecated.c_str()) == 0; }, 0, 0, out))
 				return true;
+			// Dumper-7's suffix is _0, _1, ...: no leading zero, and the base keeps its case.
 			const size_t sep = member.rfind(L'_');
 			if (sep == std::wstring::npos || sep == 0 || sep + 1 == member.size()
-			    || member.find_first_not_of(L"0123456789", sep + 1) != std::wstring::npos)
+			    || member.find_first_not_of(L"0123456789", sep + 1) != std::wstring::npos
+			    || (member[sep + 1] == L'0' && sep + 2 != member.size()))
 				return false;
 			const std::wstring renamed = member.substr(0, sep);
-			return Find(udt, [&](const std::wstring& n) { return _wcsicmp(n.c_str(), renamed.c_str()) == 0; }, 0, 0, out);
+			return Find(udt, [&](const std::wstring& n) { return n == renamed; }, 0, 0, out);
 		}
 
 	private:

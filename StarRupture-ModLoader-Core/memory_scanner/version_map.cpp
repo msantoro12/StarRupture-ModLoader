@@ -142,6 +142,21 @@ namespace VersionMap
 			+ ", so it would read this game's data where " + built + " had it. It loads on " + built + ".";
 	}
 
+	std::string SdkGlobalsWithheld(const Exe& running, uintptr_t gobjects, uintptr_t appendString, uintptr_t gworld)
+	{
+		std::string missing;
+		const auto need = [&](bool found, const char* name)
+		{
+			if (!found)
+				missing += (missing.empty() ? "" : ", ") + std::string(name);
+		};
+		need(gobjects != 0, "GObjects");
+		need(appendString != 0, "FName::AppendString");
+		if (running.cl != kBuiltCL)
+			need(gworld != 0, "GWorld");
+		return missing.empty() ? std::string() : missing + " not found on CL-" + std::to_string(running.cl);
+	}
+
 	Exe ExeOf(HMODULE module)
 	{
 		Exe e;

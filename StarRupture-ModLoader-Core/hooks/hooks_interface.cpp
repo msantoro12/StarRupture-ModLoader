@@ -25,6 +25,7 @@
 #include "memory_scanner/scanner.h"
 #include "hooks/game/scan_patterns.h"
 #include "hooks/game/ufunction_resolve.h"
+#include "core/sdk_globals.h"
 #ifdef MODLOADER_SERVER_BUILD
 #include "hooks/http/http_server_hook.h"
 #endif
@@ -398,14 +399,13 @@ namespace ModLoaderLogger
 	static uintptr_t HooksGetLoadPackageAddress()                { return Hooks::ObjectLookup::GetLoadPackageAddress(); }
 	static uintptr_t HooksGetAssetDataFastGetAssetAddress()      { return Hooks::ObjectLookup::GetFAssetData_FastGetAssetAddress(); }
 
-	// v72. Not handed out yet: null is the documented "none to give". Only a
-	// call that gets the globals is counted: off the SDK's own build, a plugin
-	// that has not taken them reads its own offsets and is not admitted. Until
-	// they are handed out, then, no plugin is admitted there.
+	// v72. Only a call that gets the globals is counted: off the SDK's own
+	// build, a plugin that has not taken them reads its own offsets and is not
+	// admitted.
 	static thread_local unsigned t_sdkGlobalsCalls = 0;
 	static const PluginSdkGlobals* HooksGetSdkGlobals()
 	{
-		const PluginSdkGlobals* globals = nullptr;
+		const PluginSdkGlobals* globals = SdkGlobals::ForPlugins();
 		if (globals)
 			++t_sdkGlobalsCalls;
 		return globals;

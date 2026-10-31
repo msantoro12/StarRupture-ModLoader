@@ -84,6 +84,14 @@ namespace VersionMap
 	// log and the plugin list.
 	std::string OffBuildRefusal(const Exe& running, int interfaceVersion, bool usedMap, bool askedSdkGlobals);
 
+	// Whether the Game-SDK globals found on `running` may be handed to plugins
+	// (IPluginEngineEvents::GetSdkGlobals), as absolute addresses, 0 = not
+	// found. A plugin needs GObjects and FName::AppendString to set up its
+	// SDK; on any build other than kBuiltCL it also needs GWorld, because its
+	// SDK's own UWorld::GetWorld reads kBuiltCL's address. Empty = hand them
+	// out; else what is missing, for the log.
+	std::string SdkGlobalsWithheld(const Exe& running, uintptr_t gobjects, uintptr_t appendString, uintptr_t gworld);
+
 	// Resolves `request` (the component's own pattern, kind and transforms)
 	// with `candidates`, as described above. `owner` names the component in
 	// the [Map] line. The result reads like ScanValidation's: a failure's

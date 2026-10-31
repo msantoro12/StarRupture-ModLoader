@@ -4,6 +4,8 @@
 #include <string>
 #include <vector>
 
+struct PluginSdkGlobals;
+
 namespace SDK
 {
     class ACrCrafter;
@@ -60,6 +62,13 @@ namespace SdkGlobals
 
     // Every global ResolveAndApply looked for, in order. Client builds only.
     const std::vector<Resolution>& Resolutions();
+
+    // The globals for IPluginEngineEvents::GetSdkGlobals: the ones this build
+    // resolved through the version map, with a GObjects the layout check has
+    // verified. Null when VersionMap::SdkGlobalsWithheld says so (logged
+    // once), and on the server build. Settled on the first call, which comes
+    // from a PluginInit; valid for the life of the process.
+    const PluginSdkGlobals* ForPlugins();
 
     // The current world, for the loader's own code; use it in place of
     // SDK::UWorld::GetWorld(). The SDK reads Offsets::GWorld, an address that

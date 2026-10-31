@@ -1,4 +1,5 @@
 #include "sdk_globals.h"
+#include "../plugins/plugin_interface.h"
 
 #if defined(MODLOADER_CLIENT_BUILD)
 
@@ -30,8 +31,11 @@ namespace SdkGlobals
         // installed, and by VerifyGObjects on the same thread; read-only
         // afterwards.
         bool                    g_gObjectsOverridden = false;
+        bool                    g_gObjectsVerified = false;  // VerifyGObjects kept the resolved one
         bool                    g_appendStringApplied = false;
         std::vector<Resolution> g_resolutions;
+        uintptr_t               g_gNames = 0;
+        uintptr_t               g_appendString = 0;
         uintptr_t               g_gWorld = 0;   // the engine's GWorld variable; 0 = not found
 
         // The registry row for a pattern, so the request is the one preflight
@@ -186,6 +190,7 @@ namespace SdkGlobals
             LogApplied(appendString, base);
             SDK::FName::InitManually(reinterpret_cast<void*>(appendString.address));
             g_appendStringApplied = true;
+            g_appendString = appendString.address;
         }
 
         // GNames and GWorld stop at the log line. The SDK never reads GNames
@@ -193,7 +198,10 @@ namespace SdkGlobals
         // Offsets::GWorld through an `if constexpr`, so there is nothing to
         // hand either of them to.
         if (Resolve(gNames))
+        {
             LogOnly(gNames, base);
+            g_gNames = gNames.address;
+        }
         if (Resolve(gWorld))
         {
             LogOnly(gWorld, base);
@@ -218,10 +226,16 @@ namespace SdkGlobals
 
         if (!g_gObjectsOverridden)
             return CheckObjectArray(L"built-in", builtIn);
+        // Kept once, kept for good: plugins may already hold it.
+        if (g_gObjectsVerified)
+            return true;
 
         const uintptr_t resolved = reinterpret_cast<uintptr_t>(SDK::UObject::GObjects.GetTypedPtr());
         if (CheckObjectArray(L"resolved", resolved))
+        {
+            g_gObjectsVerified = true;
             return true;
+        }
 
         // A unique match that found the wrong .data address. Go back to the
         // SDK's own value, the policy for every other kind of miss.
@@ -246,6 +260,33 @@ namespace SdkGlobals
         return g_gObjectsOverridden && g_appendStringApplied;
     }
 
+    const PluginSdkGlobals* ForPlugins()
+    {
+        // Settled on the first call, which comes from a PluginInit: after the
+        // layout check has verified GObjects, so never changes afterwards.
+        static const PluginSdkGlobals* const globals = []() -> const PluginSdkGlobals*
+        {
+            static PluginSdkGlobals value{};
+            const uintptr_t gObjects = g_gObjectsVerified
+                ? reinterpret_cast<uintptr_t>(SDK::UObject::GObjects.GetTypedPtr()) : 0;
+            const std::string withheld = VersionMap::SdkGlobalsWithheld(VersionMap::RunningExe(),
+                gObjects, g_appendString, g_gWorld);
+            if (!withheld.empty())
+            {
+                ModLoaderLogger::LogWarn(L"[SdkGlobals] Not handed to plugins: %S (a GObjects the layout check did not verify counts as not found)",
+                    withheld.c_str());
+                return nullptr;
+            }
+            value = { static_cast<uint32_t>(sizeof(PluginSdkGlobals)), gObjects, g_gNames, g_appendString, g_gWorld };
+            const uintptr_t base = reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
+            const auto rva = [base](uintptr_t address) { return static_cast<unsigned long long>(address ? address - base : 0); };
+            ModLoaderLogger::LogInfo(L"[SdkGlobals] Handed to plugins on CL-%u: GObjects base+0x%llX, GNames base+0x%llX, AppendString base+0x%llX, GWorld base+0x%llX (0 = not found)",
+                VersionMap::RunningExe().cl, rva(gObjects), rva(g_gNames), rva(g_appendString), rva(g_gWorld));
+            return &value;
+        }();
+        return globals;
+    }
+
     SDK::UWorld* GetWorld()
     {
         if (VersionMap::RunningExe().cl == VersionMap::kBuiltCL)
@@ -263,6 +304,7 @@ namespace SdkGlobals
     void ResolveAndApply() {}
     bool VerifyGObjects() { return true; }
     bool SdkOnResolvedGlobals() { return false; }
+    const PluginSdkGlobals* ForPlugins() { return nullptr; }
     SDK::UWorld* GetWorld() { return SDK::UWorld::GetWorld(); }
 }
 

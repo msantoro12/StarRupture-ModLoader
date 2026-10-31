@@ -144,14 +144,13 @@ namespace LayoutCheck
     }
 
     // Compares every table class with what `find` returns for it (nullptr:
-    // not in the game). granularity is the table's kGranularity: at 1 a class
-    // lists only the members the loader reads, and since the loader reaches a
-    // UClass only through pointers, a UClass's own size and alignment are not
-    // compared (a script struct's and a parameter block's still are: those
-    // are held by value). Rows for which perBuild is true are skipped and
-    // counted in Result::perBuild.
+    // not in the game). A size or alignment of 0 is not compared: in a
+    // granularity-1 table a class lists only the members the loader reads,
+    // and a UClass the loader reaches only through pointers has size 0 (one
+    // it allocates or copies, such as UFunction, keeps its size). Rows for
+    // which perBuild is true are skipped and counted in Result::perBuild.
     using PerBuild = std::function<bool(const TableClass&, const TableRow&)>;
     Result Compare(const std::vector<TableClass>& table,
         const std::function<const LiveStruct*(const TableClass&)>& find,
-        uint32_t granularity = 0, const PerBuild& perBuild = {});
+        const PerBuild& perBuild = {});
 }

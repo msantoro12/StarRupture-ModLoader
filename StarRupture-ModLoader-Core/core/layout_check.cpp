@@ -38,7 +38,7 @@ namespace LayoutCheck
 
     Result Compare(const std::vector<TableClass>& table,
         const std::function<const LiveStruct*(const TableClass&)>& find,
-        uint32_t granularity, const PerBuild& perBuild)
+        const PerBuild& perBuild)
     {
         Result result;
         result.classes = static_cast<int>(table.size());
@@ -66,13 +66,14 @@ namespace LayoutCheck
             ++result.checked;
             const size_t linesBefore = result.lines.size();
 
-            const bool byValue = granularity == 0 || sdk.kind != Kind::Class;
-            if (byValue && live->size != static_cast<int32_t>(sdk.sizeOf))
+            // A size of 0 is not compared: at granularity 1 the generator
+            // writes it for a UClass the sources reach only through pointers.
+            if (sdk.sizeOf != 0 && live->size != static_cast<int32_t>(sdk.sizeOf))
                 Record(result, sdk.name, "", "size", sdk.sizeOf, live->size,
                     Format("%s: size SDK 0x%X, game 0x%X", sdk.name, sdk.sizeOf, live->size));
             // A native UFunction's MinAlignment is 1 whatever its parameters
             // hold, so only classes and structs have an alignment to compare.
-            if (byValue && sdk.kind != Kind::FunctionParams && sdk.alignOf != 0
+            if (sdk.kind != Kind::FunctionParams && sdk.alignOf != 0
                 && live->minAlignment != static_cast<int32_t>(sdk.alignOf))
                 Record(result, sdk.name, "", "alignment", sdk.alignOf, live->minAlignment,
                     Format("%s: alignment SDK %u, game %d", sdk.name, sdk.alignOf, live->minAlignment));
@@ -338,7 +339,7 @@ namespace LayoutCheck
         {
             const auto it = search.live.find(sdk.path);
             return it == search.live.end() ? nullptr : &it->second;
-        }, SrLayoutTable::kGranularity, [](const TableClass& sdk, const TableRow& row)
+        }, [](const TableClass& sdk, const TableRow& row)
         {
             return SdkGlobals::IsPerBuildField(sdk.name, row.name);
         });

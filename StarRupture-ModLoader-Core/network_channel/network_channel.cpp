@@ -810,7 +810,7 @@ namespace
     //
     //  1. The channel must still point back at the connection we looked it up by.
     //     This is the check that does not rely on any bit-layout assumption: if the
-    //     UChannel was freed and its memory reused, Connection@0x28 almost
+    //     UChannel was freed and its memory reused, Connection almost
     //     certainly no longer matches.
     //  2. The Closing and Broken flags. Offsets come from IDA's type info for
     //     UChannel (the SDK pads this region out, so it is not in the headers):
@@ -825,7 +825,7 @@ namespace
         __try
         {
             auto* p = reinterpret_cast<uint8_t*>(cc);
-            if (*reinterpret_cast<void**>(p + 0x28) != conn) return false;
+            if (*reinterpret_cast<void**>(p + offsetof(SDK::UChannel, Connection)) != conn) return false;
 
             const uint8_t flags = *(p + kOff_ChannelFlags);
             if (flags & (kChannelClosing | kChannelBroken)) return false;

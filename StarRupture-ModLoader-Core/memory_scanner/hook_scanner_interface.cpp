@@ -2,6 +2,7 @@
 #include "memory_scanner/scanner.h"
 #include "memory_scanner/scan_validation.h"
 #include "memory_scanner/version_map.h"
+#include "logging/logger.h"
 #include "plugins/plugin_hook_report.h"
 
 #include <cstddef>
@@ -244,6 +245,23 @@ namespace ModLoaderLogger
 			memcpy(&local, request, given < sizeof(PluginScanRequest) ? given : sizeof(PluginScanRequest));
 
 			const bool required = (local.flags & PLUGIN_SCAN_FLAG_OPTIONAL) == 0;
+
+			// v72. The loader's version map holds no keys yet, so a map key is
+			// answered by the plugin's own locators, and with none of those it
+			// fails.
+			const bool mapKey = (local.flags & PLUGIN_SCAN_FLAG_MAP_KEY) != 0;
+			if (mapKey && local.hookName && local.hookName[0])
+			{
+				if (!local.pattern || !local.pattern[0])
+				{
+					const std::string detail = std::string(local.hookName)
+						+ ": not in the loader's map, and the request has no pattern of its own";
+					PluginHookReport::RecordFailure(self, local.hookName, detail.c_str(), required);
+					return 0;
+				}
+				ModLoaderLogger::LogInfo(L"[Map] %S: %S: not in the loader's map; own pattern",
+					self->name ? self->name : "?", local.hookName);
+			}
 
 			if (!local.hookName || !local.hookName[0] || !local.pattern || !local.pattern[0])
 			{

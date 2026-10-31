@@ -142,6 +142,25 @@ namespace VersionMap
 			+ ", so it would read this game's data where " + built + " had it. It loads on " + built + ".";
 	}
 
+	PluginGameBuild ReadPluginGameBuild(const PluginInfo& info)
+	{
+		PluginGameBuild build;
+		if (info.interfaceVersion < 72)   // the struct ends before the tail
+			return build;
+		build.mapFlags = info.mapFlags;
+		if (info.gameBuiltCL != 0)
+		{
+			build.gameCL   = info.gameBuiltCL;
+			build.declared = true;
+		}
+		return build;
+	}
+
+	std::string DescribePluginGameBuild(const PluginGameBuild& build)
+	{
+		return "CL-" + std::to_string(build.gameCL) + (build.declared ? "" : " (none declared)");
+	}
+
 	std::string SdkGlobalsWithheld(const Exe& running, uintptr_t gobjects, uintptr_t appendString, uintptr_t gworld)
 	{
 		std::string missing;

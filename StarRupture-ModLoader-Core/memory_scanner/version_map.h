@@ -7,6 +7,7 @@
 #include <vector>
 
 namespace ScanPatterns { struct PreflightEntry; }
+struct PluginInfo;
 
 // ---------------------------------------------------------------------------
 // VersionMap -- picks the locator for the game build that is running.
@@ -83,6 +84,24 @@ namespace VersionMap
 	// for what it cannot know yet. Empty = admitted; else the reason, for the
 	// log and the plugin list.
 	std::string OffBuildRefusal(const Exe& running, int interfaceVersion, bool usedMap, bool askedSdkGlobals);
+
+	// The game build every plugin before interface 72 was compiled against:
+	// the one the last loader without a version map required.
+	constexpr uint32_t kLegacyPluginCL = 127004;
+
+	// The game build a plugin says its Game-SDK came from (the v72 PluginInfo
+	// tail). A plugin before interface 72 has no tail and gets kLegacyPluginCL;
+	// so does a v72 plugin whose tail is 0, with declared false.
+	struct PluginGameBuild
+	{
+		uint32_t gameCL   = kLegacyPluginCL;
+		uint32_t mapFlags = 0;
+		bool     declared = false;   // the tail names a build
+	};
+	PluginGameBuild ReadPluginGameBuild(const PluginInfo& info);
+
+	// "CL-127004", or "CL-127004 (none declared)", for log lines.
+	std::string DescribePluginGameBuild(const PluginGameBuild& build);
 
 	// Whether the Game-SDK globals found on `running` may be handed to plugins
 	// (IPluginEngineEvents::GetSdkGlobals), as absolute addresses, 0 = not

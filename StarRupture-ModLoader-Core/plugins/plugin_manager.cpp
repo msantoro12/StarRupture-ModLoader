@@ -441,9 +441,10 @@ namespace PluginManager
 			return false;
 		}
 
-		ModLoaderLogger::LogMessage(L"Plugin info - Name: %S, Version: %S, Author: %S, Interface: %d (modloader expects [%d, %d])",
+		ModLoaderLogger::LogMessage(L"Plugin info - Name: %S, Version: %S, Author: %S, Interface: %d (modloader expects [%d, %d]), game build %S",
 			info->name, info->version, info->author,
-			info->interfaceVersion, PLUGIN_INTERFACE_VERSION_MIN, PLUGIN_INTERFACE_VERSION_MAX);
+			info->interfaceVersion, PLUGIN_INTERFACE_VERSION_MIN, PLUGIN_INTERFACE_VERSION_MAX,
+			VersionMap::DescribePluginGameBuild(VersionMap::ReadPluginGameBuild(*info)).c_str());
 
 		rec.hModule        = hModule;
 		rec.info           = info;

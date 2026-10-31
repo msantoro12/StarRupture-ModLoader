@@ -17,9 +17,11 @@
 //
 //   1. Exact. The row whose changelist is the running one. On the very exe the
 //      row was verified on (same changelist, PE TimeDateStamp and SizeOfImage),
-//      it must land on its recorded RVA: same binary, different answer is a
-//      failure with no fallback. A row whose pattern is not in the exe at all
-//      (another exe with the same changelist) is logged and skipped.
+//      it must land on its recorded RVA: same binary, different answer (another
+//      address, or the pattern not found) is a failure with no fallback. On
+//      another exe with the same changelist, a row whose pattern is not found
+//      is logged and skipped. A row with no pattern is an address for its own
+//      exe only, so it needs that exe's stamp and size and an RVA.
 //   2. Agreement. Every other locator, the request's own pattern included. At
 //      least one must resolve, and every one that resolves must give the same
 //      final address. Different addresses are a failure (AMBIGUOUS).

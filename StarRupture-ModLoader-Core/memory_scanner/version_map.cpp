@@ -129,6 +129,19 @@ namespace VersionMap
 		const Scanner::ImageInfo image = Scanner::GetImageInfo(module);
 		const std::string here = ClText(running.cl);
 
+		// An address-only row is honoured on its own exe only, so it needs all of
+		// the exe's stamp and size and the RVA.
+		for (const Candidate& c : candidates)
+		{
+			if (c.pattern.empty() && !(c.imageStamp && c.imageSize && c.rva))
+			{
+				Result bad;
+				bad.outcome = Outcome::BadRequest;
+				bad.detail  = "the " + ClText(c.gameCL) + " row has no pattern, so it needs the exe's stamp and size and an RVA";
+				return bad;
+			}
+		}
+
 		// --- 1. Exact -------------------------------------------------------------
 		const Candidate* exact = nullptr;
 		if (running.cl)
@@ -194,6 +207,13 @@ namespace VersionMap
 				if (r.outcome != Outcome::NoMatch)
 				{
 					r.detail = here + " row: " + r.detail;
+					return r;
+				}
+				if (sameExe && exact->rva)
+				{
+					r.detail = "on the exe the " + here + " row was verified on (RVA " + Hex(exact->rva)
+					         + "), its pattern is not found: same exe, different answer, so no other locator is tried."
+					         + NL + "            Pattern: " + exact->pattern;
 					return r;
 				}
 				ModLoaderLogger::LogWarn(L"[Map] %S: %S: the %S row's pattern is not in this exe; trying every other locator",

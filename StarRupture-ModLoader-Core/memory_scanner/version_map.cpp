@@ -123,6 +123,25 @@ namespace VersionMap
 		return cl != 0 && std::find(builds.begin(), builds.end(), cl) != builds.end();
 	}
 
+	std::string OffBuildRefusal(const Exe& running, int interfaceVersion, bool usedMap, bool askedSdkGlobals)
+	{
+		constexpr int kFirstMapInterface = 72;   // ResolveField, candidates, GetSdkGlobals
+		if (running.cl == kBuiltCL)
+			return {};
+		std::string why;
+		if (interfaceVersion < kFirstMapInterface)
+			why = "it was built for plugin interface v" + std::to_string(interfaceVersion) + ", before the version map";
+		else if (!usedMap)
+			why = "it asks the version map for none of its game offsets";
+		else if (!askedSdkGlobals)
+			why = "it does not take the Game-SDK globals from the loader (GetSdkGlobals)";
+		else
+			return {};
+		const std::string built = "CL-" + std::to_string(kBuiltCL);
+		return "Needs an update to run on CL-" + std::to_string(running.cl) + ": " + why
+			+ ", so it would read this game's data where " + built + " had it. It loads on " + built + ".";
+	}
+
 	Exe ExeOf(HMODULE module)
 	{
 		Exe e;

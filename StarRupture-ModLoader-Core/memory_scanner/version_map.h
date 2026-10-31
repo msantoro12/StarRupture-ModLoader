@@ -74,6 +74,16 @@ namespace VersionMap
 	// True when the ProductVersion ends in the CL of one of SupportedBuilds().
 	bool IsSupported(const std::wstring& productVersion);
 
+	// Whether a plugin may run on `running`. On kBuiltCL every plugin may. On
+	// any other build its compiled-in layouts and its SDK's Offsets:: point
+	// where kBuiltCL had things, so it runs only when it takes all of them
+	// from this build: interface 72 or later, the map in OnPluginLoadHooks
+	// (a request with candidates, or ResolveField), and GetSdkGlobals in
+	// PluginInit. The loader asks at each of those three points, passing true
+	// for what it cannot know yet. Empty = admitted; else the reason, for the
+	// log and the plugin list.
+	std::string OffBuildRefusal(const Exe& running, int interfaceVersion, bool usedMap, bool askedSdkGlobals);
+
 	// Resolves `request` (the component's own pattern, kind and transforms)
 	// with `candidates`, as described above. `owner` names the component in
 	// the [Map] line. The result reads like ScanValidation's: a failure's

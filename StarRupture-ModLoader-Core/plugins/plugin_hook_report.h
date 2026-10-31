@@ -96,6 +96,12 @@ namespace PluginHookReport
     // it is not going to load.
     bool SessionHasFailures(const IPluginSelf* self);
 
+    // v72. A request with candidates or a ResolveField call: the plugin takes
+    // game offsets from the version map. Asked before EndSession, for the
+    // off-build admission rule (VersionMap::OffBuildRefusal).
+    void RecordMapUse(const IPluginSelf* self);
+    bool SessionUsedMap(const IPluginSelf* self);
+
     // --- Report, for the UI and the console -----------------------------------
 
     // Copy of every plugin report recorded this session.

@@ -27,6 +27,7 @@ namespace PluginHookReport
         {
             const IPluginSelf* self;
             PluginReport       report;
+            bool               usedMap = false;
         };
 
         std::mutex                s_mutex;
@@ -206,6 +207,20 @@ namespace PluginHookReport
         f.detail   = detail ? detail : "";
         f.required = required;
         session->report.failures.push_back(std::move(f));
+    }
+
+    void RecordMapUse(const IPluginSelf* self)
+    {
+        std::lock_guard<std::mutex> lock(s_mutex);
+        if (Session* session = FindSession(self))
+            session->usedMap = true;
+    }
+
+    bool SessionUsedMap(const IPluginSelf* self)
+    {
+        std::lock_guard<std::mutex> lock(s_mutex);
+        const Session* session = FindSession(self);
+        return session && session->usedMap;
     }
 
     bool SessionHasFailures(const IPluginSelf* self)

@@ -338,7 +338,7 @@ namespace ModLoaderLogger
 			return PluginHookReport::SessionHasFailures(self);
 		}
 
-		// v71. Not implemented yet, so every field fails, recorded like a miss:
+		// v72. Not implemented yet, so every field fails, recorded like a miss:
 		// a plugin that asks for one is refused rather than run on a guess.
 		bool HookResolveField(const IPluginSelf* self, const PluginFieldRequest* request, PluginFieldResult* /*result*/)
 		{

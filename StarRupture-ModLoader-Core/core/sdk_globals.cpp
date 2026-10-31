@@ -322,13 +322,15 @@ namespace SdkGlobals
 #include <atomic>
 #include <cstddef>
 #include <cstring>
+#include <iterator>
 #include <type_traits>
 
 namespace SdkGlobals
 {
     namespace
     {
-        // One member, under its key in the loader's version map.
+        // One member, under its key in the loader's version map
+        // (VersionMap::kLoaderFieldKeys, in FieldId order).
         struct FieldSpec
         {
             const char* key;
@@ -345,14 +347,16 @@ namespace SdkGlobals
         static_assert(std::is_same_v<std::remove_extent_t<decltype(SDK::UWorld::LineBatchers)>, SDK::ULineBatchComponent*>);
         static_assert(std::is_same_v<decltype(SDK::UWorld::NetDriver), SDK::UNetDriver*>);
 
+        static_assert(std::size(VersionMap::kLoaderFieldKeys) == kFieldCount, "one key per loader field");
+
         const FieldSpec kFieldSpecs[kFieldCount] = {
-            { "ACrCrafter::CraftComponent", "ACrCrafter", "CraftComponent",
+            { VersionMap::kLoaderFieldKeys[kCraftComponent], "ACrCrafter", "CraftComponent",
               offsetof(SDK::ACrCrafter, CraftComponent), sizeof(SDK::ACrCrafter::CraftComponent) },
-            { "UWorld::GameState", "UWorld", "GameState",
+            { VersionMap::kLoaderFieldKeys[kGameState], "UWorld", "GameState",
               offsetof(SDK::UWorld, GameState), sizeof(SDK::UWorld::GameState) },
-            { "UWorld::LineBatchers", "UWorld", "LineBatchers",
+            { VersionMap::kLoaderFieldKeys[kLineBatchers], "UWorld", "LineBatchers",
               offsetof(SDK::UWorld, LineBatchers), sizeof(SDK::UWorld::LineBatchers) },
-            { "UWorld::NetDriver", "UWorld", "NetDriver",
+            { VersionMap::kLoaderFieldKeys[kNetDriver], "UWorld", "NetDriver",
               offsetof(SDK::UWorld, NetDriver), sizeof(SDK::UWorld::NetDriver) },
         };
 

@@ -762,9 +762,9 @@ namespace VersionMap
 			return a.offset == b.offset && a.size == b.size && (!bitfield || a.boolMask == b.boolMask);
 		}
 
-		const FieldCandidate* RowFor(const FieldRequest& request, uint32_t cl)
+		const FieldCandidate* RowFor(const std::vector<FieldCandidate>& rows, uint32_t cl)
 		{
-			for (const FieldCandidate& row : request.candidates)
+			for (const FieldCandidate& row : rows)
 				if (row.gameCL == cl)
 					return &row;
 			return nullptr;
@@ -773,6 +773,73 @@ namespace VersionMap
 		FieldValue ValueOf(const FieldCandidate& row)
 		{
 			return FieldValue{ row.offset, row.size, row.boolMask };
+		}
+
+		// "loader map, CL-128786 row" or "CL-127004 row" (the component's own).
+		std::string RowLabel(const FieldCandidate& row)
+		{
+			return (row.fromMap ? "loader map, " : "") + ClText(row.gameCL) + " row";
+		}
+
+		// The rows a request is decided on: the loader map's under its key, then
+		// its own for every changelist the map has no row for. False, with
+		// error, when an own row disagrees with the map's for its changelist.
+		bool RowsFor(const char* owner, const FieldRequest& request, std::vector<FieldCandidate>& rows, std::string& error)
+		{
+			rows = request.candidates;
+#if defined(MODLOADER_CLIENT_BUILD)
+			const auto index = std::find_if(kFields.begin(), kFields.end(),
+				[&](const Index& i) { return request.key == i.key; });
+			if (index == kFields.end())
+				return true;
+
+			const bool bitfield = (request.flags & PLUGIN_FIELD_BITFIELD) != 0;
+			const auto text = [bitfield](const FieldCandidate& row) {
+				return FieldText(ValueOf(row), bitfield) + (row.member.empty() ? "" : " as " + row.member);
+			};
+			std::vector<FieldCandidate> map;
+			bool renamed = false;
+			for (uint16_t i = index->first; i < index->first + index->count; ++i)
+			{
+				const FieldRow& f = kFieldRows[i];
+				FieldCandidate c{ f.gameCL, f.offset, f.size, f.boolMask, f.member ? f.member : "", true };
+				renamed = renamed || (!c.member.empty() && c.member == request.member);
+				map.push_back(std::move(c));
+			}
+
+			// The map's key is "Class::Member": its rows are this request's
+			// only when they describe the same member.
+			const size_t split = request.key.find("::");
+			const std::string keyClass  = request.key.substr(0, split);
+			const std::string keyMember = split == std::string::npos ? std::string() : request.key.substr(split + 2);
+			if (keyClass != request.className || (keyMember != request.member && !renamed))
+			{
+				LogPick(owner, request.key, "loader map rows are for " + request.key + ", not "
+					+ request.className + (request.member.empty() ? "" : "::" + request.member) + "; own rows");
+				return true;
+			}
+
+			for (const FieldCandidate& own : request.candidates)
+			{
+				const auto same = std::find_if(map.begin(), map.end(),
+					[&](const FieldCandidate& m) { return m.fromMap && m.gameCL == own.gameCL; });
+				if (same == map.end())
+				{
+					map.push_back(own);
+					continue;
+				}
+				if (!SameField(ValueOf(*same), ValueOf(own), bitfield) || same->member != own.member)
+				{
+					error = "the loader map's " + ClText(own.gameCL) + " row says " + text(*same)
+						+ ", the plugin's own says " + text(own);
+					return false;
+				}
+			}
+			rows = std::move(map);
+#else
+			(void)owner; (void)error;
+#endif
+			return true;
 		}
 	}
 
@@ -804,7 +871,10 @@ namespace VersionMap
 						return false;
 					}
 
-			const FieldCandidate* row = running.cl ? RowFor(request, running.cl) : nullptr;
+			std::vector<FieldCandidate> rows;
+			if (!RowsFor(owner, request, rows, error))
+				return false;
+			const FieldCandidate* row = running.cl ? RowFor(rows, running.cl) : nullptr;
 			const bool onBuilt = running.cl != 0 && running.cl == request.builtCL;
 
 			// The compiled value: offsetof and sizeof, or for a bitfield (which has
@@ -813,7 +883,7 @@ namespace VersionMap
 			bool haveBuilt = !bitfield && !sizeRow;
 			if (bitfield)
 			{
-				if (const FieldCandidate* builtRow = RowFor(request, request.builtCL))
+				if (const FieldCandidate* builtRow = RowFor(rows, request.builtCL))
 				{
 					built     = ValueOf(*builtRow);
 					haveBuilt = true;
@@ -827,7 +897,7 @@ namespace VersionMap
 				if (row)
 				{
 					value = ValueOf(*row);
-					how   = ClText(row->gameCL) + " row";
+					how   = RowLabel(*row);
 				}
 				else if (onBuilt && haveBuilt)
 				{
@@ -879,11 +949,11 @@ namespace VersionMap
 				{
 					if (!SameField(ValueOf(*row), value, bitfield) && !(sizeRow && row->size == value.size))
 					{
-						error = "the " + ClText(row->gameCL) + " row says " + FieldText(ValueOf(*row), bitfield)
+						error = "the " + RowLabel(*row) + " says " + FieldText(ValueOf(*row), bitfield)
 							+ ", the game says " + FieldText(value, bitfield);
 						return false;
 					}
-					how = ClText(row->gameCL) + " row, as reflected";
+					how = RowLabel(*row) + ", as reflected";
 				}
 				else
 				{
@@ -896,6 +966,32 @@ namespace VersionMap
 				error = how + " gives a negative offset";
 				return false;
 			}
+
+#if defined(MODLOADER_CLIENT_BUILD)
+			// Reflection does not describe a native member, but it does describe
+			// its class: the member has to lie inside the class as this build
+			// lays it out, or the offset is not this member's.
+			if (native)
+			{
+				if (!g_liveFields)
+				{
+					error = "no reflection data to read the class's size from, so a native member cannot be bounded";
+					return false;
+				}
+				const LiveField cls = g_liveFields(request.className, std::string());
+				if (!cls.error.empty())
+				{
+					error = "reflection, for the size of " + request.className + ": " + cls.error;
+					return false;
+				}
+				if (static_cast<uint64_t>(value.offset) + value.size > cls.size)
+				{
+					error = how + " gives " + FieldText(value, bitfield) + ", past the end of " + request.className
+						+ " (" + Hex(cls.size) + " bytes on this build)";
+					return false;
+				}
+			}
+#endif
 
 			if (check)
 			{
@@ -936,17 +1032,6 @@ namespace VersionMap
 		request.size        = size;
 		request.builtCL     = kBuiltCL;
 		request.builtOffset = builtOffset;
-		const auto index = std::find_if(kFields.begin(), kFields.end(),
-			[&](const Index& i) { return strcmp(i.key, key) == 0; });
-		if (index != kFields.end())
-		{
-			for (uint16_t i = index->first; i < index->first + index->count; ++i)
-			{
-				const FieldRow& row = kFieldRows[i];
-				request.candidates.push_back(FieldCandidate{ row.gameCL, row.offset, row.size,
-					row.boolMask, row.member ? row.member : "" });
-			}
-		}
 		return request;
 	}
 }

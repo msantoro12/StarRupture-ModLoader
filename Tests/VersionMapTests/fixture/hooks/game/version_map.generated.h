@@ -41,7 +41,17 @@ inline constexpr std::array<FunctionRow, 12> kFunctionRows = {{
 	{ 128786, 0x22222222, 0x02000000, 2, 0xC9BB46AA, false, "AD 09", 0, -1, -1, 0x00004100, nullptr },
 }};
 
-inline constexpr std::array<FieldRow, 0> kFieldRows = {};
+inline constexpr std::array<FieldRow, 5> kFieldRows = {{
+	// ATest::Native
+	{ 127004, 0x20, 0x4, 0x00, nullptr },
+	{ 128786, 0x28, 0x4, 0x00, nullptr },
+	// ATest::Old
+	{ 127004, 0x10, 0x4, 0x00, nullptr },
+	// ATest::Reflected
+	{ 128786, 0x38, 0x8, 0x00, nullptr },
+	// ATest::Renamed
+	{ 128786, 0x44, 0x4, 0x00, "NewName" },
+}};
 
 inline constexpr std::array<Index, 7> kFunctions = {{
 	{ "ModLoader/Test::Site", 0, 2 },
@@ -53,5 +63,10 @@ inline constexpr std::array<Index, 7> kFunctions = {{
 	{ "VmapProbe/Site", 10, 2 },
 }};
 
-inline constexpr std::array<Index, 0> kFields = {};
+inline constexpr std::array<Index, 4> kFields = {{
+	{ "ATest::Native", 0, 2 },
+	{ "ATest::Old", 2, 1 },
+	{ "ATest::Reflected", 3, 1 },
+	{ "ATest::Renamed", 4, 1 },
+}};
 }

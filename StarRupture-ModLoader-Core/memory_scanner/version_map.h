@@ -191,7 +191,16 @@ namespace VersionMap
 	// reflection data, and a row for the running changelist must agree with
 	// it; a native member (one reflection does not describe) is the running
 	// changelist's row, or the compiled offset on the build it was compiled
-	// for, and nothing else.
+	// for, and nothing else, and it must lie inside its class as the running
+	// game reflects the class.
+	//
+	// The rows are the loader's map's (kFields, under the request's key) and
+	// then the component's own. The map's are used only when its key names
+	// the request's class and member, or the member one of its rows records
+	// as renamed; otherwise they are set aside and logged. An own row for a
+	// changelist the map has a row for must agree with it, or the request
+	// fails. The client only: on the server the map holds no rows for it, and
+	// with no reflection reader there a native member is not bounded.
 
 	// One build's value for a field.
 	struct FieldCandidate
@@ -201,6 +210,7 @@ namespace VersionMap
 		uint32_t    size     = 0;
 		uint8_t     boolMask = 0;
 		std::string member;           // the name on that build if it was renamed, else empty
+		bool        fromMap  = false; // a row of the loader's map, not the component's own
 	};
 
 	struct FieldRequest
@@ -245,8 +255,17 @@ namespace VersionMap
 	bool SelectField(const char* owner, const FieldRequest& request, const Exe& running,
 		FieldValue& out, std::string& error);
 
-	// The request for one of the loader's own members ("Class::Member", a key
-	// of kFields), with the rows its map holds for it. size and builtOffset
-	// are the member's in the SDK the loader is built against.
+	// The members the loader itself reads per build (SdkGlobals::ResolveFields),
+	// each a key of kFields. The map holds other components' members too.
+	inline constexpr const char* kLoaderFieldKeys[] = {
+		"ACrCrafter::CraftComponent",
+		"UWorld::GameState",
+		"UWorld::LineBatchers",
+		"UWorld::NetDriver",
+	};
+
+	// The request for one of the loader's own members ("Class::Member", one of
+	// kLoaderFieldKeys); SelectField adds the rows its map holds for it. size
+	// and builtOffset are the member's in the SDK the loader is built against.
 	FieldRequest LoaderFieldRequest(const char* key, uint32_t size, int32_t builtOffset);
 }

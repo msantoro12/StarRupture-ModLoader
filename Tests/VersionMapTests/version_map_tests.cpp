@@ -6,6 +6,7 @@
 #include "hooks/game/scan_patterns.h"
 #include "memory_scanner/image_info.h"
 #include "memory_scanner/version_map.h"
+#include "plugins/plugin_interface.h"
 
 #include <array>
 #include <cstdint>
@@ -77,6 +78,51 @@ namespace
 	}
 
 	bool At(const Result& r, uintptr_t rva) { return r.Succeeded() && r.address == Base() + rva; }
+
+	// Reflection as the field tests see it: ATest is 0x50 bytes, AOther 0x10.
+	VersionMap::LiveField FakeLive(const std::string& className, const std::string& member)
+	{
+		VersionMap::LiveField f;
+		if (className == "AOther" && member.empty())
+			f.size = 0x10;
+		else if (className != "ATest")
+			f.error = "no class " + className;
+		else if (member.empty())
+			f.size = 0x50;
+		else if (member == "Reflected")
+			f.offset = 0x30, f.size = 8;
+		else if (member == "NewName")
+			f.offset = 0x44, f.size = 4;
+		else
+			f.error = "no member " + member;
+		return f;
+	}
+
+	bool Field(const char* key, const char* className, const char* member, uint32_t flags, uint32_t size,
+		const std::vector<VersionMap::FieldCandidate>& own, VersionMap::FieldValue& out, std::string& error)
+	{
+		TestDoubles::g_log.clear();
+		error.clear();
+		VersionMap::FieldRequest request;
+		request.key         = key;
+		request.className   = className;
+		request.member      = member;
+		request.flags       = flags;
+		request.size        = size;
+		request.builtCL     = 127004;
+		request.builtOffset = 0;
+		request.candidates  = own;
+		return VersionMap::SelectField("Test", request, kRunning, out, error);
+	}
+
+	VersionMap::FieldCandidate FieldRow(uint32_t cl, int32_t offset, uint32_t size)
+	{
+		VersionMap::FieldCandidate c;
+		c.gameCL = cl;
+		c.offset = offset;
+		c.size   = size;
+		return c;
+	}
 }
 
 int main()
@@ -209,6 +255,39 @@ int main()
 			}
 		}
 	}
+	// Fields: the map's rows first, the class and member match, the class bound.
+	{
+		VersionMap::SetLiveFieldSource(FakeLive);
+		VersionMap::FieldValue v;
+		std::string e;
+		Check(Field("ATest::Native", "ATest", "Native", PLUGIN_FIELD_NATIVE, 4, {}, v, e) && v.offset == 0x28
+			&& Logged(L"ATest::Native: loader map, CL-128786 row (0x28/0x4)"), "field: a native member only the map holds");
+		Check(Field("ATest::Native", "ATest", "Native", PLUGIN_FIELD_NATIVE, 4, { FieldRow(128786, 0x28, 4) }, v, e)
+			&& v.offset == 0x28, "field: an own row that agrees with the map's");
+		Check(!Field("ATest::Native", "ATest", "Native", PLUGIN_FIELD_NATIVE, 4, { FieldRow(127004, 0x24, 4) }, v, e)
+			&& e == "the loader map's CL-127004 row says 0x20/0x4, the plugin's own says 0x24/0x4"
+			&& Logged(L"ATest::Native: refused: the loader map's CL-127004 row says"), "field: an own row that disagrees, for any build, is refused");
+		Check(Field("ATest::Old", "ATest", "Old", PLUGIN_FIELD_NATIVE, 4, { FieldRow(128786, 0x18, 4) }, v, e) && v.offset == 0x18
+			&& Logged(L"ATest::Old: CL-128786 row (0x18/0x4)"), "field: an own row for a build the map has no row for");
+		Check(Field("ATest::Native", "AOther", "Native", PLUGIN_FIELD_NATIVE, 4, { FieldRow(128786, 0x8, 4) }, v, e) && v.offset == 0x8
+			&& Logged(L"loader map rows are for ATest::Native, not AOther::Native; own rows"), "field: a key for another class is set aside");
+		Check(!Field("ATest::Native", "ATest", "Other", PLUGIN_FIELD_NATIVE, 4, {}, v, e)
+			&& Logged(L"not ATest::Other; own rows") && e.find("no row for CL-128786") == 0, "field: a key for another member is set aside");
+		Check(Field("ATest::Renamed", "ATest", "NewName", 0, 4, {}, v, e) && v.offset == 0x44
+			&& Logged(L"loader map, CL-128786 row, as reflected (0x44/0x4)"), "field: a key whose row records the rename");
+		Check(!Field("ATest::Reflected", "ATest", "Reflected", 0, 8, {}, v, e)
+			&& e == "the loader map, CL-128786 row says 0x38/0x8, the game says 0x30/0x8", "field: a map row reflection disagrees with");
+		Check(!Field("ATest::Past", "ATest", "Past", PLUGIN_FIELD_NATIVE, 8, { FieldRow(128786, 0x4C, 8) }, v, e)
+			&& e == "CL-128786 row gives 0x4C/0x8, past the end of ATest (0x50 bytes on this build)", "field: native past the class's end");
+		Check(Field("ATest::Past", "ATest", "Past", PLUGIN_FIELD_NATIVE, 8, { FieldRow(128786, 0x48, 8) }, v, e) && v.offset == 0x48,
+			"field: native ending at the class's end");
+		Check(!Field("ANone::X", "ANone", "X", PLUGIN_FIELD_NATIVE, 4, { FieldRow(128786, 0, 4) }, v, e)
+			&& e == "reflection, for the size of ANone: no class ANone", "field: native in a class reflection does not know");
+		VersionMap::SetLiveFieldSource(nullptr);
+		Check(!Field("ATest::Native", "ATest", "Native", PLUGIN_FIELD_NATIVE, 4, {}, v, e) && e.find("cannot be bounded") != std::string::npos,
+			"field: no reflection reader, no native member");
+	}
+
 	Check(Real::VersionMap::kFormatVersion == 2, "the real map is format 2");
 	Check(unmatched == 0, "every real map key is a registry row's");
 	Check(wrong == 0, "every real map row has its registry row's kind and fp");

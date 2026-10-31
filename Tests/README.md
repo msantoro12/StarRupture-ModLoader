@@ -234,7 +234,8 @@ It prints one line per test and exits 0 when every check passes.
 
 A console program like LayoutCheckTests, for the loader's map keys (interface v72): a plugin's
 `PLUGIN_SCAN_FLAG_MAP_KEY` request (`VersionMap::ResolveMapKey`), the loader's own registry rows
-(`ResolveLoaderEntry`) and the fingerprint a site's rows are kept under (`VersionMap::Fingerprint`).
+(`ResolveLoaderEntry`), the fingerprint a site's rows are kept under (`VersionMap::Fingerprint`)
+and field requests (`VersionMap::SelectField`, with a stand-in for the game's reflection).
 It compiles the loader's own `memory_scanner/version_map.cpp`, `scanner.cpp` and `image_info.cpp`.
 The pattern scan, the scan cache, the game version and the log are test doubles
 (`test_doubles.cpp`): a pattern "resolves" to the RVA its table gives it in the test exe.
@@ -257,6 +258,13 @@ The pattern scan, the scan cache, the game version and the log are test doubles
   even when its own pattern matches.
 - A key the map does not hold: the own pattern, or with none a failure; a global key with a `/`
   reads nothing; a plugin named `ModLoader` is refused.
+- Two loaded plugins with the same name: neither reads site keys, and a global key is unaffected.
+- Fields: a native member only the map holds takes the map's row; an own row that agrees passes,
+  one that disagrees for any build is refused, and one for a build the map lacks is used. A key
+  naming another class or member is set aside; a row recording a rename is used. A map row that
+  reflection disagrees with is refused. A native member past its class's reflected end is refused,
+  one ending at it passes, one in a class reflection does not know is refused, and with no
+  reflection reader a native member is refused.
 - The loader's own site entry: `ModLoader/<name>`, its fingerprint, and a row with a pattern other
   than the site's own is not used.
 - The loader's real map (`hooks/game/version_map.generated.h`) against its registry: format 2, every

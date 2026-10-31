@@ -15,4 +15,7 @@ namespace TestDoubles
     // game's (UI::ImGuiBackend::GetGameWindow; null before the first Present).
     extern std::atomic<HWND> foreground;
     extern std::atomic<HWND> gameWindow;
+
+    // GetSystemMetrics(SM_SWAPBUTTON): the player swapped the mouse buttons.
+    extern std::atomic<bool> buttonsSwapped;
 }

@@ -684,8 +684,15 @@ namespace Hooks::Input
 
 		EModKeyModifiers wanted = EModKeyMod_None;
 		const EModKey key = ParseComboString(keyName, wanted);
-		const int vk = ModKeyToVK(key);
-		if (key == EModKey::Unknown || vk == 0 || !(GetAsyncKeyState(vk) & 0x8000))
+		int vk = ModKeyToVK(key);
+		if (key == EModKey::Unknown || vk == 0)
+			return false;
+
+		// GetAsyncKeyState reads the physical mouse buttons, the callbacks the
+		// logical ones, so follow the player's swapped buttons.
+		if ((vk == VK_LBUTTON || vk == VK_RBUTTON) && GetSystemMetrics(SM_SWAPBUTTON))
+			vk = (vk == VK_LBUTTON) ? VK_RBUTTON : VK_LBUTTON;
+		if (!(GetAsyncKeyState(vk) & 0x8000))
 			return false;
 
 		return wanted == EModKeyMod_None || SampleCurrentModifiers() == wanted;

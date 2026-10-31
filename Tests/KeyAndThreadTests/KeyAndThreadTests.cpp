@@ -61,6 +61,7 @@ static void Reset()
     TestDoubles::ReleaseAllKeys();
     TestDoubles::gameWindow = kGame;
     TestDoubles::foreground = kGame;
+    TestDoubles::buttonsSwapped = false;
 }
 
 // ---------------------------------------------------------------------------
@@ -149,6 +150,24 @@ static void MouseButtons()
     CHECK(IsKeyHeld("Ctrl+LeftMouseButton"));
 }
 
+// GetAsyncKeyState reports the physical buttons; the callbacks and the game
+// see the logical ones. With the buttons swapped, the physical left button is
+// the logical right one.
+static void SwappedMouseButtons()
+{
+    Reset();
+    TestDoubles::buttonsSwapped = true;
+    SetKeyDown(VK_LBUTTON, true);          // physical left
+    CHECK(IsKeyHeld("RightMouseButton"));
+    CHECK(!IsKeyHeld("LeftMouseButton"));
+    SetKeyDown(VK_LBUTTON, false);
+    SetKeyDown(VK_RBUTTON, true);          // physical right
+    CHECK(IsKeyHeld("LeftMouseButton"));
+    CHECK(!IsKeyHeld("RightMouseButton"));
+    SetKeyDown(VK_MBUTTON, true);          // only left and right swap
+    CHECK(IsKeyHeld("MiddleMouseButton"));
+}
+
 // The key below Escape, whose VK depends on the keyboard layout.
 static void TildeFollowsLayout()
 {
@@ -170,6 +189,14 @@ static void UnknownNames()
     CHECK(!IsKeyHeld("Ctrl+NotAKey"));
     CHECK(!IsKeyHeld("+"));
     CHECK(!IsKeyHeld("Ctrl+Shift"));
+
+    // RegisterKeybindByName's parser, kept as it is: a token it does not know
+    // is skipped, and a later key replaces an earlier one.
+    Reset();
+    SetKeyDown('K', true);
+    CHECK(IsKeyHeld("Ctlr+K"));            // a misspelt modifier reads as K
+    CHECK(IsKeyHeld("W+K"));               // K replaces W; W is not held
+    CHECK(!IsKeyHeld("K+W"));              // W replaces K
 }
 
 static void NoFocus()
@@ -299,6 +326,7 @@ int main()
     RunTest("IsKeyHeld: Shift+K with Ctrl also held", ExtraModifierHeld);
     RunTest("IsKeyHeld: a modifier bound as a plain key", ModifierAsKey);
     RunTest("IsKeyHeld: mouse buttons", MouseButtons);
+    RunTest("IsKeyHeld: swapped mouse buttons", SwappedMouseButtons);
     RunTest("IsKeyHeld: Tilde follows the keyboard layout", TildeFollowsLayout);
     RunTest("IsKeyHeld: unknown names", UnknownNames);
     RunTest("IsKeyHeld: no focus", NoFocus);

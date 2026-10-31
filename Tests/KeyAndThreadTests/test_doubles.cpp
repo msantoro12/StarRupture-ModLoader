@@ -13,6 +13,7 @@ namespace TestDoubles
 
     std::atomic<HWND> foreground{ nullptr };
     std::atomic<HWND> gameWindow{ nullptr };
+    std::atomic<bool> buttonsSwapped{ false };
 
     void SetKeyDown(int vk, bool down)
     {
@@ -35,6 +36,11 @@ namespace TestDoubles
     HWND ForegroundWindow()
     {
         return foreground.load();
+    }
+
+    int SystemMetrics(int index)
+    {
+        return (index == SM_SWAPBUTTON && buttonsSwapped.load()) ? 1 : 0;
     }
 }
 

@@ -99,4 +99,66 @@ namespace VersionMap
 	// because a site's own scan gives the match itself.
 	void RememberPick(const ScanPatterns::PreflightEntry& entry, uintptr_t address);
 	uintptr_t PickFor(const std::string& pattern);
+
+	// ---- Fields ------------------------------------------------------------
+	//
+	// Where a member of a game class sits on the running build (see
+	// PluginFieldRequest in plugins/plugin_interface.h for what a component
+	// asks). A reflected member's offset is read from the running game's own
+	// reflection data, and a row for the running changelist must agree with
+	// it; a native member (one reflection does not describe) is the running
+	// changelist's row, or the compiled offset on the build it was compiled
+	// for, and nothing else.
+
+	// One build's value for a field.
+	struct FieldCandidate
+	{
+		uint32_t    gameCL   = 0;
+		int32_t     offset   = -1;
+		uint32_t    size     = 0;
+		uint8_t     boolMask = 0;
+		std::string member;           // the name on that build if it was renamed, else empty
+	};
+
+	struct FieldRequest
+	{
+		std::string key;              // "Class::Member", for the [Map] line and the failure
+		std::string className;        // short name, or /Script/<Module>.<Name>
+		std::string member;           // empty = the size of className itself
+		uint32_t    flags       = 0;  // PluginFieldFlags
+		uint32_t    size        = 0;
+		uint32_t    builtCL     = 0;
+		int32_t     builtOffset = -1;
+		std::vector<FieldCandidate> candidates;
+	};
+
+	struct FieldValue
+	{
+		int32_t  offset   = -1;
+		uint32_t size     = 0;
+		uint8_t  boolMask = 0;
+	};
+
+	// What the running game reflects for one member (member empty: for the
+	// class itself, whose size is its PropertiesSize). error is set when it
+	// has no answer: no such class, more than one, or no such member.
+	struct LiveField
+	{
+		std::string error;
+		int32_t     offset   = 0;
+		uint32_t    size     = 0;
+		bool        isBool   = false;
+		uint8_t     boolMask = 0;     // FBoolProperty::FieldMask when isBool
+	};
+	using LiveFieldSource = LiveField (*)(const std::string& className, const std::string& member);
+
+	// The reflection reader SelectField asks. Set once, before the first
+	// field is asked for: in the game, LayoutCheck's (core/layout_check.h).
+	// With none set, every reflected field fails.
+	void SetLiveFieldSource(LiveFieldSource source);
+
+	// Applies the rules above to one request, logs its [Map] line, and on
+	// success writes out. On failure, error says which rule failed.
+	bool SelectField(const char* owner, const FieldRequest& request, const Exe& running,
+		FieldValue& out, std::string& error);
 }

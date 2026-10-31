@@ -118,12 +118,15 @@ namespace LayoutCheck
 
 #include "layout_table.generated.h"
 #include "sdk_globals.h"
+#include "../hooks/game/engine_init/engine_init.h"
 #include "../logging/logger.h"
+#include "../memory_scanner/version_map.h"
 #include "CoreUObject_classes.hpp"
 
 #include <windows.h>
 
 #include <chrono>
+#include <mutex>
 #include <unordered_map>
 
 static_assert(SrLayoutTable::kFormatVersion == 1, "layout_check.cpp reads layout table format 1");
@@ -308,6 +311,176 @@ namespace LayoutCheck
 
         out = std::move(result);
         return true;
+    }
+}
+
+namespace LayoutCheck
+{
+    namespace
+    {
+        // Every native class and script struct, by short name and by
+        // Module.Name, as GObjects indices: the objects themselves are looked
+        // up again, and checked, on each use.
+        struct TypeIndex
+        {
+            std::unordered_map<std::string, std::vector<int32_t>> byName;
+            std::unordered_map<std::string, int32_t> byPath;
+            int32_t objects = -1;   // GObjects count when built; -1 = not built
+        };
+
+        std::mutex g_typesLock;
+        TypeIndex  g_types;
+
+        void BuildTypeIndex(TypeIndex& index)
+        {
+            const auto start = std::chrono::steady_clock::now();
+            std::unordered_map<const SDK::UObject*, std::string> modules;
+            index = TypeIndex{};
+            SDK::TUObjectArray* objects = SDK::UObject::GObjects.GetTypedPtr();
+            index.objects = objects->Num();
+            for (int32_t i = 0; i < index.objects; ++i)
+            {
+                SDK::UObject* object = objects->GetByIndex(i);
+                if (!object || !object->Class
+                    || !(object->HasTypeFlag(SDK::EClassCastFlags::Class)
+                         || object->HasTypeFlag(SDK::EClassCastFlags::ScriptStruct)))
+                    continue;
+                const SDK::UObject* package = object->Outer;
+                if (!package || package->Outer)
+                    continue;
+                const std::string& module = ModuleOf(package, modules);
+                if (module.empty())
+                    continue;
+                std::string name = object->Name.GetRawString();
+                index.byPath.emplace(module + "." + name, i);
+                index.byName[std::move(name)].push_back(i);
+            }
+            ModLoaderLogger::LogInfo(L"[Map] Field index: %zu types from %d objects in %.1f ms",
+                index.byPath.size(), index.objects,
+                std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count());
+        }
+
+        // The object still at `i`, if it is still the type `name`.
+        const SDK::UStruct* TypeAt(int32_t i, const std::string& name)
+        {
+            SDK::UObject* object = SDK::UObject::GObjects.GetTypedPtr()->GetByIndex(i);
+            if (!object || !(object->HasTypeFlag(SDK::EClassCastFlags::Class)
+                             || object->HasTypeFlag(SDK::EClassCastFlags::ScriptStruct))
+                || object->Name.GetRawString() != name)
+                return nullptr;
+            return static_cast<const SDK::UStruct*>(object);
+        }
+
+        // className is "/Script/Chimera.ACrX" or "ACrX".
+        VersionMap::LiveField FindType(const TypeIndex& index, const std::string& className,
+            const SDK::UStruct*& type)
+        {
+            VersionMap::LiveField answer;
+            type = nullptr;
+            constexpr char kScript[] = "/Script/";
+            if (className.rfind(kScript, 0) == 0)
+            {
+                const std::string path = className.substr(sizeof(kScript) - 1);
+                const auto it = index.byPath.find(path);
+                if (it != index.byPath.end())
+                    type = TypeAt(it->second, path.substr(path.rfind('.') + 1));
+            }
+            else
+            {
+                const auto it = index.byName.find(className);
+                if (it != index.byName.end() && it->second.size() > 1)
+                {
+                    answer.error = className + " is the name of " + std::to_string(it->second.size())
+                        + " native types; name it by /Script/<Module>." + className;
+                    return answer;
+                }
+                if (it != index.byName.end())
+                    type = TypeAt(it->second.front(), className);
+            }
+            if (!type)
+                answer.error = "no native class or struct " + className;
+            return answer;
+        }
+
+        void ReadMember(const SDK::UStruct* type, const std::string& member, VersionMap::LiveField& answer)
+        {
+            if (member.empty())
+            {
+                answer.size = static_cast<uint32_t>(type->Size);
+                return;
+            }
+            for (const SDK::UStruct* s = type; s; s = s->SuperStruct)
+            {
+                for (const SDK::FField* field = s->ChildProperties; field; field = field->Next)
+                {
+                    if (field->Name.GetRawString() != member)
+                        continue;
+                    const auto* property = static_cast<const SDK::FProperty*>(field);
+                    answer.offset = property->Offset;
+                    answer.size   = static_cast<uint32_t>(property->ElementSize * property->ArrayDim);
+                    answer.isBool = field->ClassPrivate
+                        && (field->ClassPrivate->CastFlags & static_cast<uint64_t>(SDK::EClassCastFlags::BoolProperty)) != 0;
+                    answer.boolMask = answer.isBool ? static_cast<const SDK::FBoolProperty*>(field)->FieldMask : 0;
+                    return;
+                }
+            }
+            answer.error = "no member " + member + " in it or its supers";
+        }
+
+        void Lookup(const std::string& className, const std::string& member, VersionMap::LiveField& answer)
+        {
+            if (g_types.objects < 0)
+                BuildTypeIndex(g_types);
+            const SDK::UStruct* type = nullptr;
+            answer = FindType(g_types, className, type);
+            // Types registered since the index was built, or a slot reused:
+            // build it again, once.
+            if (!type && answer.error.rfind("no native", 0) == 0
+                && SDK::UObject::GObjects.GetTypedPtr()->Num() != g_types.objects)
+            {
+                BuildTypeIndex(g_types);
+                answer = FindType(g_types, className, type);
+            }
+            if (type)
+                ReadMember(type, member, answer);
+        }
+
+        bool LookupGuarded(const std::string* className, const std::string* member,
+            VersionMap::LiveField* answer, DWORD* exceptionCode)
+        {
+            __try
+            {
+                Lookup(*className, *member, *answer);
+                return true;
+            }
+            __except (EXCEPTION_EXECUTE_HANDLER)
+            {
+                *exceptionCode = GetExceptionCode();
+                return false;
+            }
+        }
+    }
+
+    VersionMap::LiveField LiveFieldOf(const std::string& className, const std::string& member)
+    {
+        VersionMap::LiveField answer;
+        std::lock_guard<std::mutex> lock(g_typesLock);
+        // Every native type is registered once engine init has returned.
+        if (g_types.objects < 0 && (!Hooks::EngineInit::IsEngineInitialized() || !SdkGlobals::VerifyGObjects()))
+        {
+            answer.error = "the game's reflection data is not ready";
+            return answer;
+        }
+        DWORD exceptionCode = 0;
+        if (!LookupGuarded(&className, &member, &answer, &exceptionCode))
+        {
+            g_types = TypeIndex{};
+            answer = VersionMap::LiveField{};
+            char code[16]{};
+            sprintf_s(code, "0x%08lX", exceptionCode);
+            answer.error = std::string("exception ") + code + " while reading reflection data";
+        }
+        return answer;
     }
 }
 

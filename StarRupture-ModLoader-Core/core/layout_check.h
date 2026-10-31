@@ -6,6 +6,8 @@
 #include <string>
 #include <vector>
 
+namespace VersionMap { struct LiveField; }
+
 // Startup layout check.
 //
 // layout_table.generated.h lists the Game-SDK classes the loader uses, with
@@ -29,6 +31,14 @@ namespace LayoutCheck
     // exception while reading reflection data); out is then left as it was.
     struct Result;
     bool Run(Result& out);
+
+    // The reflected layout of one member of a native class or script struct
+    // (member empty: the struct's own size), for field requests
+    // (VersionMap::SetLiveFieldSource). The member is looked up in the struct
+    // and then in its supers. className is the short name, or
+    // /Script/<Module>.<Name>; a short name more than one module has is an
+    // error. Client builds only, and only once engine init has been seen.
+    VersionMap::LiveField LiveFieldOf(const std::string& className, const std::string& member);
 
     // ---- The comparison, kept apart from the game so it can be tested ------
 

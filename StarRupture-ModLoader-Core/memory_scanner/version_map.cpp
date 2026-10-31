@@ -5,6 +5,7 @@
 #include "hooks/game/scan_patterns.h"
 #include "hooks/game/version_map.generated.h"
 #include "logging/logger.h"
+#include "plugins/plugin_interface.h"
 
 #include <algorithm>
 #include <cstdio>
@@ -410,5 +411,183 @@ namespace VersionMap
 	{
 		const auto it = g_picks.find(pattern);
 		return it == g_picks.end() ? 0 : it->second;
+	}
+}
+
+namespace VersionMap
+{
+	namespace
+	{
+		LiveFieldSource g_liveFields = nullptr;
+
+		std::string FieldText(const FieldValue& v, bool bitfield)
+		{
+			std::string text = Hex(static_cast<unsigned long long>(v.offset)) + "/" + Hex(v.size);
+			if (bitfield)
+				text += " mask " + Hex(v.boolMask);
+			return text;
+		}
+
+		bool SameField(const FieldValue& a, const FieldValue& b, bool bitfield)
+		{
+			return a.offset == b.offset && a.size == b.size && (!bitfield || a.boolMask == b.boolMask);
+		}
+
+		const FieldCandidate* RowFor(const FieldRequest& request, uint32_t cl)
+		{
+			for (const FieldCandidate& row : request.candidates)
+				if (row.gameCL == cl)
+					return &row;
+			return nullptr;
+		}
+
+		FieldValue ValueOf(const FieldCandidate& row)
+		{
+			return FieldValue{ row.offset, row.size, row.boolMask };
+		}
+	}
+
+	void SetLiveFieldSource(LiveFieldSource source)
+	{
+		g_liveFields = source;
+	}
+
+	namespace
+	{
+		bool PickField(const char* owner, const FieldRequest& request, const Exe& running,
+			FieldValue& out, std::string& error)
+		{
+			const bool native   = (request.flags & PLUGIN_FIELD_NATIVE) != 0;
+			const bool check    = (request.flags & PLUGIN_FIELD_CHECK) != 0;
+			const bool bitfield = (request.flags & PLUGIN_FIELD_BITFIELD) != 0;
+			const bool sizeRow  = request.member.empty();
+
+			if (request.className.empty() || (sizeRow && (native || bitfield)))
+			{
+				error = "bad request: a field needs a class, and a size row is neither native nor a bitfield";
+				return false;
+			}
+			for (size_t i = 0; i < request.candidates.size(); ++i)
+				for (size_t j = i + 1; j < request.candidates.size(); ++j)
+					if (request.candidates[i].gameCL == request.candidates[j].gameCL)
+					{
+						error = "bad request: two rows for " + ClText(request.candidates[i].gameCL);
+						return false;
+					}
+
+			const FieldCandidate* row = running.cl ? RowFor(request, running.cl) : nullptr;
+			const bool onBuilt = running.cl != 0 && running.cl == request.builtCL;
+
+			// The compiled value: offsetof and sizeof, or for a bitfield (which has
+			// no offsetof) its builtCL row.
+			FieldValue built{ request.builtOffset, request.size, 0 };
+			bool haveBuilt = !bitfield && !sizeRow;
+			if (bitfield)
+			{
+				if (const FieldCandidate* builtRow = RowFor(request, request.builtCL))
+				{
+					built     = ValueOf(*builtRow);
+					haveBuilt = true;
+				}
+			}
+
+			FieldValue value;
+			std::string how;
+			if (native)
+			{
+				if (row)
+				{
+					value = ValueOf(*row);
+					how   = ClText(row->gameCL) + " row";
+				}
+				else if (onBuilt && haveBuilt)
+				{
+					value = built;
+					how   = "built offset";
+				}
+				else
+				{
+					error = "no row for " + ClText(running.cl) + ", and a native member has no other source";
+					return false;
+				}
+				if (value.size != request.size)
+				{
+					error = how + " gives size " + Hex(value.size) + ", the code was compiled for " + Hex(request.size);
+					return false;
+				}
+			}
+			else
+			{
+				if (!g_liveFields)
+				{
+					error = "no reflection data to read a reflected field from";
+					return false;
+				}
+				const std::string member = row && !row->member.empty() ? row->member : request.member;
+				const LiveField live = g_liveFields(request.className, member);
+				if (!live.error.empty())
+				{
+					error = "reflection: " + live.error;
+					return false;
+				}
+				if (bitfield && !live.isBool)
+				{
+					error = "asked for as a bitfield, but the game's member is not a bool";
+					return false;
+				}
+				if (!bitfield && !sizeRow && live.isBool && live.boolMask != 0xFF)
+				{
+					error = "the game's member is a bitfield bool; ask for it with PLUGIN_FIELD_BITFIELD";
+					return false;
+				}
+				value = FieldValue{ sizeRow ? 0 : live.offset, live.size, bitfield ? live.boolMask : uint8_t(0) };
+				if (!sizeRow && value.size != request.size)
+				{
+					error = "the game's member is " + Hex(value.size) + " bytes, the code was compiled for " + Hex(request.size);
+					return false;
+				}
+				if (row)
+				{
+					if (!SameField(ValueOf(*row), value, bitfield) && !(sizeRow && row->size == value.size))
+					{
+						error = "the " + ClText(row->gameCL) + " row says " + FieldText(ValueOf(*row), bitfield)
+							+ ", the game says " + FieldText(value, bitfield);
+						return false;
+					}
+					how = ClText(row->gameCL) + " row, as reflected";
+				}
+				else
+				{
+					how = "reflected (no row for " + ClText(running.cl) + ")";
+				}
+			}
+
+			if (check)
+			{
+				const bool same = sizeRow ? value.size == request.size : haveBuilt && SameField(built, value, bitfield);
+				if (!same)
+				{
+					error = !sizeRow && !haveBuilt
+						? std::string("a checked bitfield needs its ") + ClText(request.builtCL) + " row"
+						: "the code relies on " + (sizeRow ? Hex(request.size) : FieldText(built, bitfield))
+							+ ", this build has " + (sizeRow ? Hex(value.size) : FieldText(value, bitfield));
+					return false;
+				}
+				how += ", as compiled";
+			}
+
+			LogPick(owner, request.key, how + " (" + (sizeRow ? Hex(value.size) : FieldText(value, bitfield)) + ")");
+			out = value;
+			return true;
+		}
+	}
+
+	bool SelectField(const char* owner, const FieldRequest& request, const Exe& running,
+		FieldValue& out, std::string& error)
+	{
+		if (PickField(owner, request, running, out, error))
+			return true;
+		ModLoaderLogger::LogWarn(L"[Map] %S: %S: refused: %S", owner ? owner : "?", request.key.c_str(), error.c_str());
+		return false;
 	}
 }

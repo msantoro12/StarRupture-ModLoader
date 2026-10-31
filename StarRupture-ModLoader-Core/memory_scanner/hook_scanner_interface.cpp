@@ -384,18 +384,52 @@ namespace ModLoaderLogger
 			return PluginHookReport::SessionHasFailures(self);
 		}
 
-		// v72. Not implemented yet, so every field fails, recorded like a miss:
-		// a plugin that asks for one is refused rather than run on a guess.
-		bool HookResolveField(const IPluginSelf* self, const PluginFieldRequest* request, PluginFieldResult* /*result*/)
+		// v72. Reads the request no further than the plugin's structSize, as
+		// Resolve does, and records any failure like a missed pattern.
+		bool HookResolveField(const IPluginSelf* self, const PluginFieldRequest* request, PluginFieldResult* result)
 		{
 			if (!InSession(self))
 				return false;
 
-			const char* key = request && request->structSize >= offsetof(PluginFieldRequest, className) && request->key
-				? request->key : "(unnamed)";
-			PluginHookReport::RecordFailure(self, key,
-				"ResolveField is not supported by this mod loader build", true);
-			return false;
+			PluginFieldRequest local = PLUGIN_FIELD_REQUEST_INIT;
+			if (request && request->structSize >= offsetof(PluginFieldRequest, className))
+				memcpy(&local, request, request->structSize < sizeof(local) ? request->structSize : sizeof(local));
+			const char* key = local.key && local.key[0] ? local.key : "(unnamed)";
+
+			if (!request || !result || request->structSize < sizeof(PluginFieldRequest) || !local.key || !local.key[0]
+				|| !local.className || !local.className[0] || (local.candidateCount && !local.candidates)
+				|| local.candidateCount > kMaxCandidates)
+			{
+				PluginHookReport::RecordFailure(self, key, "bad field request", true);
+				return false;
+			}
+
+			VersionMap::FieldRequest field;
+			field.key         = local.key;
+			field.className   = local.className;
+			field.member      = local.member ? local.member : "";
+			field.flags       = local.flags;
+			field.size        = local.size;
+			field.builtCL     = local.builtCL;
+			field.builtOffset = local.builtOffset;
+			for (uint32_t i = 0; i < local.candidateCount; ++i)
+			{
+				const PluginFieldCandidate& c = local.candidates[i];
+				field.candidates.push_back(VersionMap::FieldCandidate{ c.gameCL, c.offset, c.size, c.boolMask,
+					c.member ? c.member : "" });
+			}
+
+			VersionMap::FieldValue value;
+			std::string error;
+			if (!VersionMap::SelectField(self->name, field, VersionMap::RunningExe(), value, error))
+			{
+				PluginHookReport::RecordFailure(self, key, error.c_str(), true);
+				return false;
+			}
+			result->offset   = value.offset;
+			result->size     = value.size;
+			result->boolMask = value.boolMask;
+			return true;
 		}
 
 		IPluginHookScanner g_hookScanner = {

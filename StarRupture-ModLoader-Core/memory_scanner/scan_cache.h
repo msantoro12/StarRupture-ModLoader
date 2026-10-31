@@ -37,7 +37,7 @@
 //
 // Keys that start with "vmap " are not patterns: VersionMap (version_map.cpp)
 // stores the locator its agreement rule picked there. In those entries
-// matchCount is 1 + that locator's index and offset is the address it gave;
+// matchCount is 1 + that locator's index and offset is the RVA it gave;
 // the pattern path never reads them.
 namespace ScanCache
 {

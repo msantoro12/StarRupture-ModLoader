@@ -332,21 +332,34 @@ namespace VersionMap
 			for (uint16_t i = key->first; i < key->first + key->count; ++i)
 			{
 				const FunctionRow& f = kFunctionRows[i];
+				Candidate c;
+				c.gameCL     = f.gameCL;
+				c.imageStamp = f.imageStamp;
+				c.imageSize  = f.imageSize;
+				c.rva        = f.rva;
+
+				// On the build the code was written for, the code's own pattern
+				// stands in for the row's, so the row's RVA checks the pattern
+				// the code ships: one edited in the code fails here instead of
+				// passing on the row it replaced.
+				if (f.gameCL == kBuiltCL)
+				{
+					c.pattern         = entry.pattern;
+					c.followRel32At   = entry.followRel32At;
+					c.followRipDispAt = entry.followRipDispAt;
+					rows.push_back(std::move(c));
+					continue;
+				}
 				if (entry.siteArithmetic && (!f.pattern || strcmp(f.pattern, entry.pattern) != 0))
 				{
 					ModLoaderLogger::LogWarn(L"[Map] ModLoader: %S: the CL-%u row is not this site's own pattern, so it is not used",
 						entry.name, f.gameCL);
 					continue;
 				}
-				Candidate c;
-				c.gameCL          = f.gameCL;
-				c.imageStamp      = f.imageStamp;
-				c.imageSize       = f.imageSize;
 				c.pattern         = f.pattern ? f.pattern : "";
 				c.resultOffset    = f.resultOffset;
 				c.followRel32At   = f.followRel32At;
 				c.followRipDispAt = f.followRipDispAt;
-				c.rva             = f.rva;
 				rows.push_back(std::move(c));
 			}
 #else

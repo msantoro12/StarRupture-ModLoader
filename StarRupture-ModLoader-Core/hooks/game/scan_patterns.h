@@ -768,7 +768,8 @@ namespace ScanPatterns
 
 		// Optional: losing any of these only makes runtime pak mounting
 		// (hooks->Pak) unavailable to plugins. Nothing the loader itself needs.
-		{ "FPakFileModule::ShutdownModule",            FPakFileModule_ShutdownModule,            false },
+		{ "FPakFileModule::ShutdownModule",            FPakFileModule_ShutdownModule,            false,
+		                                               PatternKind::FunctionStart, -1, -1, true },
 		{ "FPakPlatformFile::HandleMountPakDelegate",  FPakPlatformFile_HandleMountPakDelegate,  false },
 		{ "FPakPlatformFile::HandleUnmountPakDelegate", FPakPlatformFile_HandleUnmountPakDelegate, false },
 

@@ -338,6 +338,20 @@ namespace ModLoaderLogger
 			return PluginHookReport::SessionHasFailures(self);
 		}
 
+		// v71. Not implemented yet, so every field fails, recorded like a miss:
+		// a plugin that asks for one is refused rather than run on a guess.
+		bool HookResolveField(const IPluginSelf* self, const PluginFieldRequest* request, PluginFieldResult* /*result*/)
+		{
+			if (!InSession(self))
+				return false;
+
+			const char* key = request && request->structSize >= offsetof(PluginFieldRequest, className) && request->key
+				? request->key : "(unnamed)";
+			PluginHookReport::RecordFailure(self, key,
+				"ResolveField is not supported by this mod loader build", true);
+			return false;
+		}
+
 		IPluginHookScanner g_hookScanner = {
 			HookResolveRequired,
 			HookResolveOptional,
@@ -353,7 +367,8 @@ namespace ModLoaderLogger
 			HookReportFailure,
 			HookReportWarning,
 			HookHasFailures,
-			HookResolve
+			HookResolve,
+			HookResolveField
 		};
 	}
 

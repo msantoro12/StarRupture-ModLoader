@@ -398,6 +398,9 @@ namespace ModLoaderLogger
 	static uintptr_t HooksGetLoadPackageAddress()                { return Hooks::ObjectLookup::GetLoadPackageAddress(); }
 	static uintptr_t HooksGetAssetDataFastGetAssetAddress()      { return Hooks::ObjectLookup::GetFAssetData_FastGetAssetAddress(); }
 
+	// v71. Not handed out yet: null is the documented "none to give".
+	static const PluginSdkGlobals* HooksGetSdkGlobals()          { return nullptr; }
+
 	// --- Text utilities ---
 
 	static uintptr_t TextAsLocalizableAdvanced()
@@ -753,7 +756,8 @@ namespace ModLoaderLogger
 		HooksGetFindPackageAddress,                // v36
 		HooksGetPackageFullyLoadAddress,           // v36
 		HooksGetLoadPackageAddress,                // v36
-		HooksGetAssetDataFastGetAssetAddress       // v36
+		HooksGetAssetDataFastGetAssetAddress,      // v36
+		HooksGetSdkGlobals                         // v71
 	};
 
 	static IPluginWorldEvents g_worldEvents = {

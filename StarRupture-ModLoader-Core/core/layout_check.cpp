@@ -435,6 +435,12 @@ namespace LayoutCheck
             }
             const SDK::FProperty* property = Hooks::ObjectProperties::FindPropertyByName(
                 const_cast<SDK::UStruct*>(type), member.c_str());
+            // FName compares ignore case; the SDK's spelling can differ from
+            // the reflected one only in case (UniqueID / UniqueId).
+            for (const SDK::UStruct* current = type; !property && current; current = current->SuperStruct)
+                for (const SDK::FField* field = current->ChildProperties; field && !property; field = field->Next)
+                    if (_stricmp(field->Name.GetRawString().c_str(), member.c_str()) == 0)
+                        property = static_cast<const SDK::FProperty*>(field);
             if (!property)
             {
                 answer.error = "no member " + member + " in it or its supers";

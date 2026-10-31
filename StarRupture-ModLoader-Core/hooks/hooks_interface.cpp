@@ -398,11 +398,18 @@ namespace ModLoaderLogger
 	static uintptr_t HooksGetLoadPackageAddress()                { return Hooks::ObjectLookup::GetLoadPackageAddress(); }
 	static uintptr_t HooksGetAssetDataFastGetAssetAddress()      { return Hooks::ObjectLookup::GetFAssetData_FastGetAssetAddress(); }
 
-	// v72. Not handed out yet: null is the documented "none to give". The
-	// call itself is counted: off the SDK's own build, a plugin that does not
-	// make it is not admitted.
+	// v72. Not handed out yet: null is the documented "none to give". Only a
+	// call that gets the globals is counted: off the SDK's own build, a plugin
+	// that has not taken them reads its own offsets and is not admitted. Until
+	// they are handed out, then, no plugin is admitted there.
 	static thread_local unsigned t_sdkGlobalsCalls = 0;
-	static const PluginSdkGlobals* HooksGetSdkGlobals()          { ++t_sdkGlobalsCalls; return nullptr; }
+	static const PluginSdkGlobals* HooksGetSdkGlobals()
+	{
+		const PluginSdkGlobals* globals = nullptr;
+		if (globals)
+			++t_sdkGlobalsCalls;
+		return globals;
+	}
 	unsigned SdkGlobalsCallsOnThisThread()                        { return t_sdkGlobalsCalls; }
 
 	// --- Text utilities ---

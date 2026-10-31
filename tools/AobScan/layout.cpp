@@ -17,7 +17,8 @@
 //   * A class: the exact name; then the template behind one of the engine's
 //     double-precision aliases (FVector is UE::Math::TVector<double>); then, for
 //     Dumper-7's "Owner_Function" parameter struct, the struct UnrealHeaderTool
-//     generated for it, "Owner_eventFunction_Parms".
+//     generated for it, "Owner_eventFunction_Parms", splitting at each '_' in
+//     turn, since the owner's name may hold one.
 //
 // Results: OK; NOTYPE (no class of that name with a body); AMBIGUOUS (more than
 // one class of that name, laid out differently); NOMEMBER (the class and its
@@ -140,35 +141,45 @@ namespace
 			return std::vector<DWORD>(params->ChildId, params->ChildId + count);
 		}
 
-		// Every class record named exactly name, or, with nested, named
-		// "Outer::name", that has a body. Several records laid out the same (one per
-		// translation unit's view) count as one.
-		std::vector<DWORD> Classes(const std::wstring& name, bool nested) const
+		// Every class record named exactly name that has a body. Several records
+		// laid out the same (one per translation unit's view) count as one.
+		std::vector<DWORD> Classes(const std::wstring& name) const
 		{
 			struct Context
 			{
-				const Types*        self;
 				const std::wstring* name;
-				bool                nested;
 				std::vector<DWORD>  found;
-			} ctx{ this, &name, nested, {} };
-			const std::wstring mask = nested ? L"*::" + name : name;
-			SymEnumTypesByNameW(session_, base_, mask.c_str(),
+			} ctx{ &name, {} };
+			SymEnumTypesByNameW(session_, base_, name.c_str(),
 				[](PSYMBOL_INFOW s, ULONG, PVOID user) -> BOOL {
 					auto* c = static_cast<Context*>(user);
-					const std::wstring n(s->Name, wcsnlen(s->Name, s->NameLen));
-					const bool match = c->nested
-						? n.size() > c->name->size() + 2 && n.compare(n.size() - c->name->size() - 2, std::wstring::npos, L"::" + *c->name) == 0
-						: n == *c->name;
-					if (s->Tag != kSymTagUDT || s->Size == 0 || !match)
-						return TRUE;
-					for (DWORD seen : c->found)
-						if (c->self->SameLayout(seen, s->TypeIndex))
-							return TRUE;
-					c->found.push_back(s->TypeIndex);
+					if (s->Tag == kSymTagUDT && s->Size != 0 && std::wstring(s->Name, wcsnlen(s->Name, s->NameLen)) == *c->name)
+						c->found.push_back(s->TypeIndex);
 					return TRUE;
 				}, &ctx);
-			return ctx.found;
+			return Distinct(ctx.found);
+		}
+
+		// Every class record named "Outer::name" that has a body, name ending in
+		// "_Parms". A wildcard lookup walks the whole type stream, so the first
+		// call indexes every nested "_Parms" record in one pass and later calls
+		// read the index.
+		std::vector<DWORD> NestedParms(const std::wstring& name) const
+		{
+			if (!parmsIndexed_)
+			{
+				parmsIndexed_ = true;
+				SymEnumTypesByNameW(session_, base_, L"*::*_Parms",
+					[](PSYMBOL_INFOW s, ULONG, PVOID user) -> BOOL {
+						const std::wstring n(s->Name, wcsnlen(s->Name, s->NameLen));
+						const size_t sep = n.rfind(L"::");
+						if (s->Tag == kSymTagUDT && s->Size != 0 && sep != std::wstring::npos)
+							(*static_cast<std::map<std::wstring, std::vector<DWORD>>*>(user))[n.substr(sep + 2)].push_back(s->TypeIndex);
+						return TRUE;
+					}, &parms_);
+			}
+			const auto it = parms_.find(name);
+			return it == parms_.end() ? std::vector<DWORD>{} : Distinct(it->second);
 		}
 
 		// Finds member in the class or its bases, by the name rules above; offset is
@@ -182,6 +193,20 @@ namespace
 		}
 
 	private:
+		std::vector<DWORD> Distinct(const std::vector<DWORD>& all) const
+		{
+			std::vector<DWORD> found;
+			for (DWORD id : all)
+			{
+				bool seen = false;
+				for (DWORD f : found)
+					seen = seen || SameLayout(f, id);
+				if (!seen)
+					found.push_back(id);
+			}
+			return found;
+		}
+
 		template <typename Match>
 		bool Find(DWORD udt, const Match& match, uint64_t baseOffset, int depth, Answer& out) const
 		{
@@ -257,6 +282,8 @@ namespace
 
 		HANDLE  session_;
 		DWORD64 base_;
+		mutable bool parmsIndexed_ = false;
+		mutable std::map<std::wstring, std::vector<DWORD>> parms_;
 	};
 
 	bool ReadKeys(const wchar_t* path, std::vector<Key>& keys)
@@ -291,17 +318,22 @@ namespace
 	// The class for a Dumper-7 name, or UHT's parameter struct for "Owner_Function".
 	std::vector<DWORD> FindClass(const Types& types, const std::string& name)
 	{
-		std::vector<DWORD> found = types.Classes(Widen(name), false);
+		std::vector<DWORD> found = types.Classes(Widen(name));
 		for (const auto& math : kMathAliases)
 			if (found.empty() && name == math.alias)
-				found = types.Classes(math.type, false);
-		const size_t sep = name.find('_');
-		if (!found.empty() || sep == std::string::npos || sep == 0 || sep + 1 == name.size())
-			return found;
-		const std::wstring parms = Widen(name.substr(0, sep) + "_event" + name.substr(sep + 1) + "_Parms");
-		// UHT leaves an event's struct at file scope and nests a function's in its Z_Construct_..._Statics.
-		found = types.Classes(parms, false);
-		return found.empty() ? types.Classes(parms, true) : found;
+				found = types.Classes(math.type);
+		// The owner's own name may hold a '_', so every split is tried, first to last.
+		for (size_t sep = name.find('_'); found.empty() && sep != std::string::npos; sep = name.find('_', sep + 1))
+		{
+			if (sep == 0 || sep + 1 == name.size())
+				continue;
+			const std::wstring parms = Widen(name.substr(0, sep) + "_event" + name.substr(sep + 1) + "_Parms");
+			// UHT leaves an event's struct at file scope and nests a function's in its Z_Construct_..._Statics.
+			found = types.Classes(parms);
+			if (found.empty())
+				found = types.NestedParms(parms);
+		}
+		return found;
 	}
 
 	// byName: FindClass's answers so far. A lookup by name walks the PDB's type records.

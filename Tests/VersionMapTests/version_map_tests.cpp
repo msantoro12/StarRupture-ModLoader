@@ -91,6 +91,8 @@ namespace
 			f.size = 0x50;
 		else if (member == "Reflected")
 			f.offset = 0x30, f.size = 8;
+		else if (member == "Renamed")
+			f.offset = 0x40, f.size = 4;
 		else if (member == "NewName")
 			f.offset = 0x44, f.size = 4;
 		else
@@ -99,7 +101,8 @@ namespace
 	}
 
 	bool Field(const char* key, const char* className, const char* member, uint32_t flags, uint32_t size,
-		const std::vector<VersionMap::FieldCandidate>& own, VersionMap::FieldValue& out, std::string& error)
+		const std::vector<VersionMap::FieldCandidate>& own, VersionMap::FieldValue& out, std::string& error,
+		const VersionMap::Exe& running = kRunning)
 	{
 		TestDoubles::g_log.clear();
 		error.clear();
@@ -112,7 +115,7 @@ namespace
 		request.builtCL     = 127004;
 		request.builtOffset = 0;
 		request.candidates  = own;
-		return VersionMap::SelectField("Test", request, kRunning, out, error);
+		return VersionMap::SelectField("Test", request, running, out, error);
 	}
 
 	VersionMap::FieldCandidate FieldRow(uint32_t cl, int32_t offset, uint32_t size)
@@ -275,6 +278,10 @@ int main()
 			&& Logged(L"not ATest::Other; own rows") && e.find("no row for CL-128786") == 0, "field: a key for another member is set aside");
 		Check(Field("ATest::Renamed", "ATest", "NewName", 0, 4, {}, v, e) && v.offset == 0x44
 			&& Logged(L"loader map, CL-128786 row, as reflected (0x44/0x4)"), "field: a key whose row records the rename");
+		Check(Field("ATest::Renamed", "ATest", "NewName", 0, 4, {}, v, e, VersionMap::Exe{ 127004, 0, 0 }) && v.offset == 0x40,
+			"field: a renamed key's row from before the rename reads the key's member");
+		Check(Field("ATest::Renamed", "ATest", "NewName", 0, 4, { FieldRow(128786, 0x44, 4) }, v, e) && v.offset == 0x44,
+			"field: an own row under the new name agrees with the map's rename row");
 		Check(!Field("ATest::Reflected", "ATest", "Reflected", 0, 8, {}, v, e)
 			&& e == "the loader map, CL-128786 row says 0x38/0x8, the game says 0x30/0x8", "field: a map row reflection disagrees with");
 		Check(!Field("ATest::Past", "ATest", "Past", PLUGIN_FIELD_NATIVE, 8, { FieldRow(128786, 0x4C, 8) }, v, e)

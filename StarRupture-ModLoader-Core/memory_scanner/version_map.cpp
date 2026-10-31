@@ -797,21 +797,23 @@ namespace VersionMap
 			const auto text = [bitfield](const FieldCandidate& row) {
 				return FieldText(ValueOf(row), bitfield) + (row.member.empty() ? "" : " as " + row.member);
 			};
+			// The map's key is "Class::Member": its rows are this request's
+			// only when they describe the same member. A map row names the
+			// member relative to the key, a request's rows relative to the
+			// request's member, so the map's are restated the request's way.
+			const size_t split = request.key.find("::");
+			const std::string keyClass  = request.key.substr(0, split);
+			const std::string keyMember = split == std::string::npos ? std::string() : request.key.substr(split + 2);
 			std::vector<FieldCandidate> map;
 			bool renamed = false;
 			for (uint16_t i = index->first; i < index->first + index->count; ++i)
 			{
 				const FieldRow& f = kFieldRows[i];
-				FieldCandidate c{ f.gameCL, f.offset, f.size, f.boolMask, f.member ? f.member : "", true };
-				renamed = renamed || (!c.member.empty() && c.member == request.member);
-				map.push_back(std::move(c));
+				const std::string name = f.member ? f.member : keyMember;
+				renamed = renamed || (f.member && name == request.member);
+				map.push_back(FieldCandidate{ f.gameCL, f.offset, f.size, f.boolMask,
+					name == request.member ? std::string() : name, true });
 			}
-
-			// The map's key is "Class::Member": its rows are this request's
-			// only when they describe the same member.
-			const size_t split = request.key.find("::");
-			const std::string keyClass  = request.key.substr(0, split);
-			const std::string keyMember = split == std::string::npos ? std::string() : request.key.substr(split + 2);
 			if (keyClass != request.className || (keyMember != request.member && !renamed))
 			{
 				LogPick(owner, request.key, "loader map rows are for " + request.key + ", not "

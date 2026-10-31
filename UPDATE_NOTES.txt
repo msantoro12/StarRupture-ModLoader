@@ -6,5 +6,5 @@ A hang inside a plugin's tick or overlay draw callback now names that plugin in 
 Plugins switch off, with a report, when a game update moves the data they read
 Plugin settings with fixed choices show as dropdowns
 Config tab can clear the state a plugin saves, such as window positions
-Plugins keep working on the game builds the loader's version map knows, with no rebuild
+The mod loader runs on every game build its version map lists, with no rebuild
 Plugin authors can look up functions and game-class members in the loader's version map by key

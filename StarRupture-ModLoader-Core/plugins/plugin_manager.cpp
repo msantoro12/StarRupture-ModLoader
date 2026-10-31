@@ -640,14 +640,14 @@ namespace PluginManager
 	}
 
 	// Another record in the plugin list with rec's name (case-insensitive), or
-	// null. Any record counts, refused ones too: name lookups (FindPluginIndex,
-	// config-change dispatch) return the first match, which a refused row would
-	// otherwise keep. Caller must hold g_pluginLock.
-	static const LoadedPlugin* OtherPluginNamed(const LoadedPlugin& rec)
+	// null. loadedOnly: only a record whose DLL is still loaded counts, else
+	// any record does, refused ones too. Caller must hold g_pluginLock.
+	static const LoadedPlugin* OtherPluginNamed(const LoadedPlugin& rec, bool loadedOnly)
 	{
 		for (const auto& other : g_loadedPlugins)
 		{
-			if (other.get() != &rec && _stricmp(other->cachedName.c_str(), rec.cachedName.c_str()) == 0)
+			if (other.get() != &rec && (!loadedOnly || other->hModule)
+				&& _stricmp(other->cachedName.c_str(), rec.cachedName.c_str()) == 0)
 				return other.get();
 		}
 		return nullptr;
@@ -694,9 +694,10 @@ namespace PluginManager
 		fileNameA[sizeof(fileNameA) - 1] = '\0';
 
 		// The version map keys a plugin's own sites by its name, so a name two
-		// plugins share reads none (VersionMap::ResolveMapKey).
+		// loaded plugins share reads none (VersionMap::ResolveMapKey). A record
+		// whose DLL was refused reads nothing, so it does not count.
 		PluginHookReport::BeginSession(&plugin.self, plugin.cachedName.c_str(), fileNameA,
-			/*preload*/ false, OtherPluginNamed(plugin) != nullptr);
+			/*preload*/ false, OtherPluginNamed(plugin, true) != nullptr);
 
 		const bool survived = CallLoadHooksSEH(plugin.loadHooks, &plugin.self,
 			ModLoaderLogger::GetPluginHookScanner());
@@ -1432,8 +1433,11 @@ namespace PluginManager
 			// second DLL under a name that is already in use would trample the
 			// first one's. LoadPlugin has just appended this record, so it is
 			// the last one; everything before it is what it would collide with.
+			// Any record counts, refused ones too: name lookups (FindPluginIndex,
+			// config-change dispatch) return the first match, which a refused row
+			// would otherwise keep.
 			LoadedPlugin& added = *g_loadedPlugins.back();
-			if (const LoadedPlugin* nameHolder = OtherPluginNamed(added))
+			if (const LoadedPlugin* nameHolder = OtherPluginNamed(added, false))
 			{
 				ModLoaderLogger::LogError(
 					L"ScanForNewPlugins: refusing %s -- a plugin named '%S' is already in the plugin list",

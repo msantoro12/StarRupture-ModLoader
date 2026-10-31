@@ -302,6 +302,40 @@ if (hooks->UI)
 
 `newValue` is the raw string that was written to the INI file (e.g. `"true"`, `"42"`, `"3.14"`).
 
+The callback runs on the render thread, before the INI is written, so take the value from
+`newValue` rather than reading it back.
+
+### Choices and saved state (v71)
+
+Two config entry types change how the Config tab draws an entry:
+
+```cpp
+static const ConfigEntry CONFIG_ENTRIES[] = {
+    // A dropdown. The description comes first, then each choice after a '|'.
+    { "Map", "Style", ConfigValueType::Choice, "Dark", "Map colours|Dark|Light|Satellite" },
+
+    // No field on the page. Your plugin writes it when the player drags the window.
+    { "Map", "WindowX", ConfigValueType::Hidden, "-1", "Window position; -1 centres it" },
+    { "Map", "WindowY", ConfigValueType::Hidden, "-1", "Window position; -1 centres it" },
+};
+```
+
+- **Choice.** The INI stores the choice as written, and `newValue` is that text. The page matches
+  the stored value ignoring case, and shows a value that is none of the choices as the default, so
+  treat one the same way when you read it. The INI comment lists the choices for anyone editing
+  the file by hand.
+- **Hidden.** Values your plugin saves by itself, such as where a window was dragged. The page
+  draws no field for them. Each section holding any ends with a **Saved state** row naming them,
+  and its **Clear** button sets each one back to its default, calling your config-change callback
+  for every value it changes. The button is greyed out while they all hold their defaults. The
+  value is plain text in the INI, so read and write it with whichever `Read*`/`Write*` suits it.
+
+Listen for the Hidden keys if your plugin keeps their values in memory, so a Clear takes effect
+straight away: put the window back, forget the remembered position.
+
+Both are v71. A v70 loader refuses a v71 plugin, so a plugin that uses them never meets a loader
+that does not know them.
+
 ---
 
 ## Keybinds (Input sub-interface)

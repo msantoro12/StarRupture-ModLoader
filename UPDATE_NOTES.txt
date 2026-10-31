@@ -2,3 +2,5 @@ Plugin windows can opt in to being clicked and dragged over the Escape menu
 Plugins can tell when the Escape menu or a loader window is open
 Plugins Updated window now lists what changed in each plugin
 Loader update prompt shows what is new
+Plugin settings with fixed choices show as dropdowns
+Config tab can clear the state a plugin saves, such as window positions

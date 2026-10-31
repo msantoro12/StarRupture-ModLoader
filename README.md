@@ -125,6 +125,9 @@ is available.
   keybind fires meanwhile.
 - Press and release a modifier alone to bind just that modifier. <sup>[✦](#msantoro12)</sup>
 - **Block** stops the game also reacting to the combo.
+- A setting with a fixed set of choices is a dropdown. <sup>[✦](#msantoro12)</sup>
+- **Saved state** lists values a plugin keeps by itself, such as where its windows were dragged.
+  **Clear** puts them back to their defaults. <sup>[✦](#msantoro12)</sup>
 - The reset arrow restores the default. A plugin's `[General] Enabled` has none, nor does a
   setting without a default.
 - The plugin hears each change as you make it. The `.ini` is written when you let go of a slider
@@ -271,8 +274,9 @@ the rest of the session.
 
 Use the [StarRupture-Plugin-SDK](https://github.com/AlienXAXS/StarRupture-Plugin-SDK) — it has everything you need (headers, UE5 SDK, an example plugin, and a pre-built `dwmapi.dll`) without requiring a fork of this repo.
 
-A plugin declares its settings as a config schema (string, integer, float, boolean or keybind, with
-an optional range); the [Config tab](#config-tab) draws it.
+A plugin declares its settings as a config schema (string, integer, float, boolean, keybind or a
+choice from a list, with an optional range), plus any state it saves by itself; the
+[Config tab](#config-tab) draws it.
 
 | Guide | Covers |
 |---|---|

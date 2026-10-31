@@ -639,6 +639,20 @@ namespace PluginManager
 		ModLoaderLogger::LogMessage(L"Loaded %d plugin DLL(s) from Plugins (PluginInit deferred)", loadedCount);
 	}
 
+	// Another record in the plugin list with rec's name (case-insensitive), or
+	// null. Any record counts, refused ones too: name lookups (FindPluginIndex,
+	// config-change dispatch) return the first match, which a refused row would
+	// otherwise keep. Caller must hold g_pluginLock.
+	static const LoadedPlugin* OtherPluginNamed(const LoadedPlugin& rec)
+	{
+		for (const auto& other : g_loadedPlugins)
+		{
+			if (other.get() != &rec && _stricmp(other->cachedName.c_str(), rec.cachedName.c_str()) == 0)
+				return other.get();
+		}
+		return nullptr;
+	}
+
 	// Runs the plugin's OnPluginLoadHooks event, if it has one, and reports
 	// whether the plugin may proceed to PluginInit.
 	//
@@ -679,7 +693,10 @@ namespace PluginManager
 		WideCharToMultiByte(CP_ACP, 0, baseName, -1, fileNameA, static_cast<int>(sizeof(fileNameA)), "?", nullptr);
 		fileNameA[sizeof(fileNameA) - 1] = '\0';
 
-		PluginHookReport::BeginSession(&plugin.self, plugin.cachedName.c_str(), fileNameA);
+		// The version map keys a plugin's own sites by its name, so a name two
+		// plugins share reads none (VersionMap::ResolveMapKey).
+		PluginHookReport::BeginSession(&plugin.self, plugin.cachedName.c_str(), fileNameA,
+			/*preload*/ false, OtherPluginNamed(plugin) != nullptr);
 
 		const bool survived = CallLoadHooksSEH(plugin.loadHooks, &plugin.self,
 			ModLoaderLogger::GetPluginHookScanner());
@@ -1415,21 +1432,8 @@ namespace PluginManager
 			// second DLL under a name that is already in use would trample the
 			// first one's. LoadPlugin has just appended this record, so it is
 			// the last one; everything before it is what it would collide with.
-			// Any record counts, refused ones too: name lookups (FindPluginIndex,
-			// config-change dispatch) return the first match, which a refused row
-			// would otherwise keep.
 			LoadedPlugin& added = *g_loadedPlugins.back();
-			const LoadedPlugin* nameHolder = nullptr;
-			for (size_t i = 0; i + 1 < g_loadedPlugins.size(); ++i)
-			{
-				const LoadedPlugin& other = *g_loadedPlugins[i];
-				if (_stricmp(other.cachedName.c_str(), added.cachedName.c_str()) == 0)
-				{
-					nameHolder = &other;
-					break;
-				}
-			}
-			if (nameHolder)
+			if (const LoadedPlugin* nameHolder = OtherPluginNamed(added))
 			{
 				ModLoaderLogger::LogError(
 					L"ScanForNewPlugins: refusing %s -- a plugin named '%S' is already in the plugin list",

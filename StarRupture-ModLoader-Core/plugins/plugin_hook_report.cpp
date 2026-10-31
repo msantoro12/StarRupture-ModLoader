@@ -28,6 +28,7 @@ namespace PluginHookReport
             const IPluginSelf* self;
             PluginReport       report;
             bool               usedMap = false;
+            bool               nameShared = false;
         };
 
         std::mutex                s_mutex;
@@ -80,7 +81,7 @@ namespace PluginHookReport
     }
 
     void BeginSession(const IPluginSelf* self, const char* pluginName, const char* fileName,
-                      bool preload)
+                      bool preload, bool nameShared)
     {
         if (!self) return;
 
@@ -94,6 +95,7 @@ namespace PluginHookReport
         s_session.report.refused = false;
         s_session.report.resolved = 0;
         s_session.report.preload = preload;
+        s_session.nameShared     = nameShared;
 
         // Drop any report from a previous load of this plugin: a reload that now
         // resolves cleanly must not leave the old failures on screen.
@@ -221,6 +223,13 @@ namespace PluginHookReport
         std::lock_guard<std::mutex> lock(s_mutex);
         const Session* session = FindSession(self);
         return session && session->usedMap;
+    }
+
+    bool SessionNameShared(const IPluginSelf* self)
+    {
+        std::lock_guard<std::mutex> lock(s_mutex);
+        const Session* session = FindSession(self);
+        return session && session->nameShared;
     }
 
     bool SessionHasFailures(const IPluginSelf* self)

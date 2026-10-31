@@ -70,8 +70,10 @@ namespace PluginHookReport
     // Open the scan session for one plugin. self is the identity every
     // IPluginHookScanner call must pass back. Any previous report for this
     // plugin is dropped now, so a reload replaces rather than accumulates.
+    // nameShared: another loaded plugin has this one's name (see
+    // SessionNameShared).
     void BeginSession(const IPluginSelf* self, const char* pluginName, const char* fileName,
-                      bool preload = false);
+                      bool preload = false, bool nameShared = false);
 
     // Close the session and commit its failures to the report list (nothing is
     // committed when the plugin resolved everything cleanly). refusedOut, when
@@ -101,6 +103,11 @@ namespace PluginHookReport
     // off-build admission rule (VersionMap::OffBuildRefusal).
     void RecordMapUse(const IPluginSelf* self);
     bool SessionUsedMap(const IPluginSelf* self);
+
+    // v72. Whether the session was opened with nameShared: the map keys a
+    // plugin's own sites by its name, so neither of two plugins with one name
+    // may read them (VersionMap::ResolveMapKey).
+    bool SessionNameShared(const IPluginSelf* self);
 
     // --- Report, for the UI and the console -----------------------------------
 

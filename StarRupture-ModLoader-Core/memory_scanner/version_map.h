@@ -150,9 +150,12 @@ namespace VersionMap
 	// plugin's own rows. A key the map does not hold falls back to the
 	// plugin's own pattern and rows; with neither it is a failure. A plugin
 	// named ModLoader is refused: the map's ModLoader/ keys are the loader's.
-	// The client only; on the server the map holds no rows for it.
+	// ownerNameShared: another loaded plugin has the owner's name, so its site
+	// keys could be either plugin's, and a site key is refused (a global key
+	// is not affected). The client only; on the server the map holds no rows
+	// for it.
 	ScanValidation::Result ResolveMapKey(const char* owner, const ScanValidation::Request& request,
-		const std::vector<Candidate>& own, const Exe& running);
+		const std::vector<Candidate>& own, const Exe& running, bool ownerNameShared);
 
 	// The key a registry row is kept under in the loader's map: its name for
 	// kinds FunctionStart and Data, "ModLoader/<name>" for a site of any other

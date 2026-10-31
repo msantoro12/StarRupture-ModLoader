@@ -654,7 +654,7 @@ namespace VersionMap
 	}
 
 	ScanValidation::Result ResolveMapKey(const char* owner, const ScanValidation::Request& request,
-		const std::vector<Candidate>& own, const Exe& running)
+		const std::vector<Candidate>& own, const Exe& running, bool ownerNameShared)
 	{
 		using ScanValidation::Outcome;
 		const char* who  = owner ? owner : "?";
@@ -670,6 +670,13 @@ namespace VersionMap
 		uint32_t    fp  = 0;
 		if (IsSiteKind(kind))
 		{
+			if (ownerNameShared)
+			{
+				LogPick(who, request.name, "another loaded plugin is also named " + std::string(who)
+					+ ", so neither reads site keys (refused)");
+				return Failure(Outcome::BadRequest, request.name + ": another loaded plugin is also named "
+					+ who + ", and the map's " + who + "/ keys cannot tell the two apart, so neither reads them");
+			}
 			fp = Fingerprint(kind, request.pattern, request.resultOffset, request.followRel32At, -1, 0);
 			if (!fp)
 			{

@@ -309,7 +309,8 @@ namespace ModLoaderLogger
 			}
 
 			const ScanValidation::Result result = mapKey
-				? VersionMap::ResolveMapKey(self->name, validation, candidates, VersionMap::RunningExe())
+				? VersionMap::ResolveMapKey(self->name, validation, candidates, VersionMap::RunningExe(),
+					PluginHookReport::SessionNameShared(self))
 				: VersionMap::Select(self->name, validation, candidates, VersionMap::RunningExe());
 			return RecordResult(self, validation, result, required);
 		}

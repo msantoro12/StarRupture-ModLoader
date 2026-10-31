@@ -60,10 +60,10 @@ namespace
 		return r;
 	}
 
-	Result Key(const char* owner, const Request& request, const std::vector<Candidate>& own = {})
+	Result Key(const char* owner, const Request& request, const std::vector<Candidate>& own = {}, bool nameShared = false)
 	{
 		TestDoubles::g_log.clear();
-		return VersionMap::ResolveMapKey(owner, request, own, kRunning);
+		return VersionMap::ResolveMapKey(owner, request, own, kRunning, nameShared);
 	}
 
 	Candidate AddressRow(uint32_t rva)
@@ -162,6 +162,15 @@ int main()
 	Check(At(r, 0x8000) && Logged(L"not in the loader's map; own pattern"), "a global key with a '/' reads no key");
 	r = Key("ModLoader", Ask("Test::MapOnly", Kind::FunctionStart));
 	Check(r.outcome == Outcome::BadRequest && Logged(L"(refused)"), "a plugin named ModLoader is refused");
+
+	// Two loaded plugins with one name: neither reads site keys, with one line
+	// saying why; global keys are unaffected.
+	r = Key("VmapProbe", Ask("Site", Kind::InFunction, "AD 01 ?? 02"), {}, true);
+	Check(r.outcome == Outcome::BadRequest && TestDoubles::g_log.size() == 1
+		&& Logged(L"[Map] VmapProbe: Site: another loaded plugin is also named VmapProbe, so neither reads site keys (refused)"),
+		"shared name: a site key is refused");
+	r = Key("VmapProbe", Ask("Test::MapOnly", Kind::FunctionStart), {}, true);
+	Check(At(r, 0x1000) && Logged(L"loader map, CL-128786 row"), "shared name: a global key is unaffected");
 
 	// The loader's own site: its key, fingerprint and arithmetic filter.
 	ScanPatterns::PreflightEntry site{};

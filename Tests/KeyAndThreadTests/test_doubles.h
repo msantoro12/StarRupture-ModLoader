@@ -18,4 +18,12 @@ namespace TestDoubles
 
     // GetSystemMetrics(SM_SWAPBUTTON): the player swapped the mouse buttons.
     extern std::atomic<bool> buttonsSwapped;
+
+    // The typing gate's two sources: a game text widget has keyboard focus
+    // (Hooks::TextInputFocus::IsGameTextInputFocused), an ImGui text field is
+    // active (UI::ImGuiBackend::IsTextInputActive). gameTextChecks counts the
+    // first one's calls, the costly one in the game.
+    extern std::atomic<bool> gameTextFocused;
+    extern std::atomic<bool> imguiTextActive;
+    extern std::atomic<long> gameTextChecks;
 }

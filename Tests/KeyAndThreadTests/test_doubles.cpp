@@ -14,6 +14,9 @@ namespace TestDoubles
     std::atomic<HWND> foreground{ nullptr };
     std::atomic<HWND> gameWindow{ nullptr };
     std::atomic<bool> buttonsSwapped{ false };
+    std::atomic<bool> gameTextFocused{ false };
+    std::atomic<bool> imguiTextActive{ false };
+    std::atomic<long> gameTextChecks{ 0 };
 
     void SetKeyDown(int vk, bool down)
     {
@@ -47,12 +50,16 @@ namespace TestDoubles
 namespace UI::ImGuiBackend
 {
     HWND GetGameWindow()     { return TestDoubles::gameWindow.load(); }
-    bool IsTextInputActive() { return false; }
+    bool IsTextInputActive() { return TestDoubles::imguiTextActive.load(); }
 }
 
 namespace Hooks::TextInputFocus
 {
-    bool IsGameTextInputFocused() { return false; }
+    bool IsGameTextInputFocused()
+    {
+        ++TestDoubles::gameTextChecks;
+        return TestDoubles::gameTextFocused.load();
+    }
 }
 
 // UpdateKeybindByName resolves a plugin through here; no test rebinds.

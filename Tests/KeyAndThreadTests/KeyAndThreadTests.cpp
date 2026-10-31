@@ -1,9 +1,11 @@
 // IsKeyHeld and IsGameThread test: the two v72 queries a plugin's tick polls.
 //
 // A console program: no game, no overlay. keybind_registry.cpp and
-// game_thread_dispatch.cpp are the loader's own source files; the keyboard and
-// the foreground window are test doubles (pch.h, test_doubles.cpp), so the
-// tests hold keys and move focus without touching the real desktop.
+// game_thread_dispatch.cpp are the loader's own source files; the keyboard,
+// the foreground window and the text fields are test doubles (pch.h,
+// test_doubles.cpp), so the tests hold keys, move focus and type without
+// touching the real desktop. Key messages go straight to the registry's
+// ProcessWindowMessage, as the overlay's window procedure hands them over.
 #include "hooks/input/keybind_registry.h"
 #include "utils/game_thread_dispatch.h"
 #include "test_doubles.h"
@@ -49,6 +51,7 @@ void operator delete(void* p) noexcept { std::free(p); }
 void operator delete(void* p, size_t) noexcept { std::free(p); }
 
 using Hooks::Input::IsKeyHeld;
+using Hooks::Input::ProcessWindowMessage;
 using TestDoubles::SetKeyDown;
 
 // Two windows that are never created; only their identity is compared.
@@ -62,6 +65,22 @@ static void Reset()
     TestDoubles::gameWindow = kGame;
     TestDoubles::foreground = kGame;
     TestDoubles::buttonsSwapped = false;
+    TestDoubles::gameTextFocused = false;
+    TestDoubles::imguiTextActive = false;
+}
+
+// A key going down or up in the game window: the keyboard state, then the
+// message (a first press, not an auto-repeat).
+static void Press(int vk)
+{
+    SetKeyDown(vk, true);
+    ProcessWindowMessage(WM_KEYDOWN, vk, 0);
+}
+
+static void Release(int vk)
+{
+    SetKeyDown(vk, false);
+    ProcessWindowMessage(WM_KEYUP, vk, 0xC0000000);
 }
 
 // ---------------------------------------------------------------------------
@@ -237,6 +256,116 @@ static void AllocatesNothing()
     CHECK(g_allocations.load() == before);
 }
 
+// The keybind callbacks' typing rule: a key pressed while a text field has
+// focus is the player typing, so it does not read as held until released.
+static void PressedWhileTyping()
+{
+    Reset();
+    CHECK(!IsKeyHeld("P"));                // the first call: the loader watches P from here
+    TestDoubles::gameTextFocused = true;   // chat is open
+    Press('P');
+    CHECK(!IsKeyHeld("P"));
+    TestDoubles::gameTextFocused = false;  // chat closes with P still down
+    CHECK(!IsKeyHeld("P"));                // still the press that went into chat
+    Release('P');
+    CHECK(!IsKeyHeld("P"));
+    Press('P');
+    CHECK(IsKeyHeld("P"));                 // pressed again outside a text field
+    Release('P');
+
+    Reset();
+    TestDoubles::imguiTextActive = true;   // an input box in an overlay panel
+    Press('P');
+    CHECK(!IsKeyHeld("P"));
+    Release('P');
+
+    Reset();
+    CHECK(!IsKeyHeld("Shift+L"));
+    SetKeyDown(VK_LSHIFT, true);
+    TestDoubles::gameTextFocused = true;
+    Press('L');                            // a capital L typed into chat
+    CHECK(!IsKeyHeld("Shift+L"));
+    CHECK(!IsKeyHeld("L"));
+    Release('L');
+}
+
+static void HeldBeforeTyping()
+{
+    Reset();
+    CHECK(!IsKeyHeld("W"));
+    Press('W');
+    TestDoubles::gameTextFocused = true;   // the player clicks into chat, W still down
+    CHECK(IsKeyHeld("W"));                 // its press reached the keybinds: still held
+    Release('W');
+    CHECK(!IsKeyHeld("W"));
+}
+
+static void TypingExemptions()
+{
+    Reset();
+    TestDoubles::gameTextFocused = true;
+    CHECK(!IsKeyHeld("Escape"));
+    Press(VK_ESCAPE);
+    CHECK(IsKeyHeld("Escape"));            // Escape still closes a window from a text field
+    Release(VK_ESCAPE);
+
+    Hooks::Input::SetTypingExempt(EModKey::F8, true);
+    CHECK(!IsKeyHeld("F8"));
+    Press(VK_F8);
+    CHECK(IsKeyHeld("F8"));
+    Release(VK_F8);
+    Hooks::Input::SetTypingExempt(EModKey::F8, false);
+    Press(VK_F8);
+    CHECK(!IsKeyHeld("F8"));
+    Release(VK_F8);
+
+    CHECK(!IsKeyHeld("MiddleMouseButton"));
+    SetKeyDown(VK_MBUTTON, true);
+    ProcessWindowMessage(WM_MBUTTONDOWN, MK_MBUTTON, 0);
+    CHECK(IsKeyHeld("MiddleMouseButton")); // mouse buttons are never typing
+    SetKeyDown(VK_MBUTTON, false);
+    ProcessWindowMessage(WM_MBUTTONUP, 0, 0);
+}
+
+static std::atomic<int> g_jPressed{ 0 };
+static void OnJ(EModKey, EModKeyEvent) { ++g_jPressed; }
+
+// A key with a keybind: the poll gives the callback's answer, its first call
+// included, and the callback still skips the press as before.
+static void KeybindAndPollAgree()
+{
+    Reset();
+    Hooks::Input::RegisterKeybind(EModKey::J, EModKeyEvent::Pressed, OnJ);
+    TestDoubles::gameTextFocused = true;
+    Press('J');
+    CHECK(g_jPressed.load() == 0);
+    CHECK(!IsKeyHeld("J"));
+    Release('J');
+    TestDoubles::gameTextFocused = false;
+    Press('J');
+    CHECK(g_jPressed.load() == 1);
+    CHECK(IsKeyHeld("J"));
+    Release('J');
+    Hooks::Input::UnregisterKeybind(EModKey::J, EModKeyEvent::Pressed, OnJ);
+}
+
+// No keybind and no poll on a key: its press skips the game's text-focus
+// scan, as it always has, so the loader has nothing on it for the first poll.
+static void UnwatchedKeySkipsTheScan()
+{
+    Reset();
+    TestDoubles::gameTextFocused = true;
+    const long before = TestDoubles::gameTextChecks.load();
+    Press('Q');
+    CHECK(TestDoubles::gameTextChecks.load() == before);
+    CHECK(IsKeyHeld("Q"));                 // pressed before the loader watched Q
+    Release('Q');
+    Press('Q');
+    CHECK(TestDoubles::gameTextChecks.load() == before + 1);
+    CHECK(!IsKeyHeld("Q"));
+    Release('Q');
+}
+
 // Called from several threads at once while another moves the focus: every
 // answer is one a single-threaded call could give, and nothing faults.
 static void AnyThread()
@@ -331,6 +460,11 @@ int main()
     RunTest("IsKeyHeld: unknown names", UnknownNames);
     RunTest("IsKeyHeld: no focus", NoFocus);
     RunTest("IsKeyHeld: no game window yet", NullWindow);
+    RunTest("IsKeyHeld: a key pressed while typing", PressedWhileTyping);
+    RunTest("IsKeyHeld: a key held before typing", HeldBeforeTyping);
+    RunTest("IsKeyHeld: Escape, typing-exempt keys and mouse buttons", TypingExemptions);
+    RunTest("IsKeyHeld: a key with a keybind", KeybindAndPollAgree);
+    RunTest("IsKeyHeld: a key nobody watches skips the scan", UnwatchedKeySkipsTheScan);
     RunTest("IsKeyHeld: allocates nothing", AllocatesNothing);
     RunTest("IsKeyHeld: any thread", AnyThread);
 

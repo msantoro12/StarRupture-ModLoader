@@ -201,7 +201,9 @@ A console program like PanelUnloadTests, for the two queries interface v72 gives
 own `hooks/input/keybind_registry.cpp` and `utils/game_thread_dispatch.cpp`. The keyboard and the
 foreground window are test doubles: the project's `pch.h` stands in for the loader's and points
 `GetAsyncKeyState`, `GetForegroundWindow` and `GetSystemMetrics` at `test_doubles.cpp`, so the test holds keys and moves
-focus without touching the real desktop. It covers:
+focus without touching the real desktop. The two text-field checks the typing gate makes (a focused
+game text widget, an active ImGui text field) are doubles too, and key messages go straight to the
+registry's `ProcessWindowMessage`, as the overlay's window procedure hands them over. It covers:
 
 - `IsGameThread`: false on every thread before the first tick, the one that will tick included;
   after a `Drain`, true on that thread and in a task posted to it, false on any other.
@@ -213,6 +215,12 @@ focus without touching the real desktop. It covers:
   down, when another window or no window has focus, and before the game window exists. It reads a
   name as `RegisterKeybindByName` does: `Ctlr+K` reads as K, and in `W+K` the last key wins. It makes no allocation, and it gives a
   consistent answer from four threads while a fifth moves the focus.
+- `IsKeyHeld` and text fields, the keybind dispatch's typing gate: a key pressed while a game or
+  ImGui text field has focus is false until released, closing the field included; pressed again
+  outside one, true. A key held before the field took focus stays true. Escape, a `SetTypingExempt`
+  key and mouse buttons are true while typing. A key with a keybind gives the callback's answer on
+  its first poll, and the callback still skips the press. A key with no keybind and no poll skips
+  the game's text-focus scan.
 
 ```
 msbuild Tests\KeyAndThreadTests\KeyAndThreadTests.vcxproj /p:Configuration="Client Release" /p:Platform=x64

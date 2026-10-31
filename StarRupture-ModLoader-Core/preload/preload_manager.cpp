@@ -5,6 +5,8 @@
 #include "core/globals.h"
 #include "core/startup_utils.h"
 #include "memory_scanner/hook_scanner_interface.h"
+#include "memory_scanner/version_map.h"
+#include "hooks/game/version_map.generated.h"
 #include "plugins/plugin_hook_report.h"
 #include "logging/log.h"
 #include "logging/logger.h"
@@ -596,6 +598,19 @@ namespace PreloadManager
 		if (!EnabledInIni())
 		{
 			g_skipReason = "[Preload] Enabled=0 in modloader.ini";
+			LogToFile::Info("[Preload] Phase skipped: %s", g_skipReason.c_str());
+			return;
+		}
+
+		// A preload plugin's layouts are compiled for the game build the loader
+		// was built against, and the preload interface has no way to take this
+		// build's from the version map (VersionMap::OffBuildRefusal), so on any
+		// other build none runs.
+		const uint32_t runningCL = VersionMap::RunningExe().cl;
+		if (runningCL != VersionMap::kBuiltCL)
+		{
+			g_skipReason = "game build CL-" + std::to_string(runningCL) + " is not CL-"
+				+ std::to_string(VersionMap::kBuiltCL) + ", the build preload plugins are written for";
 			LogToFile::Info("[Preload] Phase skipped: %s", g_skipReason.c_str());
 			return;
 		}

@@ -433,10 +433,37 @@ namespace ModLoaderLogger
 				}
 			}
 
-			if (entry.description && entry.description[0])
+			// A Choice's description is "<text>|<choice>|<choice>": the text
+			// goes on the comment line, the choices on a line of their own.
+			std::string comment = entry.description ? entry.description : "";
+			std::string choices;
+			if (entry.type == ConfigValueType::Choice)
+			{
+				const size_t bar = comment.find('|');
+				if (bar != std::string::npos)
+				{
+					for (size_t i = bar + 1; i < comment.size(); ++i)
+					{
+						if (comment[i] == '|')
+							choices += " | ";
+						else
+							choices += comment[i];
+					}
+					comment.resize(bar);
+				}
+			}
+
+			if (!comment.empty())
 			{
 				content += "; ";
-				content += entry.description;
+				content += comment;
+				content += "\r\n";
+			}
+
+			if (!choices.empty())
+			{
+				content += "; Choices: ";
+				content += choices;
 				content += "\r\n";
 			}
 
@@ -484,6 +511,8 @@ namespace ModLoaderLogger
 		switch (entry.type)
 		{
 		case ConfigValueType::String:
+		case ConfigValueType::Choice:
+		case ConfigValueType::Hidden:
 			ConfigWriteString(self, entry.section, entry.key, entry.defaultValue);
 			break;
 		case ConfigValueType::Integer:

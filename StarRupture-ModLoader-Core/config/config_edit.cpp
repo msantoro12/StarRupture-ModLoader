@@ -174,6 +174,25 @@ namespace ConfigEdit
         return nullptr;
     }
 
+    std::vector<std::string> GetChoices(const ConfigEntry* entry)
+    {
+        std::vector<std::string> choices;
+        if (!entry || entry->type != ConfigValueType::Choice || !entry->description)
+            return choices;
+
+        const char* part = strchr(entry->description, '|');
+        while (part)
+        {
+            ++part;
+            const char* end = strchr(part, '|');
+            const size_t length = end ? static_cast<size_t>(end - part) : strlen(part);
+            if (length > 0)
+                choices.emplace_back(part, length);
+            part = end;
+        }
+        return choices;
+    }
+
     void SetEntryBlocking(const char* pluginName, const char* section, const char* key,
                           const char* combo, bool blocking)
     {

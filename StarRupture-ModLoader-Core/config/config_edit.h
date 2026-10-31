@@ -4,6 +4,7 @@
 
 #include "plugins/plugin_interface.h"
 #include <cstddef>
+#include <string>
 #include <vector>
 
 // ---------------------------------------------------------------------------
@@ -48,6 +49,11 @@ namespace ConfigEdit
 
     // Returns the ConfigEntry for (section, key) from schema, or nullptr.
     const ConfigEntry* FindSchemaEntry(const ConfigSchema* schema, const char* section, const char* key);
+
+    // A Choice entry's choices: the '|'-separated parts of its description
+    // after the first, which is the description itself. Empty parts are
+    // skipped. Empty for an entry of any other type.
+    std::vector<std::string> GetChoices(const ConfigEntry* entry);
 
     // Blocking owner for one keybind config entry. Per entry rather than per
     // plugin, so two binds in the same plugin that share a combo cannot clear

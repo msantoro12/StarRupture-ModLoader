@@ -296,8 +296,37 @@ static void HeldBeforeTyping()
     Press('W');
     TestDoubles::gameTextFocused = true;   // the player clicks into chat, W still down
     CHECK(IsKeyHeld("W"));                 // its press reached the keybinds: still held
+    ProcessWindowMessage(WM_KEYDOWN, 'W', 0x40000001);   // Windows repeats a held key
+    CHECK(IsKeyHeld("W"));                 // a repeat is not a new press
     Release('W');
     CHECK(!IsKeyHeld("W"));
+
+    Reset();
+    CHECK(!IsKeyHeld("P"));
+    TestDoubles::gameTextFocused = true;
+    Press('P');
+    TestDoubles::gameTextFocused = false;
+    ProcessWindowMessage(WM_KEYDOWN, 'P', 0x40000001);
+    CHECK(!IsKeyHeld("P"));                // still the press that went into chat
+    Release('P');
+}
+
+// The rebind modal swallows key messages; a key-up it swallows still ends
+// the press the typing gate held back.
+static void ReleasedDuringCapture()
+{
+    Reset();
+    CHECK(!IsKeyHeld("K"));
+    TestDoubles::gameTextFocused = true;
+    Press('K');
+    CHECK(!IsKeyHeld("K"));
+    TestDoubles::gameTextFocused = false;
+    Hooks::Input::NoteKeybindCaptureFrame();
+    Release('K');
+    Press('K');                            // the press the modal reads, no gate
+    CHECK(IsKeyHeld("K"));
+    Release('K');
+    Hooks::Input::EndKeybindCapture();
 }
 
 static void TypingExemptions()
@@ -462,6 +491,7 @@ int main()
     RunTest("IsKeyHeld: no game window yet", NullWindow);
     RunTest("IsKeyHeld: a key pressed while typing", PressedWhileTyping);
     RunTest("IsKeyHeld: a key held before typing", HeldBeforeTyping);
+    RunTest("IsKeyHeld: a key released during a keybind capture", ReleasedDuringCapture);
     RunTest("IsKeyHeld: Escape, typing-exempt keys and mouse buttons", TypingExemptions);
     RunTest("IsKeyHeld: a key with a keybind", KeybindAndPollAgree);
     RunTest("IsKeyHeld: a key nobody watches skips the scan", UnwatchedKeySkipsTheScan);

@@ -217,7 +217,8 @@ registry's `ProcessWindowMessage`, as the overlay's window procedure hands them 
   consistent answer from four threads while a fifth moves the focus.
 - `IsKeyHeld` and text fields, the keybind dispatch's typing gate: a key pressed while a game or
   ImGui text field has focus is false until released, closing the field included; pressed again
-  outside one, true. A key held before the field took focus stays true. Escape, a `SetTypingExempt`
+  outside one, true. A key held before the field took focus stays true, through Windows' key
+  repeats too, and a key-up the rebind modal swallows still ends a held-back press. Escape, a `SetTypingExempt`
   key and mouse buttons are true while typing. A key with a keybind gives the callback's answer on
   its first poll, and the callback still skips the press. A key with no keybind and no poll skips
   the game's text-focus scan.

@@ -349,6 +349,7 @@ namespace VersionMap
 					bad.matchCount = r.matchCount;
 					bad.detail     = "AMBIGUOUS: the " + RowLabel(*exactMap) + " resolves to RVA " + Hex(rva)
 					               + ", the " + RowLabel(*exactOwn) + " for this exe says " + Hex(exactOwn->rva);
+					LogPick(owner, request.name, bad.detail + " (refused)");
 					return bad;
 				}
 				how += ", the " + RowLabel(*exactOwn) + " agrees";
@@ -660,7 +661,10 @@ namespace VersionMap
 		const int   kind = static_cast<int>(request.kind);
 
 		if (strcmp(who, "ModLoader") == 0)
+		{
+			LogPick(who, request.name, "a plugin may not be named ModLoader (refused)");
 			return Failure(Outcome::BadRequest, "a plugin may not be named ModLoader: the map's ModLoader/ keys are the loader's own");
+		}
 
 		std::string key = request.name;
 		uint32_t    fp  = 0;
@@ -668,9 +672,12 @@ namespace VersionMap
 		{
 			fp = Fingerprint(kind, request.pattern, request.resultOffset, request.followRel32At, -1, 0);
 			if (!fp)
+			{
+				LogPick(who, request.name, "a site key needs its own pattern (refused)");
 				return Failure(Outcome::BadRequest, request.name + ": a map key of kind "
 					+ ScanValidation::KindName(request.kind) + " is this plugin's own site and needs its own pattern: "
 					"the map keeps a site's rows under the fingerprint of the request they were verified with");
+			}
 			key = std::string(who) + "/" + request.name;
 		}
 		else if (!IsGlobalKind(kind) || key.find('/') != std::string::npos)
@@ -693,7 +700,10 @@ namespace VersionMap
 			? "not in the loader's map" + (fp ? " (" + key + ", fp " + Hex8(fp) + ")" : std::string())
 			: found.setAside;
 		if (request.pattern.empty() && own.empty())
+		{
+			LogPick(who, request.name, why + "; no pattern or rows of its own (refused)");
 			return Failure(Outcome::NoMatch, request.name + ": " + why + ", and the request has no pattern or rows of its own");
+		}
 		LogPick(who, request.name, why + "; own " + (request.pattern.empty() ? "rows" : "pattern"));
 		return own.empty() ? ScanValidation::Resolve(request) : Select(owner, request, own, running);
 	}

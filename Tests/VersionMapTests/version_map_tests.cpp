@@ -113,7 +113,8 @@ int main()
 	r = Key("VmapProbe", Ask("Test::MapOnly", Kind::FunctionStart), { AddressRow(0x1000) });
 	Check(At(r, 0x1000) && Logged(L"the own CL-128786 row agrees"), "own row for this exe agrees with the map");
 	r = Key("VmapProbe", Ask("Test::MapOnly", Kind::FunctionStart), { AddressRow(0x1010) });
-	Check(r.outcome == Outcome::MultipleMatches && r.detail.find("AMBIGUOUS") == 0, "own row for this exe disagrees: AMBIGUOUS");
+	Check(r.outcome == Outcome::MultipleMatches && r.detail.find("AMBIGUOUS") == 0 && Logged(L"AMBIGUOUS"),
+		"own row for this exe disagrees: AMBIGUOUS");
 
 	// A global absent row binds the owners it lists, and nobody else.
 	r = Key("Listed", Ask("Test::Absent", Kind::FunctionStart, "AB 01"));
@@ -125,7 +126,8 @@ int main()
 	r = Key("VmapProbe", Ask("Test::Data", Kind::FunctionStart, "AC 05"));
 	Check(At(r, 0x3005) && Logged(L"loader map row is for another kind (data); own pattern"), "kind mismatch skips the map");
 	r = Key("VmapProbe", Ask("Test::Data", Kind::FunctionStart));
-	Check(r.outcome == Outcome::NoMatch && r.detail.find("another kind") != std::string::npos,
+	Check(r.outcome == Outcome::NoMatch && r.detail.find("another kind") != std::string::npos
+		&& Logged(L"another kind (data); no pattern or rows of its own (refused)"),
 		"kind mismatch on a key-only request: refused");
 
 	// Sites: the owner's key, matched by fingerprint.
@@ -134,7 +136,7 @@ int main()
 	r = Key("VmapProbe", Ask("Site", Kind::InFunction, "AD 01 ?? 03"));
 	Check(At(r, 0x4200) && Logged(L"loader map row is for another request (fp "), "site: another fp is set aside");
 	r = Key("VmapProbe", Ask("Site", Kind::InFunction));
-	Check(r.outcome == Outcome::BadRequest, "site key with no pattern is refused");
+	Check(r.outcome == Outcome::BadRequest && Logged(L"(refused)"), "site key with no pattern is refused");
 	r = Key("OtherPlugin", Ask("Site", Kind::InFunction, "AD 01 ?? 03"));
 	Check(At(r, 0x4200) && Logged(L"not in the loader's map (OtherPlugin/Site, fp "), "another owner's site is not this plugin's key");
 	r = Key("VmapProbe", Ask("AbsentSite", Kind::InFunction, "AF 01"));
@@ -154,11 +156,12 @@ int main()
 	r = Key("VmapProbe", Ask("Test::Nope", Kind::FunctionStart, "B1 00"));
 	Check(At(r, 0x8000) && Logged(L"not in the loader's map; own pattern"), "unknown global key: own pattern");
 	r = Key("VmapProbe", Ask("Test::Nope", Kind::FunctionStart));
-	Check(r.outcome == Outcome::NoMatch && r.detail.find("no pattern or rows of its own") != std::string::npos, "unknown key, nothing of its own");
+	Check(r.outcome == Outcome::NoMatch && r.detail.find("no pattern or rows of its own") != std::string::npos
+		&& Logged(L"not in the loader's map; no pattern or rows of its own (refused)"), "unknown key, nothing of its own");
 	r = Key("VmapProbe", Ask("ModLoader/Test::Site", Kind::FunctionStart, "B1 00"));
 	Check(At(r, 0x8000) && Logged(L"not in the loader's map; own pattern"), "a global key with a '/' reads no key");
 	r = Key("ModLoader", Ask("Test::MapOnly", Kind::FunctionStart));
-	Check(r.outcome == Outcome::BadRequest, "a plugin named ModLoader is refused");
+	Check(r.outcome == Outcome::BadRequest && Logged(L"(refused)"), "a plugin named ModLoader is refused");
 
 	// The loader's own site: its key, fingerprint and arithmetic filter.
 	ScanPatterns::PreflightEntry site{};

@@ -267,3 +267,122 @@ namespace SdkGlobals
 }
 
 #endif
+
+// ---- Members the loader reads, resolved per build (both builds) -----------
+
+#include "Chimera_classes.hpp"
+#include "Engine_classes.hpp"
+#include "../hooks/game/version_map.generated.h"
+#include "../logging/logger.h"
+#include "../memory_scanner/version_map.h"
+
+#include <algorithm>
+#include <atomic>
+#include <cstddef>
+#include <cstring>
+#include <type_traits>
+
+namespace SdkGlobals
+{
+    namespace
+    {
+        // One member, under its key in the loader's version map.
+        struct FieldSpec
+        {
+            const char* key;
+            const char* className;
+            const char* member;
+            int32_t     compiled;   // offsetof in the SDK the loader is built against
+            uint32_t    size;
+        };
+
+        enum FieldId { kCraftComponent, kGameState, kLineBatchers, kNetDriver, kFieldCount };
+
+        static_assert(std::is_same_v<decltype(SDK::ACrCrafter::CraftComponent), SDK::UCrCraftingComponent*>);
+        static_assert(std::is_same_v<decltype(SDK::UWorld::GameState), SDK::AGameStateBase*>);
+        static_assert(std::is_same_v<std::remove_extent_t<decltype(SDK::UWorld::LineBatchers)>, SDK::ULineBatchComponent*>);
+        static_assert(std::is_same_v<decltype(SDK::UWorld::NetDriver), SDK::UNetDriver*>);
+
+        const FieldSpec kFieldSpecs[kFieldCount] = {
+            { "ACrCrafter::CraftComponent", "ACrCrafter", "CraftComponent",
+              offsetof(SDK::ACrCrafter, CraftComponent), sizeof(SDK::ACrCrafter::CraftComponent) },
+            { "UWorld::GameState", "UWorld", "GameState",
+              offsetof(SDK::UWorld, GameState), sizeof(SDK::UWorld::GameState) },
+            { "UWorld::LineBatchers", "UWorld", "LineBatchers",
+              offsetof(SDK::UWorld, LineBatchers), sizeof(SDK::UWorld::LineBatchers) },
+            { "UWorld::NetDriver", "UWorld", "NetDriver",
+              offsetof(SDK::UWorld, NetDriver), sizeof(SDK::UWorld::NetDriver) },
+        };
+
+        // Written once by ResolveFields on the init thread, read from any.
+        // -1: not resolved (yet, or on this build).
+        std::atomic<int32_t> g_fieldOffsets[kFieldCount] = { -1, -1, -1, -1 };
+
+        // The pointer stored at the resolved offset of `id` in `object`, as
+        // element `index` of the member.
+        template <class T>
+        T* PointerAt(const void* object, FieldId id, int index = 0)
+        {
+            const int32_t offset = g_fieldOffsets[id].load(std::memory_order_acquire);
+            if (!object || offset < 0 || index < 0 || static_cast<uint32_t>(index + 1) * sizeof(T*) > kFieldSpecs[id].size)
+                return nullptr;
+            return reinterpret_cast<T* const*>(static_cast<const uint8_t*>(object) + offset)[index];
+        }
+    }
+
+    std::vector<std::string> ResolveFields()
+    {
+        std::vector<std::string> unresolved;
+#if defined(MODLOADER_CLIENT_BUILD)
+        const VersionMap::Exe running = VersionMap::RunningExe();
+#endif
+        for (int id = 0; id < kFieldCount; ++id)
+        {
+            const FieldSpec& spec = kFieldSpecs[id];
+#if defined(MODLOADER_CLIENT_BUILD)
+            VersionMap::FieldValue value;
+            std::string error;
+            if (VersionMap::SelectField("ModLoader", VersionMap::LoaderFieldRequest(spec.key, spec.size, spec.compiled), running, value, error))
+            {
+                g_fieldOffsets[id].store(value.offset, std::memory_order_release);
+                continue;
+            }
+            if (running.cl != VersionMap::kBuiltCL)
+            {
+                unresolved.push_back(std::string(spec.key) + ": " + error);
+                continue;
+            }
+            ModLoaderLogger::LogWarn(L"[Map] ModLoader: %S: the SDK's compiled offset 0x%X, on the build it was made for",
+                spec.key, spec.compiled);
+#endif
+            g_fieldOffsets[id].store(spec.compiled, std::memory_order_release);
+        }
+        return unresolved;
+    }
+
+    bool IsPerBuildField(const char* className, const char* member)
+    {
+        return std::any_of(std::begin(kFieldSpecs), std::end(kFieldSpecs), [&](const FieldSpec& spec)
+            { return strcmp(spec.className, className) == 0 && strcmp(spec.member, member) == 0; });
+    }
+
+    SDK::AGameStateBase* WorldGameState(const SDK::UWorld* world)
+    {
+        return PointerAt<SDK::AGameStateBase>(world, kGameState);
+    }
+
+    SDK::UNetDriver* WorldNetDriver(const SDK::UWorld* world)
+    {
+        return PointerAt<SDK::UNetDriver>(world, kNetDriver);
+    }
+
+    SDK::ULineBatchComponent* WorldLineBatcher(const SDK::UWorld* world, int index)
+    {
+        return PointerAt<SDK::ULineBatchComponent>(world, kLineBatchers, index);
+    }
+
+    SDK::UCrCraftingComponent* CrafterCraftComponent(const SDK::ACrCrafter* crafter)
+    {
+        return PointerAt<SDK::UCrCraftingComponent>(crafter, kCraftComponent);
+    }
+}

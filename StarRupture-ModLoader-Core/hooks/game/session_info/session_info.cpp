@@ -38,11 +38,7 @@ namespace Hooks::SessionInfo
     // world has begun play.
     static SDK::AActor* GetAnyActor()
     {
-        SDK::UWorld* world = SdkGlobals::GetWorld();
-        if (!world)
-            return nullptr;
-
-        return reinterpret_cast<SDK::AActor*>(world->GameState);
+        return reinterpret_cast<SDK::AActor*>(SdkGlobals::WorldGameState(SdkGlobals::GetWorld()));
     }
 
     EPluginNetMode GetNetMode()

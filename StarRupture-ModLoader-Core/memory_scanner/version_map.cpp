@@ -615,4 +615,28 @@ namespace VersionMap
 		ModLoaderLogger::LogWarn(L"[Map] %S: %S: refused: %S", owner ? owner : "?", request.key.c_str(), error.c_str());
 		return false;
 	}
+
+	FieldRequest LoaderFieldRequest(const char* key, uint32_t size, int32_t builtOffset)
+	{
+		FieldRequest request;
+		request.key         = key;
+		const size_t split  = request.key.find("::");
+		request.className   = request.key.substr(0, split);
+		request.member      = split == std::string::npos ? std::string() : request.key.substr(split + 2);
+		request.size        = size;
+		request.builtCL     = kBuiltCL;
+		request.builtOffset = builtOffset;
+		const auto index = std::find_if(kFields.begin(), kFields.end(),
+			[&](const Index& i) { return strcmp(i.key, key) == 0; });
+		if (index != kFields.end())
+		{
+			for (uint16_t i = index->first; i < index->first + index->count; ++i)
+			{
+				const FieldRow& row = kFieldRows[i];
+				request.candidates.push_back(FieldCandidate{ row.gameCL, row.offset, row.size,
+					row.boolMask, row.member ? row.member : "" });
+			}
+		}
+		return request;
+	}
 }

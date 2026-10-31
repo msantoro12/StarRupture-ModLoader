@@ -91,8 +91,8 @@ namespace Hooks::FrameGenPause
         if (!s_worldUp || s_steadySeconds < kSteadySecondsRequired)
             return false;
 
-        SDK::UWorld* world = SdkGlobals::GetWorld();
-        return world && world->GameState && world->GameState->bReplicatedHasBegunPlay;
+        SDK::AGameStateBase* gameState = SdkGlobals::WorldGameState(SdkGlobals::GetWorld());
+        return gameState && gameState->bReplicatedHasBegunPlay;
     }
 
     static void RestoreRetain()

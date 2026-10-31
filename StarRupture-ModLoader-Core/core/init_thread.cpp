@@ -345,8 +345,21 @@ DWORD WINAPI MainInitThreadProc(LPVOID)
         }
     }
 
-    // Field requests read the game's reflection data from here on.
+    // Field requests read the game's reflection data from here on, and the
+    // loader's own fields are resolved from it. On a build other than the
+    // SDK's own, one that does not resolve switches plugins off.
     VersionMap::SetLiveFieldSource(LayoutCheck::LiveFieldOf);
+    {
+        LayoutCheck::Result unresolved;
+        unresolved.lines = SdkGlobals::ResolveFields();
+        if (!unresolved.lines.empty())
+        {
+            EnterLayoutSafeOff(unresolved);
+            return 0;
+        }
+    }
+#else
+    SdkGlobals::ResolveFields();
 #endif
 
     // ------------------------------------------------------------------

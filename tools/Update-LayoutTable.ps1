@@ -17,7 +17,9 @@
     in ci\LAYOUT-TABLE.md there.
 
     The classes come from the loader's own sources (every SDK type they name)
-    plus their reflected base classes. The built CL is read from kBuiltCL in
+    plus their reflected base classes. A UClass keeps only the members those
+    sources read (--granularity 1); script structs and function parameters
+    keep every member. The built CL is read from kBuiltCL in
     hooks\game\version_map.generated.h.
 
 .PARAMETER Generator
@@ -49,7 +51,7 @@ if ($versionMap -notmatch 'kBuiltCL\s*=\s*(\d+)\s*;') {
 $cl = $Matches[1]
 
 & node $Generator gen (Join-Path $sdk 'Assertions.inl') --cl $cl `
-    --src $root --sdk (Join-Path $sdk 'SDK') --out $out
+    --src $root --sdk (Join-Path $sdk 'SDK') --granularity 1 --out $out
 if ($LASTEXITCODE -ne 0) { throw "layout-table.mjs failed (exit $LASTEXITCODE)" }
 
 Write-Host "Wrote $out for CL $cl"

@@ -37,7 +37,8 @@ namespace LayoutCheck
     }
 
     Result Compare(const std::vector<TableClass>& table,
-        const std::function<const LiveStruct*(const TableClass&)>& find)
+        const std::function<const LiveStruct*(const TableClass&)>& find,
+        uint32_t granularity, const PerBuild& perBuild)
     {
         Result result;
         result.classes = static_cast<int>(table.size());
@@ -65,18 +66,24 @@ namespace LayoutCheck
             ++result.checked;
             const size_t linesBefore = result.lines.size();
 
-            if (live->size != static_cast<int32_t>(sdk.sizeOf))
+            const bool byValue = granularity == 0 || sdk.kind != Kind::Class;
+            if (byValue && live->size != static_cast<int32_t>(sdk.sizeOf))
                 Record(result, sdk.name, "", "size", sdk.sizeOf, live->size,
                     Format("%s: size SDK 0x%X, game 0x%X", sdk.name, sdk.sizeOf, live->size));
             // A native UFunction's MinAlignment is 1 whatever its parameters
             // hold, so only classes and structs have an alignment to compare.
-            if (sdk.kind != Kind::FunctionParams && sdk.alignOf != 0
+            if (byValue && sdk.kind != Kind::FunctionParams && sdk.alignOf != 0
                 && live->minAlignment != static_cast<int32_t>(sdk.alignOf))
                 Record(result, sdk.name, "", "alignment", sdk.alignOf, live->minAlignment,
                     Format("%s: alignment SDK %u, game %d", sdk.name, sdk.alignOf, live->minAlignment));
 
             for (const TableRow& row : sdk.rows)
             {
+                if (perBuild && perBuild(sdk, row))
+                {
+                    ++result.perBuild;
+                    continue;
+                }
                 const LiveProperty* property = FindProperty(*live, row.name);
                 if (!property)
                 {
@@ -331,6 +338,9 @@ namespace LayoutCheck
         {
             const auto it = search.live.find(sdk.path);
             return it == search.live.end() ? nullptr : &it->second;
+        }, SrLayoutTable::kGranularity, [](const TableClass& sdk, const TableRow& row)
+        {
+            return SdkGlobals::IsPerBuildField(sdk.name, row.name);
         });
 
         for (const std::string& line : result.lines)
@@ -340,9 +350,10 @@ namespace LayoutCheck
         void (*const log)(const wchar_t*, ...) =
             result.mismatched == 0 && result.missing == 0 ? ModLoaderLogger::LogInfo : ModLoaderLogger::LogWarn;
         log(
-            L"[LayoutCheck] SDK CL %u against the game: %d classes, %d checked, %d mismatched, %d missing, %d deferred"
-            L" -- GObjects pass %.1f ms (%d objects, %d types), %.1f ms in all",
+            L"[LayoutCheck] SDK CL %u against the game: %d classes, %d checked, %d mismatched, %d missing, %d deferred,"
+            L" %d rows resolved per build -- GObjects pass %.1f ms (%d objects, %d types), %.1f ms in all",
             SrLayoutTable::kBuiltCL, result.classes, result.checked, result.mismatched, result.missing, result.deferred,
+            result.perBuild,
             search.walkMs, search.objects, search.types, totalMs);
 
         out = std::move(result);

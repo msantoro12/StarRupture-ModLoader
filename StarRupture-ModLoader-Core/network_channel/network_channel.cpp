@@ -454,9 +454,9 @@ namespace
     {
         __try
         {
-            SDK::UWorld* world = SdkGlobals::GetWorld();
-            if (!world || !world->NetDriver) return nullptr;
-            return world->NetDriver->ServerConnection;
+            SDK::UNetDriver* driver = SdkGlobals::WorldNetDriver(SdkGlobals::GetWorld());
+            if (!driver) return nullptr;
+            return driver->ServerConnection;
         }
         __except (EXCEPTION_EXECUTE_HANDLER)
         {
@@ -549,10 +549,10 @@ namespace
         if (!conn) return false;
         __try
         {
-            SDK::UWorld* world = SdkGlobals::GetWorld();
-            if (!world || !world->NetDriver) return false;
+            SDK::UNetDriver* driver = SdkGlobals::WorldNetDriver(SdkGlobals::GetWorld());
+            if (!driver) return false;
 
-            auto* conns = &world->NetDriver->ClientConnections;
+            auto* conns = &driver->ClientConnections;
             for (int32_t i = 0; i < conns->Num(); ++i)
                 if (static_cast<void*>((*conns)[i]) == conn) return true;
 

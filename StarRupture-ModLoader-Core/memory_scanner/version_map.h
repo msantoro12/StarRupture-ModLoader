@@ -171,4 +171,9 @@ namespace VersionMap
 	// success writes out. On failure, error says which rule failed.
 	bool SelectField(const char* owner, const FieldRequest& request, const Exe& running,
 		FieldValue& out, std::string& error);
+
+	// The request for one of the loader's own members ("Class::Member", a key
+	// of kFields), with the rows its map holds for it. size and builtOffset
+	// are the member's in the SDK the loader is built against.
+	FieldRequest LoaderFieldRequest(const char* key, uint32_t size, int32_t builtOffset);
 }

@@ -11,11 +11,14 @@ namespace VersionMap { struct LiveField; }
 // Startup layout check.
 //
 // layout_table.generated.h lists the Game-SDK classes the loader uses, with
-// the size of each and the offset, size and bool mask of each member, as the
-// SDK the loader was built against has them (tools\Update-LayoutTable.ps1
-// regenerates it). Run() walks the running game's reflection data once and
-// logs every class whose layout no longer matches: after a game update that
-// is the list of SDK types that now read the wrong bytes.
+// the size of each and the offset, size and bool mask of the members it
+// reads, as the SDK the loader was built against has them
+// (tools\Update-LayoutTable.ps1 regenerates it). Run() walks the running
+// game's reflection data once and logs every class whose layout no longer
+// matches: after a game update that is the list of SDK types that now read
+// the wrong bytes. Members the loader resolves per build
+// (SdkGlobals::ResolveFields) are not compared here: the version map checks
+// those (VersionMap::SelectField).
 //
 // On a mismatch the init thread switches plugins off (RequiresSafeOff) and
 // writes the compatibility report (compat_report.h).
@@ -123,6 +126,7 @@ namespace LayoutCheck
     struct Result
     {
         int classes    = 0;  // in the table
+        int perBuild   = 0;  // rows left to the per-build resolver, not compared
         int checked    = 0;  // found in the game and compared
         int mismatched = 0;  // found, but the layout differs
         int missing    = 0;  // not found in the game
@@ -140,7 +144,14 @@ namespace LayoutCheck
     }
 
     // Compares every table class with what `find` returns for it (nullptr:
-    // not in the game).
+    // not in the game). granularity is the table's kGranularity: at 1 a class
+    // lists only the members the loader reads, and since the loader reaches a
+    // UClass only through pointers, a UClass's own size and alignment are not
+    // compared (a script struct's and a parameter block's still are: those
+    // are held by value). Rows for which perBuild is true are skipped and
+    // counted in Result::perBuild.
+    using PerBuild = std::function<bool(const TableClass&, const TableRow&)>;
     Result Compare(const std::vector<TableClass>& table,
-        const std::function<const LiveStruct*(const TableClass&)>& find);
+        const std::function<const LiveStruct*(const TableClass&)>& find,
+        uint32_t granularity = 0, const PerBuild& perBuild = {});
 }

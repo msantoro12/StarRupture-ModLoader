@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "crafting_finished.h"
+#include "core/sdk_globals.h"
 #include "logging/logger.h"
 #include "memory_scanner/scanner.h"
 #include "../scan_patterns.h"
@@ -28,12 +29,7 @@ namespace Hooks::CraftingFinished
 			g_original(thisPtr, entityHandle, signalName);
 		}
 
-		void* craftingComponent = nullptr;
-		if (thisPtr)
-		{
-			auto* crafter = reinterpret_cast<SDK::ACrCrafter*>(thisPtr);
-			craftingComponent = crafter->CraftComponent;
-		}
+		void* craftingComponent = SdkGlobals::CrafterCraftComponent(reinterpret_cast<SDK::ACrCrafter*>(thisPtr));
 
 		// FMassEntityHandle { int32 Index; int32 SerialNumber; } packed into the low/high 32 bits
 		int32_t entityIndex = static_cast<int32_t>(entityHandle & 0xFFFFFFFFu);

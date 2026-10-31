@@ -205,7 +205,20 @@ inline constexpr std::array<FunctionRow, 122> kFunctionRows = {{
 	{ 128786, 0xCF8579A6, 0x0F47D000, "40 55 41 56 48 81 EC ?? ?? ?? ?? 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 84 24 ?? ?? ?? ?? F6 81", 0, -1, -1, 0x05385D40 },
 }};
 
-inline constexpr std::array<FieldRow, 0> kFieldRows = {};
+inline constexpr std::array<FieldRow, 8> kFieldRows = {{
+	// ACrCrafter::CraftComponent
+	{ 127004, 0x6D8, 0x8, 0x00, nullptr },
+	{ 128786, 0x6E0, 0x8, 0x00, nullptr },
+	// UWorld::GameState
+	{ 127004, 0x1B0, 0x8, 0x00, nullptr },
+	{ 128786, 0x1B0, 0x8, 0x00, nullptr },
+	// UWorld::LineBatchers
+	{ 127004, 0xF0, 0x20, 0x00, nullptr },
+	{ 128786, 0xF0, 0x20, 0x00, nullptr },
+	// UWorld::NetDriver
+	{ 127004, 0x38, 0x8, 0x00, nullptr },
+	{ 128786, 0x38, 0x8, 0x00, nullptr },
+}};
 
 inline constexpr std::array<Index, 61> kFunctions = {{
 	{ "AAbstractMassEnemySpawner::ActivateSpawner", 0, 2 },
@@ -271,5 +284,10 @@ inline constexpr std::array<Index, 61> kFunctions = {{
 	{ "UWorld::EndPlay", 120, 2 },
 }};
 
-inline constexpr std::array<Index, 0> kFields = {};
+inline constexpr std::array<Index, 4> kFields = {{
+	{ "ACrCrafter::CraftComponent", 0, 2 },
+	{ "UWorld::GameState", 2, 2 },
+	{ "UWorld::LineBatchers", 4, 2 },
+	{ "UWorld::NetDriver", 6, 2 },
+}};
 }

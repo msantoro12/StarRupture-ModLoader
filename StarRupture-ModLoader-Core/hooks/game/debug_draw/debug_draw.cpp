@@ -81,10 +81,7 @@ namespace Hooks::DebugDraw
     {
         __try
         {
-            SDK::UWorld* world = SdkGlobals::GetWorld();
-            if (!world)
-                return nullptr;
-            return world->LineBatchers[index];
+            return SdkGlobals::WorldLineBatcher(SdkGlobals::GetWorld(), index);
         }
         __except (EXCEPTION_EXECUTE_HANDLER)
         {

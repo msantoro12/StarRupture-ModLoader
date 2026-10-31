@@ -215,6 +215,52 @@ namespace
         Check(Contains(result, "FThing::NowBool: a bool in the game, not in the SDK"), "a member that became a bool");
         Check(result.lines.size() == 7, "nothing else: a size of 0 and a function's alignment are not compared");
     }
+
+    void UsedMembersOnly()
+    {
+        std::printf("Granularity 1: the members the loader reads\n");
+        using LayoutCheck::Kind;
+
+        Check(SrLayoutTable::kGranularity == 1, "the loader's table lists only the members it reads");
+
+        // A class that grew, with the member the loader reads in place; a
+        // struct that grew; a class whose read member moved; a member left to
+        // the per-build resolver that moved.
+        const std::vector<LayoutCheck::TableClass> sdk = {
+            { "UGrew", "Mod.Grew", 0x40, 8, Kind::Class, { { "Read", 0x30, 8, 0 } } },
+            { "FGrew", "Mod.GrewStruct", 0x10, 8, Kind::ScriptStruct, { { "A", 0x0, 8, 0 } } },
+            { "UMoved", "Mod.Moved", 0x40, 8, Kind::Class, { { "Read", 0x30, 8, 0 } } },
+            { "UPerBuild", "Mod.PerBuild", 0x40, 8, Kind::Class, { { "Resolved", 0x30, 8, 0 }, { "Read", 0x38, 8, 0 } } },
+        };
+        const std::map<std::string, LayoutCheck::LiveStruct> game = {
+            { "Mod.Grew", { 0x48, 16, { { "Read", 0x30, 8, false, 0 } } } },
+            { "Mod.GrewStruct", { 0x18, 8, { { "A", 0x0, 8, false, 0 } } } },
+            { "Mod.Moved", { 0x40, 8, { { "Read", 0x38, 8, false, 0 } } } },
+            { "Mod.PerBuild", { 0x40, 8, { { "Resolved", 0x48, 8, false, 0 }, { "Read", 0x38, 8, false, 0 } } } },
+        };
+        const auto find = [&game](const LayoutCheck::TableClass& c) -> const LayoutCheck::LiveStruct*
+        {
+            const auto it = game.find(c.path);
+            return it == game.end() ? nullptr : &it->second;
+        };
+        const auto perBuild = [](const LayoutCheck::TableClass& c, const LayoutCheck::TableRow& row)
+        {
+            return std::string(c.name) == "UPerBuild" && std::string(row.name) == "Resolved";
+        };
+
+        const LayoutCheck::Result narrow = LayoutCheck::Compare(sdk, find, 1, perBuild);
+        Check(!Contains(narrow, "UGrew: size SDK 0x40, game 0x48") && !Contains(narrow, "UGrew: alignment SDK 8, game 16"),
+            "a UClass's own size and alignment are not compared");
+        Check(Contains(narrow, "FGrew: size SDK 0x10, game 0x18"), "a script struct's size still is");
+        Check(Contains(narrow, "UMoved::Read: offset SDK 0x30, game 0x38"), "a member the loader reads that moved switches plugins off");
+        Check(narrow.perBuild == 1 && !Contains(narrow, "UPerBuild::Resolved: offset SDK 0x30, game 0x48"),
+            "a member resolved per build is left to the version map");
+        Check(narrow.mismatched == 2 && narrow.lines.size() == 2 && LayoutCheck::RequiresSafeOff(narrow), "nothing else");
+
+        const LayoutCheck::Result whole = LayoutCheck::Compare(sdk, find);
+        Check(Contains(whole, "UGrew: size SDK 0x40, game 0x48") && Contains(whole, "UPerBuild::Resolved: offset SDK 0x30, game 0x48"),
+            "at granularity 0 every size and row is compared");
+    }
 }
 
 int main()
@@ -224,6 +270,7 @@ int main()
     MismatchSwitchesPluginsOffAndReports();
     StaticArrayIsTheWholeMember();
     EachDifferenceIsReported();
+    UsedMembersOnly();
 
     if (g_failures)
         std::printf("\n%d check(s) FAILED\n", g_failures);

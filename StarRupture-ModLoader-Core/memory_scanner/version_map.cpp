@@ -1,6 +1,7 @@
 #include "memory_scanner/version_map.h"
 #include "memory_scanner/image_info.h"
 #include "memory_scanner/scan_cache.h"
+#include "memory_scanner/scanner.h"
 #include "core/version_check.h"
 #include "hooks/game/scan_patterns.h"
 #include "hooks/game/version_map.generated.h"
@@ -25,9 +26,22 @@ namespace VersionMap
 			return buf;
 		}
 
+		std::string Hex8(uint32_t v)
+		{
+			char buf[16]{};
+			sprintf_s(buf, "0x%08X", v);
+			return buf;
+		}
+
 		std::string ClText(uint32_t cl)
 		{
 			return cl ? "CL-" + std::to_string(cl) : std::string("an unknown CL");
+		}
+
+		// "loader map, CL-128786 row" or "own CL-127004 row", for the [Map] line.
+		std::string RowLabel(const Candidate& c)
+		{
+			return (c.fromMap ? "loader map, " : "own ") + ClText(c.gameCL) + " row";
 		}
 
 		ScanValidation::Request WithLocator(const ScanValidation::Request& base, const Candidate& c)
@@ -71,6 +85,7 @@ namespace VersionMap
 				h.Text(c.pattern);
 				h.Value(c.resultOffset); h.Value(c.followRel32At); h.Value(c.followRipDispAt);
 				h.Value(c.rva);
+				h.Value(c.fromMap);
 			}
 			// Not an AOB, so it can never share a scan_cache.ini entry with one.
 			return "vmap " + request.name + " " + Hex(h.h);
@@ -78,7 +93,7 @@ namespace VersionMap
 
 		struct Tried
 		{
-			std::string            label;   // "built pattern", "CL-128786 row"
+			std::string            label;   // "own pattern", "loader map, CL-128786 row"
 			ScanValidation::Request request;
 			ScanValidation::Result  result;
 		};
@@ -216,106 +231,151 @@ namespace VersionMap
 			{
 				Result bad;
 				bad.outcome = Outcome::BadRequest;
-				bad.detail  = "the " + ClText(c.gameCL) + " row has no pattern, so it needs the exe's stamp and size and an RVA";
+				bad.detail  = "the " + RowLabel(c) + " has no pattern, so it needs the exe's stamp and size and an RVA";
 				return bad;
 			}
 		}
 
-		// --- 1. Exact -------------------------------------------------------------
-		const Candidate* exact = nullptr;
+		// --- 1. Exact: the loader map's row for this build, then the own row ------
+		const Candidate* exactMap = nullptr;
+		const Candidate* exactOwn = nullptr;
 		if (running.cl)
 		{
 			for (const Candidate& c : candidates)
 			{
 				if (c.gameCL != running.cl)
 					continue;
-				if (exact)
+				const Candidate*& slot = c.fromMap ? exactMap : exactOwn;
+				if (slot)
 				{
 					Result bad;
 					bad.outcome = Outcome::BadRequest;
-					bad.detail  = "two locators for " + here + "; a map has one row per key and build";
+					bad.detail  = std::string("two ") + (c.fromMap ? "loader map" : "own") + " locators for " + here
+					            + "; a map has one row per key and build";
 					return bad;
 				}
-				exact = &c;
+				slot = &c;
 			}
 		}
 
-		const Candidate* skipped = nullptr;
-		if (exact)
+		const auto onThisExe = [&](const Candidate& c)
 		{
-			const bool sameExe = exact->imageStamp && exact->imageSize
-				&& exact->imageStamp == running.imageStamp && exact->imageSize == running.imageSize;
+			return c.imageStamp && c.imageSize && c.imageStamp == running.imageStamp && c.imageSize == running.imageSize;
+		};
 
-			if (exact->pattern.empty())
+		// True when the row decides (out is the verdict), false when it is
+		// skipped and the next rule runs.
+		const auto tryExact = [&](const Candidate& exact, Result& out)
+		{
+			const std::string label = RowLabel(exact);
+			if (exact.pattern.empty())
 			{
-				if (sameExe)
+				if (onThisExe(exact))
 				{
-					Result r = ScanValidation::CheckAddress(request, image.base + exact->rva);
-					if (r.Succeeded())
-						LogPick(owner, request.name, here + " row (address on this exe)");
-					else
-						r.detail = here + " row, address " + Hex(exact->rva) + " on this exe: " + r.detail;
-					return r;
+					out = ScanValidation::CheckAddress(request, image.base + exact.rva);
+					if (!out.Succeeded())
+						out.detail = label + ", address " + Hex(exact.rva) + " on this exe: " + out.detail;
+					return true;
 				}
-				ModLoaderLogger::LogWarn(L"[Map] %S: %S: the %S row gives an address for another exe of that build; trying every other locator",
-					owner ? owner : "?", request.name.c_str(), here.c_str());
-				skipped = exact;
+				ModLoaderLogger::LogWarn(L"[Map] %S: %S: the %S gives an address for another exe of that build; trying every other locator",
+					owner ? owner : "?", request.name.c_str(), label.c_str());
+				return false;
 			}
-			else
+			Result r = ScanValidation::Resolve(WithLocator(request, exact));
+			if (r.Succeeded())
 			{
-				Result r = ScanValidation::Resolve(WithLocator(request, *exact));
-				if (r.Succeeded())
+				const uintptr_t rva = r.address - image.base;
+				if (onThisExe(exact) && exact.rva && rva != exact.rva)
 				{
-					const uintptr_t rva = r.address - image.base;
-					if (sameExe && exact->rva && rva != exact->rva)
-					{
-						Result bad;
-						bad.outcome  = Outcome::WrongKind;
-						bad.rawMatch = r.rawMatch;
-						bad.address  = r.address;
-						bad.matchCount = r.matchCount;
-						bad.detail   = "on the exe the " + here + " row was verified on, it resolved to RVA " + Hex(rva)
-						             + " instead of the recorded " + Hex(exact->rva)
-						             + ": same exe, different answer, so no other locator is tried."
-						             + NL + "            Pattern: " + exact->pattern;
-						return bad;
-					}
-					LogPick(owner, request.name, here + " row");
-					return r;
+					out            = Result{};
+					out.outcome    = Outcome::WrongKind;
+					out.rawMatch   = r.rawMatch;
+					out.address    = r.address;
+					out.matchCount = r.matchCount;
+					out.detail     = "on the exe the " + label + " was verified on, it resolved to RVA " + Hex(rva)
+					               + " instead of the recorded " + Hex(exact.rva)
+					               + ": same exe, different answer, so no other locator is tried."
+					               + NL + "            Pattern: " + exact.pattern;
+					return true;
 				}
-				if (r.outcome != Outcome::NoMatch)
-				{
-					r.detail = here + " row: " + r.detail;
-					return r;
-				}
-				if (sameExe && exact->rva)
-				{
-					r.detail = "on the exe the " + here + " row was verified on (RVA " + Hex(exact->rva)
-					         + "), its pattern is not found: same exe, different answer, so no other locator is tried."
-					         + NL + "            Pattern: " + exact->pattern;
-					return r;
-				}
-				ModLoaderLogger::LogWarn(L"[Map] %S: %S: the %S row's pattern is not in this exe; trying every other locator",
-					owner ? owner : "?", request.name.c_str(), here.c_str());
-				skipped = exact;
+				out = r;
+				return true;
 			}
+			if (r.outcome != Outcome::NoMatch)
+			{
+				r.detail = label + ": " + r.detail;
+				out = r;
+				return true;
+			}
+			if (onThisExe(exact) && exact.rva)
+			{
+				r.detail = "on the exe the " + label + " was verified on (RVA " + Hex(exact.rva)
+				         + "), its pattern is not found: same exe, different answer, so no other locator is tried."
+				         + NL + "            Pattern: " + exact.pattern;
+				out = r;
+				return true;
+			}
+			ModLoaderLogger::LogWarn(L"[Map] %S: %S: the %S's pattern is not in this exe; trying every other locator",
+				owner ? owner : "?", request.name.c_str(), label.c_str());
+			return false;
+		};
+
+		std::vector<const Candidate*> skipped;
+		for (const Candidate* exact : { exactMap, exactOwn })
+		{
+			if (!exact)
+				continue;
+			Result r;
+			if (!tryExact(*exact, r))
+			{
+				skipped.push_back(exact);
+				continue;
+			}
+			if (!r.Succeeded())
+				return r;
+			std::string how = RowLabel(*exact) + (exact->pattern.empty() ? " (address on this exe)" : "");
+
+			// No scan: an own row for this very exe must say where the map's
+			// row landed.
+			if (exact == exactMap && exactOwn && onThisExe(*exactOwn) && exactOwn->rva)
+			{
+				const uintptr_t rva = r.address - image.base;
+				if (rva != exactOwn->rva)
+				{
+					Result bad;
+					bad.outcome    = Outcome::MultipleMatches;
+					bad.rawMatch   = r.rawMatch;
+					bad.address    = r.address;
+					bad.matchCount = r.matchCount;
+					bad.detail     = "AMBIGUOUS: the " + RowLabel(*exactMap) + " resolves to RVA " + Hex(rva)
+					               + ", the " + RowLabel(*exactOwn) + " for this exe says " + Hex(exactOwn->rva);
+					return bad;
+				}
+				how += ", the " + RowLabel(*exactOwn) + " agrees";
+			}
+			LogPick(owner, request.name, how);
+			return r;
 		}
 
 		// --- 2. Agreement -----------------------------------------------------------
 		std::vector<Tried> tried;
 		if (!request.pattern.empty())   // a map-key request may carry rows only
-			tried.push_back({ "built pattern", request, {} });
+			tried.push_back({ "own pattern", request, {} });
 		for (const Candidate& c : candidates)
 		{
 			// An address-only row applies to its own exe, which is the exact row's.
-			if (&c == skipped || c.pattern.empty())
+			if (c.pattern.empty() || std::find(skipped.begin(), skipped.end(), &c) != skipped.end())
 				continue;
-			tried.push_back({ ClText(c.gameCL) + " row", WithLocator(request, c), {} });
+			tried.push_back({ RowLabel(c), WithLocator(request, c), {} });
 		}
 
 		const std::wstring gameVersion = module == GetModuleHandleW(nullptr) ? GetGameVersionString() : std::wstring();
 		const std::string  cacheKey    = SelectionCacheKey(request, candidates, running);
-		const std::string  lead        = skipped ? "the " + here + " row missed; " : "no row for " + here + "; ";
+		std::string lead;
+		for (const Candidate* s : skipped)
+			lead += "the " + RowLabel(*s) + " missed; ";
+		if (lead.empty())
+			lead = "no row for " + here + "; ";
 
 		// A verdict already reached on this exe: re-check only the locator that
 		// won (its bytes, through its own cache entry) and skip the rest.
@@ -392,53 +452,185 @@ namespace VersionMap
 		return fail;
 	}
 
+	uint32_t Fingerprint(int kind, const std::string& pattern, int32_t resultOffset,
+		int32_t followRel32At, int32_t followRipDispAt, uint32_t siteArithmetic)
+	{
+		const std::vector<Scanner::PatternByte> bytes = Scanner::ParsePattern(pattern);
+		if (bytes.empty())
+			return 0;
+		std::string text;
+		for (const Scanner::PatternByte& b : bytes)
+		{
+			char hex[4]{};
+			sprintf_s(hex, "%02X", b.value);
+			if (!text.empty())
+				text += ' ';
+			text += b.wildcard ? "??" : hex;
+		}
+
+		uint32_t h = 0x811C9DC5u;
+		const auto byte = [&h](uint8_t v) { h ^= v; h *= 0x01000193u; };
+		const auto word = [&byte](uint32_t v) { for (int i = 0; i < 4; ++i) byte(static_cast<uint8_t>(v >> (8 * i))); };
+		word(static_cast<uint32_t>(kind));
+		word(static_cast<uint32_t>(text.size()));
+		for (const char ch : text)
+			byte(static_cast<uint8_t>(ch));
+		word(static_cast<uint32_t>(resultOffset));
+		word(static_cast<uint32_t>(followRel32At));
+		word(static_cast<uint32_t>(followRipDispAt));
+		word(siteArithmetic);
+		return h ? h : 1;
+	}
+
 	namespace
 	{
-		// The map's rows for one registry name, as Select reads them.
-		std::vector<Candidate> LoaderRows(const ScanPatterns::PreflightEntry& entry)
+		bool IsGlobalKind(int kind)
 		{
-			std::vector<Candidate> rows;
+			return kind == static_cast<int>(ScanValidation::Kind::FunctionStart)
+				|| kind == static_cast<int>(ScanValidation::Kind::Data);
+		}
+
+		bool IsSiteKind(int kind)
+		{
+			return kind > static_cast<int>(ScanValidation::Kind::Unspecified)
+				&& kind <= static_cast<int>(ScanValidation::Kind::Any) && !IsGlobalKind(kind);
+		}
+
+		// Whether a global absent row's owner list ("A,B") names `owner`.
+		bool ListsOwner(const char* owners, const char* owner)
+		{
+			const size_t length = owner ? strlen(owner) : 0;
+			for (const char* p = owners; p && *p && length; )
+			{
+				const char*  comma = strchr(p, ',');
+				const size_t n     = comma ? static_cast<size_t>(comma - p) : strlen(p);
+				if (n == length && strncmp(p, owner, n) == 0)
+					return true;
+				p = comma ? comma + 1 : nullptr;
+			}
+			return false;
+		}
+
+		// What the loader's map holds for one request: the rows that apply to
+		// it (its kind; on a site, its fingerprint), or why none do.
+		struct Lookup
+		{
+			std::vector<Candidate> rows;      // fromMap
+			std::string            refusal;   // an absent row for the running build binds this request
+			std::string            setAside;  // the key is in the map, but no row of it applies
+		};
+
+		Lookup LookUp(const std::string& key, int kind, uint32_t fp, const char* owner, uint32_t runningCL)
+		{
+			Lookup out;
 #if defined(MODLOADER_CLIENT_BUILD)
-			const auto key = std::find_if(kFunctions.begin(), kFunctions.end(),
-				[&](const Index& i) { return strcmp(i.key, entry.name) == 0; });
-			if (key == kFunctions.end())
-				return rows;
-			for (uint16_t i = key->first; i < key->first + key->count; ++i)
+			const auto index = std::find_if(kFunctions.begin(), kFunctions.end(),
+				[&](const Index& i) { return key == i.key; });
+			if (key.empty() || index == kFunctions.end())
+				return out;
+			int  otherKind  = 0;
+			bool otherFp    = false;
+			bool absentHere = false;
+			for (uint16_t i = index->first; i < index->first + index->count; ++i)
 			{
 				const FunctionRow& f = kFunctionRows[i];
+				if (f.kind != kind)
+				{
+					otherKind = f.kind;
+					continue;
+				}
+				if (f.fp != fp)
+				{
+					otherFp = true;
+					continue;
+				}
+				if (f.absent)
+				{
+					if (f.gameCL != runningCL)
+						continue;
+					// A site's absent row binds its fingerprint, a global one the owners it lists.
+					if (fp != 0 || ListsOwner(f.owners, owner))
+					{
+						out.rows.clear();
+						out.refusal = "loader map: absent on " + ClText(runningCL);
+						return out;
+					}
+					absentHere = true;
+					continue;
+				}
 				Candidate c;
-				c.gameCL     = f.gameCL;
-				c.imageStamp = f.imageStamp;
-				c.imageSize  = f.imageSize;
-				c.rva        = f.rva;
+				c.gameCL          = f.gameCL;
+				c.imageStamp      = f.imageStamp;
+				c.imageSize       = f.imageSize;
+				c.pattern         = f.pattern ? f.pattern : "";
+				c.resultOffset    = f.resultOffset;
+				c.followRel32At   = f.followRel32At;
+				c.followRipDispAt = f.followRipDispAt;
+				c.rva             = f.rva;
+				c.fromMap         = true;
+				out.rows.push_back(std::move(c));
+			}
+			// Absent on this build for other owners: for this request the key is
+			// not placed, so none of its rows is used.
+			if (absentHere)
+			{
+				out.rows.clear();
+				out.setAside = "loader map: absent on " + ClText(runningCL) + " for other requests";
+			}
+			else if (out.rows.empty() && otherKind)
+				out.setAside = std::string("loader map row is for another kind (")
+					+ ScanValidation::KindName(static_cast<ScanValidation::Kind>(otherKind)) + ")";
+			else if (out.rows.empty() && otherFp)
+				out.setAside = "loader map row is for another request (fp " + Hex8(fp) + ")";
+#else
+			(void)key; (void)kind; (void)fp; (void)owner; (void)runningCL;
+#endif
+			return out;
+		}
 
+		const char* const kRefusedWhy = ": this key could not be placed on this build for this request, so no other locator is tried";
+
+		ScanValidation::Result Failure(ScanValidation::Outcome outcome, const std::string& detail)
+		{
+			ScanValidation::Result r;
+			r.outcome = outcome;
+			r.detail  = detail;
+			return r;
+		}
+
+		// The map's rows for one registry row, as Select reads them.
+		std::vector<Candidate> LoaderRows(const ScanPatterns::PreflightEntry& entry, const Exe& running, std::string& refusal)
+		{
+			Lookup found = LookUp(LoaderEntryKey(entry), static_cast<int>(entry.kind), LoaderEntryFingerprint(entry),
+				"ModLoader", running.cl);
+			refusal = found.refusal;
+			if (!found.setAside.empty())
+				ModLoaderLogger::LogInfo(L"[Map] ModLoader: %S: %S; own pattern", entry.name, found.setAside.c_str());
+
+			std::vector<Candidate> rows;
+			for (Candidate& c : found.rows)
+			{
 				// On the build the code was written for, the code's own pattern
 				// stands in for the row's, so the row's RVA checks the pattern
 				// the code ships: one edited in the code fails here instead of
 				// passing on the row it replaced.
-				if (f.gameCL == kBuiltCL)
+				if (c.gameCL == kBuiltCL)
 				{
 					c.pattern         = entry.pattern;
+					c.resultOffset    = 0;
 					c.followRel32At   = entry.followRel32At;
 					c.followRipDispAt = entry.followRipDispAt;
 					rows.push_back(std::move(c));
 					continue;
 				}
-				if (entry.siteArithmetic && (!f.pattern || strcmp(f.pattern, entry.pattern) != 0))
+				if (entry.siteArithmetic && c.pattern != entry.pattern)
 				{
 					ModLoaderLogger::LogWarn(L"[Map] ModLoader: %S: the CL-%u row is not this site's own pattern, so it is not used",
-						entry.name, f.gameCL);
+						entry.name, c.gameCL);
 					continue;
 				}
-				c.pattern         = f.pattern ? f.pattern : "";
-				c.resultOffset    = f.resultOffset;
-				c.followRel32At   = f.followRel32At;
-				c.followRipDispAt = f.followRipDispAt;
 				rows.push_back(std::move(c));
 			}
-#else
-			(void)entry;
-#endif
 			return rows;
 		}
 
@@ -446,10 +638,76 @@ namespace VersionMap
 		std::unordered_map<std::string, uintptr_t> g_picks;
 	}
 
+	std::string LoaderEntryKey(const ScanPatterns::PreflightEntry& entry)
+	{
+		return IsGlobalKind(static_cast<int>(entry.kind)) ? std::string(entry.name) : "ModLoader/" + std::string(entry.name);
+	}
+
+	uint32_t LoaderEntryFingerprint(const ScanPatterns::PreflightEntry& entry)
+	{
+		if (IsGlobalKind(static_cast<int>(entry.kind)))
+			return 0;
+		// Preflight asks with no result offset.
+		return Fingerprint(static_cast<int>(entry.kind), entry.pattern, 0, entry.followRel32At, entry.followRipDispAt,
+			entry.siteArithmetic);
+	}
+
+	ScanValidation::Result ResolveMapKey(const char* owner, const ScanValidation::Request& request,
+		const std::vector<Candidate>& own, const Exe& running)
+	{
+		using ScanValidation::Outcome;
+		const char* who  = owner ? owner : "?";
+		const int   kind = static_cast<int>(request.kind);
+
+		if (strcmp(who, "ModLoader") == 0)
+			return Failure(Outcome::BadRequest, "a plugin may not be named ModLoader: the map's ModLoader/ keys are the loader's own");
+
+		std::string key = request.name;
+		uint32_t    fp  = 0;
+		if (IsSiteKind(kind))
+		{
+			fp = Fingerprint(kind, request.pattern, request.resultOffset, request.followRel32At, -1, 0);
+			if (!fp)
+				return Failure(Outcome::BadRequest, request.name + ": a map key of kind "
+					+ ScanValidation::KindName(request.kind) + " is this plugin's own site and needs its own pattern: "
+					"the map keeps a site's rows under the fingerprint of the request they were verified with");
+			key = std::string(who) + "/" + request.name;
+		}
+		else if (!IsGlobalKind(kind) || key.find('/') != std::string::npos)
+			key.clear();   // no global key has a '/', and an unknown kind reads none
+
+		const Lookup found = LookUp(key, kind, fp, who, running.cl);
+		if (!found.refusal.empty())
+		{
+			LogPick(who, request.name, found.refusal + " (refused)");
+			return Failure(Outcome::NoMatch, request.name + ": " + found.refusal + kRefusedWhy);
+		}
+		if (!found.rows.empty())
+		{
+			std::vector<Candidate> all = found.rows;
+			all.insert(all.end(), own.begin(), own.end());
+			return Select(owner, request, all, running);
+		}
+
+		const std::string why = found.setAside.empty()
+			? "not in the loader's map" + (fp ? " (" + key + ", fp " + Hex8(fp) + ")" : std::string())
+			: found.setAside;
+		if (request.pattern.empty() && own.empty())
+			return Failure(Outcome::NoMatch, request.name + ": " + why + ", and the request has no pattern or rows of its own");
+		LogPick(who, request.name, why + "; own " + (request.pattern.empty() ? "rows" : "pattern"));
+		return own.empty() ? ScanValidation::Resolve(request) : Select(owner, request, own, running);
+	}
+
 	ScanValidation::Result ResolveLoaderEntry(const ScanPatterns::PreflightEntry& entry,
 		const ScanValidation::Request& request, const Exe& running)
 	{
-		const std::vector<Candidate> rows = LoaderRows(entry);
+		std::string refusal;
+		const std::vector<Candidate> rows = LoaderRows(entry, running, refusal);
+		if (!refusal.empty())
+		{
+			LogPick("ModLoader", request.name, refusal + " (refused)");
+			return Failure(ScanValidation::Outcome::NoMatch, request.name + ": " + refusal + kRefusedWhy);
+		}
 		if (rows.empty())
 			return ScanValidation::Resolve(request);
 		return Select("ModLoader", request, rows, running);

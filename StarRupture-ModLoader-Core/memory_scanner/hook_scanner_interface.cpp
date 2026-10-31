@@ -246,26 +246,12 @@ namespace ModLoaderLogger
 
 			const bool required = (local.flags & PLUGIN_SCAN_FLAG_OPTIONAL) == 0;
 
-			// v72. The loader's version map holds no keys yet, so a map key is
-			// answered by the plugin's own rows and pattern, and with neither it
-			// fails.
+			// v72. With PLUGIN_SCAN_FLAG_MAP_KEY, hookName is a key in the loader's
+			// version map, and pattern and candidates are the plugin's own, each
+			// optional (VersionMap::ResolveMapKey).
 			const bool mapKey     = (local.flags & PLUGIN_SCAN_FLAG_MAP_KEY) != 0;
 			const bool hasPattern = local.pattern && local.pattern[0];
-			const bool hasRows    = local.candidates && local.candidateCount > 0;
-			if (mapKey && local.hookName && local.hookName[0])
-			{
-				if (!hasPattern && !hasRows)
-				{
-					const std::string detail = std::string(local.hookName)
-						+ ": not in the loader's map, and the request has no pattern or rows of its own";
-					PluginHookReport::RecordFailure(self, local.hookName, detail.c_str(), required);
-					return 0;
-				}
-				ModLoaderLogger::LogInfo(L"[Map] %S: %S: not in the loader's map; own %S",
-					self->name ? self->name : "?", local.hookName, hasPattern ? "pattern" : "rows");
-			}
-
-			if (!local.hookName || !local.hookName[0] || (!hasPattern && !(mapKey && hasRows)))
+			if (!local.hookName || !local.hookName[0] || (!hasPattern && !mapKey))
 			{
 				PluginHookReport::RecordFailure(self, local.hookName ? local.hookName : "(unnamed)",
 					"Resolve called with an empty hookName or pattern", required);
@@ -282,7 +268,8 @@ namespace ModLoaderLogger
 			validation.followRel32At =
 				(local.flags & PLUGIN_SCAN_FLAG_FOLLOW_REL32) ? local.followRel32At : -1;
 
-			if (!local.candidates || local.candidateCount == 0)
+			const uint32_t rowCount = local.candidates ? local.candidateCount : 0;
+			if (!mapKey && rowCount == 0)
 				return RunAndRecord(self, validation, required);
 			PluginHookReport::RecordMapUse(self);
 
@@ -291,12 +278,13 @@ namespace ModLoaderLogger
 			// request stay what the plugin was built with.
 			if (local.module && local.module != GetModuleHandleW(nullptr))
 			{
-				PluginHookReport::RecordFailure(self, local.hookName,
-					"Resolve called with candidates for a module other than the game exe; "
-					"locators are for the game exe only", required);
+				PluginHookReport::RecordFailure(self, local.hookName, mapKey
+					? "Resolve called with a map key for a module other than the game exe; the map is for the game exe only"
+					: "Resolve called with candidates for a module other than the game exe; "
+					  "locators are for the game exe only", required);
 				return 0;
 			}
-			if (local.candidateCount > kMaxCandidates)
+			if (rowCount > kMaxCandidates)
 			{
 				PluginHookReport::RecordFailure(self, local.hookName,
 					("Resolve called with " + std::to_string(local.candidateCount) + " candidates; at most "
@@ -305,8 +293,8 @@ namespace ModLoaderLogger
 			}
 
 			std::vector<VersionMap::Candidate> candidates;
-			candidates.reserve(local.candidateCount);
-			for (uint32_t i = 0; i < local.candidateCount; ++i)
+			candidates.reserve(rowCount);
+			for (uint32_t i = 0; i < rowCount; ++i)
 			{
 				const PluginScanCandidate& c = local.candidates[i];
 				VersionMap::Candidate v;
@@ -320,8 +308,9 @@ namespace ModLoaderLogger
 				candidates.push_back(std::move(v));
 			}
 
-			const ScanValidation::Result result = VersionMap::Select(self->name, validation, candidates,
-				VersionMap::RunningExe());
+			const ScanValidation::Result result = mapKey
+				? VersionMap::ResolveMapKey(self->name, validation, candidates, VersionMap::RunningExe())
+				: VersionMap::Select(self->name, validation, candidates, VersionMap::RunningExe());
 			return RecordResult(self, validation, result, required);
 		}
 

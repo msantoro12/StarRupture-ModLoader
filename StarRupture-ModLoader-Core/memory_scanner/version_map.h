@@ -30,7 +30,13 @@ struct PluginInfo;
 //      final address. Different addresses are a failure (AMBIGUOUS).
 //   3. Otherwise a failure, recorded as a miss.
 //
-// One "[Map]" line per key says which rule picked the address.
+// Rows from the loader's own map (fromMap) come before the component's own:
+// the map's row for the running changelist is tried first, then the
+// component's. When the component's own row is for this very exe, the map's
+// pick must land on that row's RVA, or the result is AMBIGUOUS (no scan).
+//
+// One "[Map]" line per key says which rule picked the address, and from
+// where: "loader map, CL-128786 row", "own CL-127004 row", "own pattern".
 // ---------------------------------------------------------------------------
 
 namespace VersionMap
@@ -45,6 +51,7 @@ namespace VersionMap
 		int32_t     followRel32At   = -1;
 		int32_t     followRipDispAt = -1;
 		uint32_t    rva = 0;          // 0 = none
+		bool        fromMap = false;  // a row of the loader's map, not the component's own
 	};
 
 	// A game exe: the CL from the end of its ProductVersion, the stamp and
@@ -79,7 +86,7 @@ namespace VersionMap
 	// any other build its compiled-in layouts and its SDK's Offsets:: point
 	// where kBuiltCL had things, so it runs only when it takes all of them
 	// from this build: interface 72 or later, the map in OnPluginLoadHooks
-	// (a request with candidates, or ResolveField), and GetSdkGlobals in
+	// (a request with candidates or a map key, or ResolveField), and GetSdkGlobals in
 	// PluginInit. The loader asks at each of those three points, passing true
 	// for what it cannot know yet. Empty = admitted; else the reason, for the
 	// log and the plugin list.
@@ -118,10 +125,46 @@ namespace VersionMap
 	ScanValidation::Result Select(const char* owner, const ScanValidation::Request& request,
 		const std::vector<Candidate>& candidates, const Exe& running);
 
+	// The fingerprint a request's rows are kept under in the loader's map, for
+	// a key of a kind other than FunctionStart and Data (a site, which names no
+	// symbol, so its address is right only for the request it was verified
+	// with). FNV-1a 32 over, in order, each integer 4 bytes little-endian: the
+	// kind; the pattern as Scanner::ParsePattern reads it (two upper-case hex
+	// digits or ?? per byte, one space between), as its length then its bytes;
+	// resultOffset; followRel32At (-1 when not followed); followRipDispAt; and
+	// the site arithmetic revision (PreflightEntry::siteArithmetic, 0 for a
+	// plugin). 0 when the pattern does not parse; a hash of 0 is given as 1, so
+	// 0 always means none.
+	uint32_t Fingerprint(int kind, const std::string& pattern, int32_t resultOffset,
+		int32_t followRel32At, int32_t followRipDispAt, uint32_t siteArithmetic);
+
+	// A plugin's map-key request (PLUGIN_SCAN_FLAG_MAP_KEY). request.name is
+	// the key: for kinds FunctionStart and Data a global one ("Class::Function"
+	// or a global's name, never with a '/'), for every other kind the owner's
+	// own site, "<owner>/<name>", which needs the request's pattern for its
+	// fingerprint. The map's rows apply only when they are of the request's
+	// kind and, on a site, have its fingerprint; otherwise they are set aside
+	// and logged. An absent row for the running build that binds the request
+	// (a global key's listed owner, a site's fingerprint) is a failure with
+	// nothing else tried. Then Select, over the map's rows and `own`, the
+	// plugin's own rows. A key the map does not hold falls back to the
+	// plugin's own pattern and rows; with neither it is a failure. A plugin
+	// named ModLoader is refused: the map's ModLoader/ keys are the loader's.
+	// The client only; on the server the map holds no rows for it.
+	ScanValidation::Result ResolveMapKey(const char* owner, const ScanValidation::Request& request,
+		const std::vector<Candidate>& own, const Exe& running);
+
+	// The key a registry row is kept under in the loader's map: its name for
+	// kinds FunctionStart and Data, "ModLoader/<name>" for a site of any other
+	// kind, with the site's fingerprint (0 for a global key).
+	std::string LoaderEntryKey(const ScanPatterns::PreflightEntry& entry);
+	uint32_t LoaderEntryFingerprint(const ScanPatterns::PreflightEntry& entry);
+
 	// The loader's own registry row (ScanPatterns::PreflightRegistry), resolved
-	// with the rows its map (hooks/game/version_map.generated.h) holds for that
-	// name. With no rows, the row's own pattern alone, as before the map. The
-	// client only: the server build stays on its exact CL.
+	// with the rows its map (hooks/game/version_map.generated.h) holds for it,
+	// under LoaderEntryKey and by the rules of ResolveMapKey. With no rows, the
+	// row's own pattern alone, as before the map. The client only: the server
+	// build stays on its exact CL.
 	//
 	// A row marked siteArithmetic takes map rows only where they carry its own
 	// pattern, because its hook site adds offsets that only that pattern's

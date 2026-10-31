@@ -229,3 +229,42 @@ build\tests\key_and_thread_tests.exe
 ```
 
 It prints one line per test and exits 0 when every check passes.
+
+## VersionMapTests
+
+A console program like LayoutCheckTests, for the loader's map keys (interface v72): a plugin's
+`PLUGIN_SCAN_FLAG_MAP_KEY` request (`VersionMap::ResolveMapKey`), the loader's own registry rows
+(`ResolveLoaderEntry`) and the fingerprint a site's rows are kept under (`VersionMap::Fingerprint`).
+It compiles the loader's own `memory_scanner/version_map.cpp`, `scanner.cpp` and `image_info.cpp`.
+The pattern scan, the scan cache, the game version and the log are test doubles
+(`test_doubles.cpp`): a pattern "resolves" to the RVA its table gives it in the test exe.
+
+`fixture/hooks/game/version_map.generated.h` is a small map in the format starrupture-ci's
+`ci/version-map.mjs` writes (two builds, a handful of keys), and comes first on the include path, so
+`version_map.cpp` reads it instead of the loader's. It covers:
+
+- The fingerprint: the two test vectors (a plugin request without and with `FOLLOW_REL32`), the
+  pattern read as `Scanner::ParsePattern` reads it, 0 for no pattern or one that does not parse,
+  and the arithmetic revision.
+- The loader's row for the running build first, before the plugin's own row for it; the plugin's
+  own row for this very exe agrees with it, or the result is AMBIGUOUS.
+- A global `absent` row refuses an owner it lists, with no fallback, and an unlisted owner falls back
+  to its own pattern. A row of another kind is skipped, and a key-only request is then refused.
+- Site keys: read as `<plugin>/<name>`, used only with the request's fingerprint; another
+  fingerprint's row is skipped, and when it is for another build and the plugin's own pattern does
+  not match, the result is a failure, not that row's address. A site key-only request is refused,
+  another plugin's site is not found, and an `absent` row with the request's fingerprint refuses it
+  even when its own pattern matches.
+- A key the map does not hold: the own pattern, or with none a failure; a global key with a `/`
+  reads nothing; a plugin named `ModLoader` is refused.
+- The loader's own site entry: `ModLoader/<name>`, its fingerprint, and a row with a pattern other
+  than the site's own is not used.
+- The loader's real map (`hooks/game/version_map.generated.h`) against its registry: format 2, every
+  key a registry entry's, every row with that entry's kind and fingerprint.
+
+```
+msbuild Tests\VersionMapTests\VersionMapTests.vcxproj /p:Configuration="Client Release" /p:Platform=x64
+build\tests\version_map_tests.exe
+```
+
+It prints each failed check and a count, and exits 0 when every check passes.

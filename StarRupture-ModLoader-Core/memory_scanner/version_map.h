@@ -61,8 +61,18 @@ namespace VersionMap
 	// The running game exe. Read once.
 	Exe RunningExe();
 
-	// The trailing CL-<n> of a ProductVersion, or 0.
+	// The trailing CL-<n> of a ProductVersion, or 0 (also for a leading zero).
 	uint32_t ParseCL(const std::wstring& productVersion);
+
+	// The game builds this loader runs on, the gate VerifyGameVersion applies.
+	// The client runs on every build its map has rows for (kBuilds; CI adds a
+	// build only once every one of the loader's patterns resolves on it), the
+	// server only on the build it was written for (kBuiltCL). Any other build
+	// is refused.
+	std::vector<uint32_t> SupportedBuilds();
+
+	// True when the ProductVersion ends in the CL of one of SupportedBuilds().
+	bool IsSupported(const std::wstring& productVersion);
 
 	// Resolves `request` (the component's own pattern, kind and transforms)
 	// with `candidates`, as described above. `owner` names the component in

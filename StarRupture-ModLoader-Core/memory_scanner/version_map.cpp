@@ -95,12 +95,32 @@ namespace VersionMap
 		size_t start = end;
 		while (start > 0 && iswdigit(productVersion[start - 1]))
 			--start;
-		if (start == end || start < 3 || productVersion.compare(start - 3, 3, L"CL-") != 0 || end - start > 9)
+		if (start == end || start < 3 || productVersion.compare(start - 3, 3, L"CL-") != 0 || end - start > 9
+			|| productVersion[start] == L'0')
 			return 0;
 		uint32_t cl = 0;
 		for (size_t i = start; i < end; ++i)
 			cl = cl * 10 + static_cast<uint32_t>(productVersion[i] - L'0');
 		return cl;
+	}
+
+	std::vector<uint32_t> SupportedBuilds()
+	{
+		std::vector<uint32_t> builds;
+#if defined(MODLOADER_CLIENT_BUILD)
+		for (const Build& b : kBuilds)
+			builds.push_back(b.gameCL);
+#else
+		builds.push_back(kBuiltCL);
+#endif
+		return builds;
+	}
+
+	bool IsSupported(const std::wstring& productVersion)
+	{
+		const uint32_t cl = ParseCL(productVersion);
+		const std::vector<uint32_t> builds = SupportedBuilds();
+		return cl != 0 && std::find(builds.begin(), builds.end(), cl) != builds.end();
 	}
 
 	Exe ExeOf(HMODULE module)

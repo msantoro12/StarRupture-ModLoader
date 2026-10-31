@@ -535,7 +535,14 @@ namespace UI::ModLoaderWindow
 
         const bool  isBool       = e && e->type == ConfigValueType::Boolean;
         const bool  isKeybind    = e && e->type == ConfigValueType::Keybind;
-        const bool  hasDesc      = e && e->description && e->description[0];
+        // A Choice's description is followed by its choices, each after a
+        // '|'; only the part before the first one is shown. A Choice with no
+        // choices falls through to the plain text input below.
+        const std::vector<std::string> choices = ConfigEdit::GetChoices(e);
+        const int   descLen      = (e && e->description)
+            ? static_cast<int>(e->type == ConfigValueType::Choice ? strcspn(e->description, "|") : strlen(e->description))
+            : 0;
+        const bool  hasDesc      = descLen > 0;
         const float innerSpacing = ImGui::GetStyle().ItemInnerSpacing.x;
         const float itemSpacing  = ImGui::GetStyle().ItemSpacing.x;
         const float toggleW      = UI::Theme::ToggleSwitchSize().x;
@@ -562,7 +569,7 @@ namespace UI::ModLoaderWindow
         {
             ImGui::AlignTextToFramePadding();
             ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyle().Colors[ImGuiCol_TextDisabled]);
-            ImGui::TextWrapped("%s", e->description);
+            ImGui::TextWrapped("%.*s", descLen, e->description);
             ImGui::PopStyleColor();
         }
 
@@ -814,6 +821,41 @@ namespace UI::ModLoaderWindow
                                   "plugin -- the game will not also react to it.\n"
                                   "Enable if the key conflicts with a game action.");
         }
+        else if (!choices.empty())
+        {
+            // The stored value is matched ignoring case. One that is none of
+            // the choices shows as the default, which is also what the plugin
+            // falls back to; nothing is written until a choice is picked.
+            int current = -1;
+            for (int i = 0; current < 0 && i < static_cast<int>(choices.size()); ++i)
+                if (_stricmp(choices[i].c_str(), kv.value) == 0)
+                    current = i;
+            for (int i = 0; current < 0 && e->defaultValue && i < static_cast<int>(choices.size()); ++i)
+                if (_stricmp(choices[i].c_str(), e->defaultValue) == 0)
+                    current = i;
+
+            ImGui::SetNextItemWidth(controlW);
+            if (ImGui::BeginCombo(id, current >= 0 ? choices[current].c_str() : kv.value))
+            {
+                for (int i = 0; i < static_cast<int>(choices.size()); ++i)
+                {
+                    const bool selected = (i == current);
+                    if (ImGui::Selectable(choices[i].c_str(), selected))
+                    {
+                        strncpy_s(kv.value, choices[i].c_str(), _TRUNCATE);
+                        NotifyConfigChangedLive(pluginName, kv);
+                        CommitConfigChange(pluginName, kv);
+                    }
+                    if (selected)
+                        ImGui::SetItemDefaultFocus();
+                }
+                ImGui::EndCombo();
+            }
+            else
+            {
+                widgetHovered = ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal);
+            }
+        }
         else
         {
             // String or unknown schema entry: plain text input.
@@ -833,7 +875,7 @@ namespace UI::ModLoaderWindow
         }
 
         if (hasDesc && widgetHovered)
-            ImGui::SetTooltip("%s", e->description);
+            ImGui::SetTooltip("%.*s", descLen, e->description);
 
         // Reset -- fixed column-relative position (resetX), not merely
         // "immediately after whatever was drawn": that is what keeps every
@@ -858,6 +900,78 @@ namespace UI::ModLoaderWindow
             }
             if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal))
                 ImGui::SetTooltip("Reset to default: %s", e->defaultValue);
+        }
+    }
+
+    // Label of the row a section's Hidden entries share, in place of a row each.
+    static constexpr const char* kSavedStateLabel = "Saved state";
+
+    // The row a section's Hidden entries (v71) get instead of one each: they
+    // are values the plugin saves by itself, so the row offers a single Clear
+    // that puts every one back to its default, and names them in its tooltip.
+    // Draws nothing for a section without any. Same columns as
+    // RenderConfigEntry.
+    static void RenderSavedStateRow(size_t sectionStart, size_t sectionEnd, const ConfigSchema* schema,
+                                    const char* pluginName)
+    {
+        bool any     = false;
+        bool changed = false;
+        for (size_t j = sectionStart; j < sectionEnd; ++j)
+        {
+            const ConfigKV&    kv = s_configEntries[j];
+            const ConfigEntry* e  = ConfigEdit::FindSchemaEntry(schema, kv.section, kv.key);
+            if (!e || e->type != ConfigValueType::Hidden) continue;
+
+            any = true;
+            if (!ConfigEdit::SameValue(kv.value, e->defaultValue))
+                changed = true;
+        }
+        if (!any)
+            return;
+
+        ImGui::TableNextRow();
+
+        ImGui::TableSetColumnIndex(0);
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextWrapped("%s", kSavedStateLabel);
+
+        ImGui::TableSetColumnIndex(1);
+        ImGui::AlignTextToFramePadding();
+        ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyle().Colors[ImGuiCol_TextDisabled]);
+        ImGui::TextWrapped("Values the plugin saves by itself, such as where its windows were dragged.");
+        ImGui::PopStyleColor();
+
+        ImGui::TableSetColumnIndex(2);
+        ImGui::BeginDisabled(!changed);
+        char clearId[160];
+        snprintf(clearId, sizeof(clearId), "Clear##clr_%s", s_configEntries[sectionStart].section);
+        if (ImGui::Button(clearId))
+        {
+            for (size_t j = sectionStart; j < sectionEnd; ++j)
+            {
+                ConfigKV&          kv = s_configEntries[j];
+                const ConfigEntry* e  = ConfigEdit::FindSchemaEntry(schema, kv.section, kv.key);
+                if (!e || e->type != ConfigValueType::Hidden) continue;
+                if (ConfigEdit::SameValue(kv.value, e->defaultValue)) continue;
+
+                strncpy_s(kv.value, e->defaultValue ? e->defaultValue : "", _TRUNCATE);
+                NotifyConfigChangedLive(pluginName, kv);
+                CommitConfigChange(pluginName, kv);
+            }
+        }
+        ImGui::EndDisabled();
+
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_AllowWhenDisabled))
+        {
+            std::string keys;
+            for (size_t j = sectionStart; j < sectionEnd; ++j)
+            {
+                const ConfigEntry* e = ConfigEdit::FindSchemaEntry(schema, s_configEntries[j].section, s_configEntries[j].key);
+                if (!e || e->type != ConfigValueType::Hidden) continue;
+                if (!keys.empty()) keys += ", ";
+                keys += s_configEntries[j].key;
+            }
+            ImGui::SetTooltip("Puts these back to their defaults: %s", keys.c_str());
         }
     }
 
@@ -1245,16 +1359,25 @@ namespace UI::ModLoaderWindow
                 // deterministic from the "Rebind" string alone) combine
                 // into the three sub-column x's.
                 float keyColW         = 0.0f;
+                // Widest Choice dropdown on the page, sized by ImGui's own
+                // rule for a combo that fits its preview
+                // (ImGuiComboFlags_WidthFitPreview): the arrow, the text and
+                // FramePadding either side, taken for the longest choice.
+                float choiceW         = 0.0f;
                 bool  hasRangedSlider = false;
                 for (const ConfigKV& kv : s_configEntries)
                 {
-                    const float lw = ImGui::CalcTextSize(kv.key).x + cellPadX;
+                    const ConfigEntry* se = ConfigEdit::FindSchemaEntry(schema, kv.section, kv.key);
+
+                    // A Hidden entry has no row of its own; its section's
+                    // Saved state row carries that label instead.
+                    const char* label = (se && se->type == ConfigValueType::Hidden) ? kSavedStateLabel : kv.key;
+                    const float lw = ImGui::CalcTextSize(label).x + cellPadX;
                     if (lw <= pageOutlierThreshold && lw > labelColWidth)
                         labelColWidth = lw;
-                    const float ww = WidestWordWidth(kv.key);
+                    const float ww = WidestWordWidth(label);
                     if (ww > pageMaxWordW) pageMaxWordW = ww;
 
-                    const ConfigEntry* se = ConfigEdit::FindSchemaEntry(schema, kv.section, kv.key);
                     if (!se) continue;
                     if (se->type == ConfigValueType::Keybind)
                     {
@@ -1270,6 +1393,14 @@ namespace UI::ModLoaderWindow
                     {
                         hasRangedSlider = true;
                     }
+                    else if (se->type == ConfigValueType::Choice)
+                    {
+                        for (const std::string& choice : ConfigEdit::GetChoices(se))
+                        {
+                            const float w = fh + ImGui::CalcTextSize(choice.c_str()).x + framePadX * 2.0f;
+                            if (w > choiceW) choiceW = w;
+                        }
+                    }
                 }
                 if (labelColWidth <= 0.0f) labelColWidth = pageOutlierThreshold; // every label on the page was an outlier
                 if (labelColWidth < kLabelColMin) labelColWidth = kLabelColMin;
@@ -1278,14 +1409,15 @@ namespace UI::ModLoaderWindow
 
                 // controlFloor: what Control needs regardless of the
                 // slider -- a keybind row's own full width (bind label +
-                // Rebind + Block + toggle) or a lone toggle, whichever is
-                // larger anywhere on the page, or the plain-input floor if
-                // neither applies. The slider (if the page has one) is
+                // Rebind + Block + toggle), a lone toggle or the widest
+                // dropdown, whichever is larger anywhere on the page, or the
+                // plain-input floor if none applies. The slider (if the page has one) is
                 // layered on top of this, and is the only part allowed to
                 // shrink below its own max.
                 float controlFloor = kMinControlW;
                 if (toggleW     > controlFloor) controlFloor = toggleW;
                 if (keybindRowW > controlFloor) controlFloor = keybindRowW;
+                if (choiceW     > controlFloor) controlFloor = choiceW;
 
                 if (pageMaxWordW > 0.0f)
                 {
@@ -1366,8 +1498,11 @@ namespace UI::ModLoaderWindow
                         for (size_t j = sectionStart; j < sectionEnd; ++j)
                         {
                             const ConfigEntry* entry = ConfigEdit::FindSchemaEntry(schema, s_configEntries[j].section, s_configEntries[j].key);
+                            if (entry && entry->type == ConfigValueType::Hidden)
+                                continue; // drawn together by RenderSavedStateRow below
                             RenderConfigEntry(s_configEntries[j], entry, info->name, controlW, keyColW);
                         }
+                        RenderSavedStateRow(sectionStart, sectionEnd, schema, info->name);
                         ImGui::EndTable();
                     }
                     // else: table fully clipped (e.g. scrolled out) -- rows skipped, nothing to undo beyond Unindent below.

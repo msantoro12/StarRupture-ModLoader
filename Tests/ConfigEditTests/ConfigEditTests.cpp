@@ -516,6 +516,42 @@ static void Test_UnloadPathsPurgeCallbacks()
     }
 }
 
+// Choice entries carry their choices in description after the first '|'.
+static void Test_ChoicesFromDescription()
+{
+    const ConfigEntry plain  = { "S", "K", ConfigValueType::Choice, "A", "Pick one|A| B |c||D|" };
+    const ConfigEntry none   = { "S", "K", ConfigValueType::Choice, "A", "No choices here" };
+    const ConfigEntry string = { "S", "K", ConfigValueType::String, "A", "Text|A|B" };
+
+    const std::vector<std::string> choices = ConfigEdit::GetChoices(&plain);
+    CHECK(choices.size() == 4);
+    if (choices.size() == 4)
+    {
+        CHECK_STR(choices[0], "A");
+        CHECK_STR(choices[1], "B"); // trimmed, as GetPrivateProfileString reads it back
+        CHECK_STR(choices[2], "c"); // case kept as written
+        CHECK_STR(choices[3], "D"); // empty parts skipped
+    }
+    CHECK(ConfigEdit::GetChoices(&none).empty());
+    CHECK(ConfigEdit::GetChoices(&string).empty());
+    CHECK(ConfigEdit::GetChoices(nullptr).empty());
+}
+
+// Clear compares a Hidden value against its default with SameValue.
+static void Test_SameValueComparesNumbers()
+{
+    CHECK(ConfigEdit::SameValue("-1.000000", "-1"));
+    CHECK(ConfigEdit::SameValue("0.500000", "0.5"));
+    CHECK(ConfigEdit::SameValue("", ""));
+    CHECK(ConfigEdit::SameValue("", nullptr));
+    CHECK(ConfigEdit::SameValue("abc", "abc"));
+    CHECK(!ConfigEdit::SameValue("0.4000", "-1"));
+    CHECK(!ConfigEdit::SameValue("", "-1"));
+    CHECK(!ConfigEdit::SameValue("1x", "1"));
+    CHECK(!ConfigEdit::SameValue("0.1,0.2", "0.1"));
+    CHECK(!ConfigEdit::SameValue("ABC", "abc"));
+}
+
 // ---------------------------------------------------------------------------
 
 int main()
@@ -536,6 +572,8 @@ int main()
     RunTest("BlockStateIgnoresCase",        Test_BlockStateIgnoresCase);
     RunTest("CallbackPurgedOnUnload",       Test_CallbackPurgedOnUnload);
     RunTest("UnloadPathsPurgeCallbacks",    Test_UnloadPathsPurgeCallbacks);
+    RunTest("ChoicesFromDescription",       Test_ChoicesFromDescription);
+    RunTest("SameValueComparesNumbers",     Test_SameValueComparesNumbers);
 
     DeleteFileW(IniPath(kPluginA).c_str());
     ModLoaderLogger::ShutdownConfigManager();

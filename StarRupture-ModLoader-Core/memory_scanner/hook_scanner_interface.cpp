@@ -300,7 +300,7 @@ namespace ModLoaderLogger
 			}
 
 			const ScanValidation::Result result = VersionMap::Select(self->name, validation, candidates,
-				VersionMap::RunningBuild());
+				VersionMap::RunningExe());
 			return RecordResult(self, validation, result, required);
 		}
 

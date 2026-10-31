@@ -52,7 +52,7 @@ namespace SdkGlobals
                 return false;
             }
 
-            const ScanValidation::Result result = ScanValidation::Resolve(PatternPreflight::MakeRequest(*entry));
+            const ScanValidation::Result result = PatternPreflight::Resolve(*entry);
             if (!result.Succeeded())
             {
                 ModLoaderLogger::LogWarn(L"[SdkGlobals] %S: did not resolve (see \"%S\" in the preflight above)",

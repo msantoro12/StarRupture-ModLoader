@@ -659,6 +659,12 @@ namespace ScanPatterns
 		// and the displacement names it exactly. Set at most one of this and
 		// followRel32At. `kind` is checked against the decoded address.
 		int32_t followRipDispAt = -1;
+
+		// The hook site adds a fixed offset to where this pattern matched (a
+		// call's length, a jump inside the match). That arithmetic is true for
+		// this pattern's shape only, so a version-map row for it is used only
+		// when it carries this same pattern, never a new one.
+		bool siteArithmetic = false;
 	};
 
 	inline constexpr PreflightEntry PreflightRegistry[] =
@@ -686,7 +692,8 @@ namespace ScanPatterns
 		{ "AActor::BeginPlay",                         AActor_BeginPlay,                         true },
 		{ "UWorld::BeginPlay",                         UWorld_BeginPlay,                         true },
 		{ "UWorld::EndPlay",                           UWorld_EndPlay,                           true },
-		{ "AAbstractMassEnemySpawner::ActivateSpawner",   AAbstractMassEnemySpawner_ActivateSpawner,   true },
+		{ "AAbstractMassEnemySpawner::ActivateSpawner",   AAbstractMassEnemySpawner_ActivateSpawner,   true,
+		                                                  PatternKind::FunctionStart, -1, -1, true },
 		{ "AAbstractMassEnemySpawner::DeactivateSpawner", AAbstractMassEnemySpawner_DeactivateSpawner, true },
 		{ "AMassSpawner::DoSpawning",                  AMassSpawner_DoSpawning,                  true },
 		{ "ACrCrafter::NativeOnItemCraftingComplete",  ACrCrafter_NativeOnItemCraftingComplete,  true },
@@ -725,11 +732,11 @@ namespace ScanPatterns
 		// A call site inside FCrashReportingThread::HandleCrashInternal, not a
 		// function entry -- the hook patches this CALL, it does not detour a function.
 		{ "HandleCrashInternal_FatalReportCallSite",   HandleCrashInternal_FatalReportCallSite,  true,
-		                                               PatternKind::InFunction },
+		                                               PatternKind::InFunction, -1, -1, true },
 		{ "APlayerController::ConsoleCommand",         APlayerController_ConsoleCommand,         true },
 		{ "FLogSuppressionImplementation::ApplyGlobalChanges",           FLogSuppression_ApplyGlobalChanges,           true },
 		{ "FLogSuppressionInterface::Get",                               FLogSuppression_Get_CallSite,                 true,
-																	       PatternKind::FunctionStart, 0 },
+																	       PatternKind::FunctionStart, 0, -1, true },
 		{ "FLogSuppressionImplementation::ProcessConfigAndCommandLine",  FLogSuppression_ProcessConfigAndCommandLine,  true },
 		// Optional -- only in-world debug drawing (hooks->HUD->DebugDraw) is lost
 		// if these ever stop resolving, so they must not disable the modloader.

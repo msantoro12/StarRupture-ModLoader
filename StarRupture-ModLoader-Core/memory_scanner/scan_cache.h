@@ -34,6 +34,11 @@
 //   * A cached matchCount that is anything OTHER than 1 -- including 0/unknown
 //     -- forces a full re-scan. A refusal verdict is therefore never based on
 //     the cache; only a pass can be, and only after the bytes were checked.
+//
+// Keys that start with "vmap " are not patterns: VersionMap (version_map.cpp)
+// stores the locator its agreement rule picked there. In those entries
+// matchCount is 1 + that locator's index and offset is the address it gave;
+// the pattern path never reads them.
 namespace ScanCache
 {
     struct Entry

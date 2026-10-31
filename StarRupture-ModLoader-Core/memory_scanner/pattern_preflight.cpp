@@ -1,5 +1,6 @@
 #include "memory_scanner/pattern_preflight.h"
 #include "memory_scanner/scan_validation.h"
+#include "memory_scanner/version_map.h"
 #include "hooks/game/scan_patterns.h"
 #include "logging/logger.h"
 #include "UI/splash_window.h"
@@ -81,15 +82,23 @@ namespace
 
 namespace PatternPreflight
 {
-    ScanValidation::Request MakeRequest(const ScanPatterns::PreflightEntry& entry)
+    namespace
     {
-        ScanValidation::Request request;
-        request.name            = entry.name;
-        request.pattern         = entry.pattern;
-        request.kind            = ToValidationKind(entry.kind);
-        request.followRel32At   = entry.followRel32At;
-        request.followRipDispAt = entry.followRipDispAt;
-        return request;
+        ScanValidation::Request MakeRequest(const ScanPatterns::PreflightEntry& entry)
+        {
+            ScanValidation::Request request;
+            request.name            = entry.name;
+            request.pattern         = entry.pattern;
+            request.kind            = ToValidationKind(entry.kind);
+            request.followRel32At   = entry.followRel32At;
+            request.followRipDispAt = entry.followRipDispAt;
+            return request;
+        }
+    }
+
+    ScanValidation::Result Resolve(const ScanPatterns::PreflightEntry& entry)
+    {
+        return VersionMap::ResolveLoaderEntry(entry, MakeRequest(entry), VersionMap::RunningExe());
     }
 
     namespace
@@ -131,10 +140,11 @@ namespace PatternPreflight
             Splash::SetStatus(status);
             Splash::SetProgress(static_cast<float>(index) / static_cast<float>(total));
 
-            const ScanValidation::Result result = ScanValidation::Resolve(MakeRequest(entry));
+            const ScanValidation::Result result = Resolve(entry);
 
             if (result.Succeeded())
             {
+                VersionMap::RememberPick(entry, result.address);
                 ++found;
                 continue;
             }

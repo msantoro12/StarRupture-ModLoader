@@ -2,10 +2,15 @@
 #include "memory_scanner/image_info.h"
 #include "memory_scanner/scan_cache.h"
 #include "core/version_check.h"
+#include "hooks/game/scan_patterns.h"
+#include "hooks/game/version_map.generated.h"
 #include "logging/logger.h"
 
+#include <algorithm>
 #include <cstdio>
+#include <cstring>
 #include <cwctype>
+#include <unordered_map>
 
 namespace VersionMap
 {
@@ -50,7 +55,7 @@ namespace VersionMap
 		};
 
 		std::string SelectionCacheKey(const ScanValidation::Request& request,
-			const std::vector<Candidate>& candidates, const Build& running)
+			const std::vector<Candidate>& candidates, const Exe& running)
 		{
 			Hash h;
 			h.Text(request.pattern);
@@ -98,29 +103,30 @@ namespace VersionMap
 		return cl;
 	}
 
-	Build RunningBuild()
+	Exe ExeOf(HMODULE module)
 	{
-		static const Build build = []
+		Exe e;
+		e.cl = ParseCL(GetGameVersionString());
+		const Scanner::ImageInfo image = Scanner::GetImageInfo(module);
+		if (image.valid)
 		{
-			Build b;
-			b.cl = ParseCL(GetGameVersionString());
-			HMODULE exe = GetModuleHandleW(nullptr);
-			const Scanner::ImageInfo image = Scanner::GetImageInfo(exe);
-			if (image.valid)
-			{
-				const auto* base = reinterpret_cast<const uint8_t*>(image.base);
-				const auto* dos  = reinterpret_cast<const IMAGE_DOS_HEADER*>(base);
-				const auto* nt   = reinterpret_cast<const IMAGE_NT_HEADERS64*>(base + dos->e_lfanew);
-				b.imageStamp = nt->FileHeader.TimeDateStamp;
-				b.imageSize  = nt->OptionalHeader.SizeOfImage;
-			}
-			return b;
-		}();
-		return build;
+			const auto* base = reinterpret_cast<const uint8_t*>(image.base);
+			const auto* dos  = reinterpret_cast<const IMAGE_DOS_HEADER*>(base);
+			const auto* nt   = reinterpret_cast<const IMAGE_NT_HEADERS64*>(base + dos->e_lfanew);
+			e.imageStamp = nt->FileHeader.TimeDateStamp;
+			e.imageSize  = nt->OptionalHeader.SizeOfImage;
+		}
+		return e;
+	}
+
+	Exe RunningExe()
+	{
+		static const Exe exe = ExeOf(GetModuleHandleW(nullptr));
+		return exe;
 	}
 
 	ScanValidation::Result Select(const char* owner, const ScanValidation::Request& request,
-		const std::vector<Candidate>& candidates, const Build& running)
+		const std::vector<Candidate>& candidates, const Exe& running)
 	{
 		using ScanValidation::Outcome;
 		using ScanValidation::Result;
@@ -310,5 +316,67 @@ namespace VersionMap
 			fail.detail  = lead + "no locator resolves:" + list;
 		}
 		return fail;
+	}
+
+	namespace
+	{
+		// The map's rows for one registry name, as Select reads them.
+		std::vector<Candidate> LoaderRows(const ScanPatterns::PreflightEntry& entry)
+		{
+			std::vector<Candidate> rows;
+#if defined(MODLOADER_CLIENT_BUILD)
+			const auto key = std::find_if(kFunctions.begin(), kFunctions.end(),
+				[&](const Index& i) { return strcmp(i.key, entry.name) == 0; });
+			if (key == kFunctions.end())
+				return rows;
+			for (uint16_t i = key->first; i < key->first + key->count; ++i)
+			{
+				const FunctionRow& f = kFunctionRows[i];
+				if (entry.siteArithmetic && (!f.pattern || strcmp(f.pattern, entry.pattern) != 0))
+				{
+					ModLoaderLogger::LogWarn(L"[Map] ModLoader: %S: the CL-%u row is not this site's own pattern, so it is not used",
+						entry.name, f.gameCL);
+					continue;
+				}
+				Candidate c;
+				c.gameCL          = f.gameCL;
+				c.imageStamp      = f.imageStamp;
+				c.imageSize       = f.imageSize;
+				c.pattern         = f.pattern ? f.pattern : "";
+				c.resultOffset    = f.resultOffset;
+				c.followRel32At   = f.followRel32At;
+				c.followRipDispAt = f.followRipDispAt;
+				c.rva             = f.rva;
+				rows.push_back(std::move(c));
+			}
+#else
+			(void)entry;
+#endif
+			return rows;
+		}
+
+		// Written during preflight only, read after it (see RememberPick).
+		std::unordered_map<std::string, uintptr_t> g_picks;
+	}
+
+	ScanValidation::Result ResolveLoaderEntry(const ScanPatterns::PreflightEntry& entry,
+		const ScanValidation::Request& request, const Exe& running)
+	{
+		const std::vector<Candidate> rows = LoaderRows(entry);
+		if (rows.empty())
+			return ScanValidation::Resolve(request);
+		return Select("ModLoader", request, rows, running);
+	}
+
+	void RememberPick(const ScanPatterns::PreflightEntry& entry, uintptr_t address)
+	{
+		if (entry.followRel32At < 0 && entry.followRipDispAt < 0 && !entry.siteArithmetic)
+			g_picks[entry.pattern] = address;
+	}
+
+	uintptr_t PickFor(const std::string& pattern)
+	{
+		const auto it = g_picks.find(pattern);
+		return it == g_picks.end() ? 0 : it->second;
 	}
 }

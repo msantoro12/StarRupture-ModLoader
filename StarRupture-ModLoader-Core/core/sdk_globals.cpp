@@ -359,6 +359,7 @@ namespace SdkGlobals
         // Written once by ResolveFields on the init thread, read from any.
         // -1: not resolved (yet, or on this build).
         std::atomic<int32_t> g_fieldOffsets[kFieldCount] = { -1, -1, -1, -1 };
+        std::atomic<bool>    g_unresolvedLogged[kFieldCount] = {};
 
         // The pointer stored at the resolved offset of `id` in `object`, as
         // element `index` of the member.
@@ -366,6 +367,12 @@ namespace SdkGlobals
         T* PointerAt(const void* object, FieldId id, int index = 0)
         {
             const int32_t offset = g_fieldOffsets[id].load(std::memory_order_acquire);
+            // After a layout safe-off ResolveFields never runs, so every
+            // feature of the loader's that reads this member stays off for
+            // the session. Said once, the first time one asks.
+            if (offset < 0 && object && !g_unresolvedLogged[id].exchange(true))
+                ModLoaderLogger::LogWarn(L"[Map] ModLoader: %S has no offset yet, and none for this session after a layout safe-off; what the loader reads through it gives nothing until it has one",
+                    kFieldSpecs[id].key);
             if (!object || offset < 0 || index < 0 || static_cast<uint32_t>(index + 1) * sizeof(T*) > kFieldSpecs[id].size)
                 return nullptr;
             return reinterpret_cast<T* const*>(static_cast<const uint8_t*>(object) + offset)[index];

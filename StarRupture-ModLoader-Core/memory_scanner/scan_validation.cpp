@@ -601,4 +601,43 @@ namespace ScanValidation
 
 		return result;
 	}
+
+	Result CheckAddress(const Request& request, uintptr_t address)
+	{
+		Result result;
+
+		if (request.kind == Kind::Unspecified)
+		{
+			result.outcome = Outcome::BadRequest;
+			result.detail  = "no scan kind declared for this address";
+			return result;
+		}
+
+		HMODULE module = ResolveModule(request.module);
+		const Scanner::ImageInfo image = Scanner::GetImageInfo(module);
+		if (!image.valid || address < image.base || address >= image.base + image.size)
+		{
+			result.outcome = Outcome::WrongKind;
+			result.detail  = "address " + Hex(address) + " is outside " + ModuleBaseName(module);
+			return result;
+		}
+
+		result.rawMatch   = address;
+		result.matchCount = 1;
+
+		std::string why;
+		if (!CheckKind(request, module, address, why))
+		{
+			result.outcome = Outcome::WrongKind;
+			result.address = address;
+			result.detail  = std::string("declared as '") + KindName(request.kind) + "', but it is not."
+			               + NL + "            Address: " + DescribeAddress(module, address)
+			               + NL + "            Reason: " + why;
+			return result;
+		}
+
+		result.outcome = Outcome::Ok;
+		result.address = address;
+		return result;
+	}
 }

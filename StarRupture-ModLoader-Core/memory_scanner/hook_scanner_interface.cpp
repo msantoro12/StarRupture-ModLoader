@@ -1,6 +1,7 @@
 #include "memory_scanner/hook_scanner_interface.h"
 #include "memory_scanner/scanner.h"
 #include "memory_scanner/scan_validation.h"
+#include "memory_scanner/version_map.h"
 #include "plugins/plugin_hook_report.h"
 
 #include <cstddef>
@@ -38,13 +39,9 @@ namespace ModLoaderLogger
 		// refuses the plugin (see plugin_hook_report.h). What the label buys is
 		// a readable report -- it says which addresses the author expected to be
 		// able to lose.
-		uintptr_t RunAndRecord(const IPluginSelf* self, const ScanValidation::Request& request, bool required)
+		uintptr_t RecordResult(const IPluginSelf* self, const ScanValidation::Request& request,
+			const ScanValidation::Result& result, bool required)
 		{
-			if (!InSession(self))
-				return 0;
-
-			const ScanValidation::Result result = ScanValidation::Resolve(request);
-
 			if (result.Succeeded())
 			{
 				PluginHookReport::RecordResolved(self);
@@ -71,6 +68,13 @@ namespace ModLoaderLogger
 
 			PluginHookReport::RecordFailure(self, request.name.c_str(), detail.c_str(), required);
 			return 0;
+		}
+
+		uintptr_t RunAndRecord(const IPluginSelf* self, const ScanValidation::Request& request, bool required)
+		{
+			if (!InSession(self))
+				return 0;
+			return RecordResult(self, request, ScanValidation::Resolve(request), required);
 		}
 
 		// Shared body of the four legacy single-pattern resolves.
@@ -201,6 +205,9 @@ namespace ModLoaderLogger
 			}
 		}
 
+		// A map carries a few builds per key; anything near this is not a map.
+		constexpr uint32_t kMaxCandidates = 64;
+
 		// v68. The request is read only as far as the plugin's own structSize,
 		// so a field appended to PluginScanRequest later costs a plugin built
 		// against this header nothing -- it simply keeps the default.
@@ -255,7 +262,46 @@ namespace ModLoaderLogger
 			validation.followRel32At =
 				(local.flags & PLUGIN_SCAN_FLAG_FOLLOW_REL32) ? local.followRel32At : -1;
 
-			return RunAndRecord(self, validation, required);
+			if (!local.candidates || local.candidateCount == 0)
+				return RunAndRecord(self, validation, required);
+
+			// v72: locators for other game builds. The loader picks the one for
+			// this build (memory_scanner/version_map.h); kind and the rest of the
+			// request stay what the plugin was built with.
+			if (local.module && local.module != GetModuleHandleW(nullptr))
+			{
+				PluginHookReport::RecordFailure(self, local.hookName,
+					"Resolve called with candidates for a module other than the game exe; "
+					"locators are for the game exe only", required);
+				return 0;
+			}
+			if (local.candidateCount > kMaxCandidates)
+			{
+				PluginHookReport::RecordFailure(self, local.hookName,
+					("Resolve called with " + std::to_string(local.candidateCount) + " candidates; at most "
+					 + std::to_string(kMaxCandidates) + " are read").c_str(), required);
+				return 0;
+			}
+
+			std::vector<VersionMap::Candidate> candidates;
+			candidates.reserve(local.candidateCount);
+			for (uint32_t i = 0; i < local.candidateCount; ++i)
+			{
+				const PluginScanCandidate& c = local.candidates[i];
+				VersionMap::Candidate v;
+				v.gameCL        = c.gameCL;
+				v.imageStamp    = c.imageStamp;
+				v.imageSize     = c.imageSize;
+				v.pattern       = c.pattern ? c.pattern : "";
+				v.resultOffset  = c.resultOffset;
+				v.followRel32At = (c.flags & PLUGIN_SCAN_FLAG_FOLLOW_REL32) ? c.followRel32At : -1;
+				v.rva           = c.rva;
+				candidates.push_back(std::move(v));
+			}
+
+			const ScanValidation::Result result = VersionMap::Select(self->name, validation, candidates,
+				VersionMap::RunningBuild());
+			return RecordResult(self, validation, result, required);
 		}
 
 		int CopyAddresses(const std::vector<uintptr_t>& results, uintptr_t* out, int maxResults)

@@ -63,3 +63,6 @@ CLAUDE.md
 
 # Local plugin build/deploy config (machine-specific paths)
 tools/build-plugins.config.json
+
+# Version-stamp sidecars left by tools/patch-version-rc.ps1 during a build
+*.modloader-orig

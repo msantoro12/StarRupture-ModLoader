@@ -251,7 +251,7 @@ static void Test_UnloadPathsPurgePanels()
     {
         "void UnloadAllPlugins()",
         "static bool ShutDownAndFree(LoadedPlugin& p, const wchar_t* action)",
-        "bool ReloadPlugin(int index)",
+        "bool ReloadPlugin(int index, std::string* refusal)",
     };
     for (const char* signature : kPaths)
     {
@@ -286,7 +286,7 @@ static void Test_UnloadPathsPurgePanels()
     }
 
     // UNLOAD frees through ShutDownAndFree, checked above.
-    CHECK(FunctionBody(src, "bool UnloadPlugin(int index)").find("ShutDownAndFree(") != std::string::npos);
+    CHECK(FunctionBody(src, "bool UnloadPlugin(int index, std::string* refusal)").find("ShutDownAndFree(") != std::string::npos);
 
     // ...and that wait must come from both registries, with its answer used.
     const std::string wait = FunctionBody(src, "static bool WaitOutPluginRenders(");

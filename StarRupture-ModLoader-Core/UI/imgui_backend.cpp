@@ -1077,7 +1077,7 @@ static bool InitD3D12Resources(IDXGISwapChain* swapChain)
 	ImGui_ImplDX12_InitInfo dx12info = {};
 	dx12info.Device = g_device;
 	dx12info.CommandQueue = g_cmdQueue;
-	dx12info.NumFramesInFlight = static_cast<int>(g_frameCount);
+	dx12info.NumFramesInFlight = MAX_FRAMES;  // UiPass keeps up to this many draws in flight
 	dx12info.RTVFormat = g_rtvFormat;
 	dx12info.SrvDescriptorHeap = g_srvHeap;
 	dx12info.SrvDescriptorAllocFn = SrvAllocFn;
@@ -1195,6 +1195,383 @@ static void STDMETHODCALLTYPE HookedECL(ID3D12CommandQueue* pQueue,
 }
 
 // ---------------------------------------------------------------------------
+// BuildImGuiFrame -- one ImGui frame: cursor ownership, font rebuild, every
+// RenderFrame callback, ImGui::Render. Caller holds g_imguiMutex.
+//
+// Cursor management: hand control to ImGui whenever any modloader UI
+// surface is visible (main window OR any open plugin panel).
+// NoMouseCursorChange prevents ImGui's Win32 backend from calling
+// SetCursor() every frame -- without it, it fights UE5's cursor management
+// and causes visible flickering whenever our window is closed.
+// ---------------------------------------------------------------------------
+static void BuildImGuiFrame()
+{
+	// Cursor ownership follows EXCLUSIVE capture only.
+	//
+	// Cooperative passthrough used to count here too, on the reasoning that a
+	// plugin's always-on windows have to stay clickable. But that put a
+	// simulated cursor on screen for as long as any passthrough token was
+	// held -- so a plugin doing nothing but drawing a HUD readout took the
+	// pointer away from the game and the player lost mouse look. When the
+	// only thing on screen is a passthrough window, the game keeps focus.
+	//
+	// This also keeps the invariant HookedWndProc relies on: ImGui is only
+	// fed mouse messages while it actually owns the cursor. UE5 hides and
+	// re-centres the OS cursor during gameplay, so an ImGui that was still
+	// tracking it would sit at a frozen position and any widget underneath
+	// would swallow clicks meant for the game.
+	bool uiOpen = (g_callbacks.ShouldCaptureInput ? g_callbacks.ShouldCaptureInput() : false);
+	ImGuiIO& frameIO = ImGui::GetIO();
+	if (uiOpen)
+	{
+		frameIO.ConfigFlags &= ~ImGuiConfigFlags_NoMouseCursorChange;
+		frameIO.MouseDrawCursor = true;
+
+		// Only sample the game's clip on the closed -> open edge; by the
+		// second frame the clip is already ours to manage.
+		if (!g_prevUiOpen)
+		{
+			RECT existing{};
+			g_hadGameClip = GetClipCursor(&existing) && IsRealClip(existing);
+		}
+		ClipCursor(nullptr);
+	}
+	else
+	{
+		frameIO.ConfigFlags |= ImGuiConfigFlags_NoMouseCursorChange;
+		frameIO.MouseDrawCursor = false;
+
+		// open -> closed edge: hand the cursor back to the game. ClipCursor
+		// pulls the cursor inside the rect if it had already escaped, so
+		// this also recovers a cursor sitting outside the window.
+		if (g_prevUiOpen)
+			RestoreGameCursorClip();
+	}
+	g_prevUiOpen = uiOpen;
+
+	// Pause menu closed without exclusive capture taking over: ImGui stops
+	// being fed the mouse, so park it off-screen and release any held
+	// button, or a widget under the last position stays hovered or keeps
+	// dragging (the menu can close mid-drag on Escape). The Win32 backend
+	// still polls the OS cursor on its own while it is not tracking the
+	// mouse, as it does after F2 closes, so the parked position may not
+	// last; the button release is what ends the drag.
+	const bool menuCursor = !uiOpen &&
+		(g_callbacks.IsPauseMenuOpen ? g_callbacks.IsPauseMenuOpen() : false);
+	if (g_prevMenuCursor && !menuCursor && !uiOpen)
+	{
+		frameIO.AddMousePosEvent(-FLT_MAX, -FLT_MAX);
+		for (int button = 0; button < ImGuiMouseButton_COUNT; ++button)
+			frameIO.AddMouseButtonEvent(button, false);
+	}
+	g_prevMenuCursor = menuCursor;
+
+	// Rebuild font atlas if the user changed the font family.
+	// Must happen before NewFrame to avoid using a destroyed font texture.
+	if (g_pendingFontRebuild.exchange(false))
+		RebuildFontAtlas(/*initialSetup=*/false);
+
+	ImGui_ImplDX12_NewFrame();
+	ImGui_ImplWin32_NewFrame();
+	ImGui::NewFrame();
+
+	if (g_callbacks.RenderFrame)
+		g_callbacks.RenderFrame(&g_imguiAPI);
+
+	ImGui::Render();
+}
+
+// ---------------------------------------------------------------------------
+// Drawing at Slate's present step (hooks/game/slate_present in the main DLL)
+//
+// Frame generation takes the game's UI from the back buffer at Slate's
+// present step, after every widget is drawn: UE's Streamline plugin copies
+// it into DLSS-G's UI buffer at OnBackBufferReadyToPresent, and FSR 3 frame
+// interpolation has Slate draw the UI again over each interpolated frame.
+// ImGui drawn at Present comes after both, so it is on real frames only.
+//
+// So the overlay is drawn there instead. It is recorded here, on the render
+// thread, on our own command list, and submitted from an RHI command on our
+// own queue, between a fence UE's queue signals after Slate's draw and one
+// UE's queue waits on before anything reads the back buffer. Nothing is
+// recorded on UE's command lists, so UE's state cache never sees state it
+// did not set. While these draws come, HookedPresent draws nothing; once they
+// stop (the hook did not resolve, or no window is drawn into the game's back
+// buffer), it draws as before.
+// ---------------------------------------------------------------------------
+namespace UiPass
+{
+	// One per ImGui frame in flight (ImGui_ImplDX12 NumFramesInFlight), so the
+	// vertex buffers a slot's draw reads are not rewritten under the GPU.
+	constexpr UINT kSlots = MAX_FRAMES;
+	// HookedPresent draws again once this long has passed without a draw here.
+	constexpr ULONGLONG kActiveMs = 250;
+	constexpr DWORD kSlotWaitMs = 100;
+
+	struct Slot
+	{
+		ID3D12CommandAllocator*    allocator = nullptr;
+		ID3D12GraphicsCommandList* list = nullptr;
+		UINT64                     fenceValue = 0;      // g_fence value this slot's draw signals
+		std::atomic<bool>          pending{ false };    // recorded, not yet submitted
+	};
+
+	static std::mutex            g_submitMutex;         // the queue and slots vs. the RHI thread
+	static ID3D12CommandQueue*   g_queue = nullptr;
+	static ID3D12Fence*          g_readyFence = nullptr;
+	static ID3D12Fence*          g_doneFence = nullptr; // g_fence, with a reference of our own
+	static UINT64                g_readyValue = 0;      // RHI thread only
+	static ID3D12DescriptorHeap* g_uiRtvHeap = nullptr; // one RTV, for the back buffer Slate drew into
+	static HANDLE                g_slotEvent = nullptr;
+	static Slot                  g_slots[kSlots];
+	static UINT                  g_next = 0;            // render thread only
+	static bool                  g_failed = false;
+
+	// The swap chain's buffer size, from HookedPresent: a window whose back
+	// buffer is another size is not the game's and gets nothing.
+	static std::atomic<UINT64>    g_width{ 0 };
+	static std::atomic<UINT>      g_height{ 0 };
+	static std::atomic<ULONGLONG> g_lastDrawMs{ 0 };
+	static std::atomic<UINT64>    g_lastDoneValue{ 0 };
+
+	// After the GPU flush at shutdown. The two fences are never released: a
+	// payload UE has not submitted yet can still name them.
+	static void ReleaseResources()
+	{
+		std::lock_guard<std::mutex> lock(g_submitMutex);
+		if (g_doneFence && g_doneFence->GetCompletedValue() < g_lastDoneValue.load())
+		{
+			g_queue = nullptr;  // still running: left to process exit
+			return;
+		}
+		for (Slot& slot : g_slots)
+		{
+			if (slot.list) { slot.list->Release(); slot.list = nullptr; }
+			if (slot.allocator) { slot.allocator->Release(); slot.allocator = nullptr; }
+			slot.pending = false;
+		}
+		if (g_uiRtvHeap) { g_uiRtvHeap->Release(); g_uiRtvHeap = nullptr; }
+		if (g_queue) { g_queue->Release(); g_queue = nullptr; }
+		if (g_slotEvent) { CloseHandle(g_slotEvent); g_slotEvent = nullptr; }
+	}
+
+	static bool CreateResources()
+	{
+		std::lock_guard<std::mutex> lock(g_submitMutex);
+		D3D12_COMMAND_QUEUE_DESC queueDesc = {};
+		queueDesc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
+		D3D12_DESCRIPTOR_HEAP_DESC heapDesc = {};
+		heapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
+		heapDesc.NumDescriptors = 1;
+		bool ok = SUCCEEDED(g_device->CreateCommandQueue(&queueDesc, IID_PPV_ARGS(&g_queue))) &&
+			SUCCEEDED(g_device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&g_readyFence))) &&
+			SUCCEEDED(g_device->CreateDescriptorHeap(&heapDesc, IID_PPV_ARGS(&g_uiRtvHeap)));
+		for (UINT i = 0; ok && i < kSlots; ++i)
+		{
+			Slot& slot = g_slots[i];
+			ok = SUCCEEDED(g_device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&slot.allocator))) &&
+				SUCCEEDED(g_device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, slot.allocator, nullptr, IID_PPV_ARGS(&slot.list))) &&
+				SUCCEEDED(slot.list->Close());
+		}
+		if (ok)
+		{
+			g_slotEvent = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+			ok = g_slotEvent != nullptr;
+		}
+		if (ok)
+		{
+			g_doneFence = g_fence;
+			g_doneFence->AddRef();
+		}
+		return ok;
+	}
+
+	// HookedPresent, every frame on our swap chain.
+	static void NoteSwapChainSize(UINT64 width, UINT height)
+	{
+		g_width = width;
+		g_height = height;
+	}
+
+	// HookedPresent: true while the overlay is drawn at Slate's present step,
+	// so it must not draw its own.
+	static bool Active()
+	{
+		return GetTickCount64() - g_lastDrawMs.load() < kActiveMs ||
+			(g_doneFence && g_doneFence->GetCompletedValue() < g_lastDoneValue.load());
+	}
+
+	// Render thread, at Slate's present step.
+	static int Record(ID3D12Resource* backBuffer)
+	{
+		if (!g_initialized || g_shutdown || g_failed || !backBuffer)
+			return -1;
+
+		const D3D12_RESOURCE_DESC desc = backBuffer->GetDesc();
+		if (desc.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D || desc.Width != g_width.load() ||
+			desc.Height != g_height.load() || desc.SampleDesc.Count != 1 || NormalizeForImGui(desc.Format) != g_rtvFormat)
+			return -1;
+
+		if (!g_queue && !CreateResources())
+		{
+			IMGUI_LOG_WARN("[ImGuiBackend] Overlay at Slate's present step unavailable (D3D12 resources); drawing at Present");
+			ReleaseResources();
+			g_failed = true;
+			return -1;
+		}
+
+		// HookedPresent's single owner: a Present drawing right now on another
+		// thread keeps this frame.
+		DWORD expected = 0;
+		if (!g_presentOwnerThread.compare_exchange_strong(expected, GetCurrentThreadId()))
+			return -1;
+
+		const int index = static_cast<int>(g_next % kSlots);
+		Slot& slot = g_slots[index];
+		bool free = !slot.pending.load(std::memory_order_acquire);
+		if (free && g_fence->GetCompletedValue() < slot.fenceValue)
+		{
+			g_fence->SetEventOnCompletion(slot.fenceValue, g_slotEvent);
+			free = WaitForSingleObject(g_slotEvent, kSlotWaitMs) == WAIT_OBJECT_0;
+		}
+		if (!free)
+		{
+			g_presentOwnerThread.store(0, std::memory_order_release);
+			return -1;
+		}
+
+		{
+			std::lock_guard<std::recursive_mutex> imguiLock(g_imguiMutex);
+			// Before RenderFrame, as in HookedPresent.
+			ReclaimRetiredTextures();
+			BuildImGuiFrame();
+
+			slot.allocator->Reset();
+			slot.list->Reset(slot.allocator, nullptr);
+
+			D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle = g_uiRtvHeap->GetCPUDescriptorHandleForHeapStart();
+			D3D12_RENDER_TARGET_VIEW_DESC rtvDesc = {};
+			rtvDesc.Format = g_rtvFormat;
+			rtvDesc.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2D;
+			g_device->CreateRenderTargetView(backBuffer, &rtvDesc, rtvHandle);
+
+			// UE has put the back buffer in RENDER_TARGET for this list.
+			slot.list->OMSetRenderTargets(1, &rtvHandle, FALSE, nullptr);
+			slot.list->SetDescriptorHeaps(1, &g_srvHeap);
+			ImGui_ImplDX12_RenderDrawData(ImGui::GetDrawData(), slot.list);
+			slot.list->Close();
+			slot.fenceValue = ++g_fenceValue;
+		}
+		slot.pending.store(true, std::memory_order_release);
+		g_lastDoneValue = slot.fenceValue;
+		g_lastDrawMs = GetTickCount64();
+		++g_next;
+		g_presentOwnerThread.store(0, std::memory_order_release);
+		return index;
+	}
+
+	// RHI thread, in command order, so slots arrive in the order recorded and
+	// g_fence values rise.
+	static bool Submit(int index, ImGuiUiOverlaySync* sync)
+	{
+		std::lock_guard<std::mutex> lock(g_submitMutex);
+		if (!g_queue || !sync || index < 0 || index >= static_cast<int>(kSlots))
+			return false;
+		Slot& slot = g_slots[index];
+		if (!slot.pending.load(std::memory_order_acquire))
+			return false;
+
+		const UINT64 readyValue = ++g_readyValue;
+		g_queue->Wait(g_readyFence, readyValue);
+		// The unhooked ECL: HookedECL would take our queue for the game's.
+		ID3D12CommandList* lists[] = { slot.list };
+		if (g_originalECL)
+			g_originalECL(g_queue, 1, lists);
+		else
+			g_queue->ExecuteCommandLists(1, lists);
+		g_queue->Signal(g_doneFence, slot.fenceValue);
+		slot.pending.store(false, std::memory_order_release);
+
+		sync->readyFence = g_readyFence;
+		sync->readyValue = readyValue;
+		sync->doneFence = g_doneFence;
+		sync->doneValue = slot.fenceValue;
+		return true;
+	}
+}
+
+
+// ---------------------------------------------------------------------------
+// The real Present for a frame HookedPresent owns, and what its result means
+// for the overlay. Releases g_presentOwnerThread.
+// ---------------------------------------------------------------------------
+static HRESULT PresentAndCheck(IDXGISwapChain* swapChain, UINT syncInterval, UINT flags, UINT64 frameIdx)
+{
+	HRESULT hr = g_originalPresent(swapChain, syncInterval, flags);
+
+	// Tracks whether we're currently in a run of transient Present failures
+	// (e.g. DXGI_ERROR_INVALID_CALL while the game is minimised/alt-tabbed out
+	// of fullscreen exclusive).  Lets us log once on entry and once on
+	// recovery instead of every frame for as long as the game is minimised.
+	static std::atomic<bool> s_transientPresentFailure{ false };
+
+	if (FAILED(hr) && hr != DXGI_ERROR_DEVICE_REMOVED && hr != DXGI_ERROR_DEVICE_RESET && hr != DXGI_ERROR_DEVICE_HUNG)
+	{
+		// Transient failure -- the device is fine, the game keeps running.
+		// Skip ImGui rendering this frame and retry on the next one.
+		bool expected = false;
+		if (s_transientPresentFailure.compare_exchange_strong(expected, true))
+			IMGUI_LOG_WARN("[ImGuiBackend] g_originalPresent transient failure: 0x%08X (frame %llu)",
+				static_cast<unsigned>(hr), frameIdx);
+
+		g_presentOwnerThread.store(0, std::memory_order_release);
+		return hr;
+	}
+
+	if (s_transientPresentFailure.exchange(false))
+		IMGUI_LOG_INFO("[ImGuiBackend] g_originalPresent recovered (frame %llu)", frameIdx);
+
+	if (FAILED(hr))
+	{
+		IMGUI_LOG_ERROR("[ImGuiBackend] g_originalPresent failed: 0x%08X (frame %llu)",
+			static_cast<unsigned>(hr), frameIdx);
+
+		// On device removal, shut ImGui down immediately and surface a splash
+		// error. Use a flag so this only fires once even if Present keeps firing.
+		static std::atomic<bool> s_deviceLostNotified{ false };
+		bool expected = false;
+		if (s_deviceLostNotified.compare_exchange_strong(expected, true))
+		{
+			g_shutdown = true;
+
+			// Proactively write [UI] Enabled=0 to modloader.ini so the overlay
+			// is disabled automatically on next launch -- no manual editing needed.
+			wchar_t iniPath[MAX_PATH]{};
+			GetModuleFileNameW(nullptr, iniPath, MAX_PATH);
+			wchar_t* lastSlash = wcsrchr(iniPath, L'\\');
+			if (lastSlash)
+				wcscpy_s(lastSlash + 1,
+					static_cast<rsize_t>(MAX_PATH - (lastSlash + 1 - iniPath)),
+					L"ModLoader\\modloader.ini");
+			WritePrivateProfileStringW(L"UI", L"Enabled", L"0", iniPath);
+
+			IMGUI_LOG_ERROR("[ImGuiBackend] ImGui disabled. "
+				"[UI] Enabled=0 written to modloader.ini -- overlay off on next launch.");
+
+			if (g_callbacks.OnDeviceLost)
+				g_callbacks.OnDeviceLost(L"ImGui error: GPU device lost. Overlay disabled for next launch.");
+		}
+		else
+		{
+			g_shutdown = true;
+		}
+	}
+
+	g_presentOwnerThread.store(0, std::memory_order_release);
+	return hr;
+}
+
+// ---------------------------------------------------------------------------
 // IDXGISwapChain::Present hook
 // ---------------------------------------------------------------------------
 static HRESULT STDMETHODCALLTYPE HookedPresent(IDXGISwapChain* swapChain, UINT syncInterval, UINT flags)
@@ -1252,6 +1629,15 @@ static HRESULT STDMETHODCALLTYPE HookedPresent(IDXGISwapChain* swapChain, UINT s
 			static_cast<void*>(g_device), static_cast<void*>(g_cmdQueue),
 			static_cast<void*>(g_capturedQueue),
 			g_frameCount, static_cast<unsigned>(g_rtvFormat));
+
+	// The overlay is already in this frame, drawn at Slate's present step.
+	{
+		DXGI_SWAP_CHAIN_DESC scDesc = {};
+		if (SUCCEEDED(swapChain->GetDesc(&scDesc)))
+			UiPass::NoteSwapChainSize(scDesc.BufferDesc.Width, scDesc.BufferDesc.Height);
+	}
+	if (UiPass::Active())
+		return PresentAndCheck(swapChain, syncInterval, flags, frameIdx);
 
 	// Current back buffer index.
 	IDXGISwapChain3* sc3 = nullptr;
@@ -1315,87 +1701,9 @@ static HRESULT STDMETHODCALLTYPE HookedPresent(IDXGISwapChain* swapChain, UINT s
 	barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
 	g_cmdList->ResourceBarrier(1, &barrier);
 
-	// Cursor management: hand control to ImGui whenever any modloader UI
-	// surface is visible (main window OR any open plugin panel).
-	// NoMouseCursorChange prevents ImGui's Win32 backend from calling
-	// SetCursor() every frame -- without it, it fights UE5's cursor management
-	// and causes visible flickering whenever our window is closed.
 	{
 		std::lock_guard<std::recursive_mutex> imguiLock(g_imguiMutex);
-
-		// Cursor ownership follows EXCLUSIVE capture only.
-		//
-		// Cooperative passthrough used to count here too, on the reasoning that a
-		// plugin's always-on windows have to stay clickable. But that put a
-		// simulated cursor on screen for as long as any passthrough token was
-		// held -- so a plugin doing nothing but drawing a HUD readout took the
-		// pointer away from the game and the player lost mouse look. When the
-		// only thing on screen is a passthrough window, the game keeps focus.
-		//
-		// This also keeps the invariant HookedWndProc relies on: ImGui is only
-		// fed mouse messages while it actually owns the cursor. UE5 hides and
-		// re-centres the OS cursor during gameplay, so an ImGui that was still
-		// tracking it would sit at a frozen position and any widget underneath
-		// would swallow clicks meant for the game.
-		bool uiOpen = (g_callbacks.ShouldCaptureInput ? g_callbacks.ShouldCaptureInput() : false);
-		ImGuiIO& frameIO = ImGui::GetIO();
-		if (uiOpen)
-		{
-			frameIO.ConfigFlags &= ~ImGuiConfigFlags_NoMouseCursorChange;
-			frameIO.MouseDrawCursor = true;
-
-			// Only sample the game's clip on the closed -> open edge; by the
-			// second frame the clip is already ours to manage.
-			if (!g_prevUiOpen)
-			{
-				RECT existing{};
-				g_hadGameClip = GetClipCursor(&existing) && IsRealClip(existing);
-			}
-			ClipCursor(nullptr);
-		}
-		else
-		{
-			frameIO.ConfigFlags |= ImGuiConfigFlags_NoMouseCursorChange;
-			frameIO.MouseDrawCursor = false;
-
-			// open -> closed edge: hand the cursor back to the game. ClipCursor
-			// pulls the cursor inside the rect if it had already escaped, so
-			// this also recovers a cursor sitting outside the window.
-			if (g_prevUiOpen)
-				RestoreGameCursorClip();
-		}
-		g_prevUiOpen = uiOpen;
-
-		// Pause menu closed without exclusive capture taking over: ImGui stops
-		// being fed the mouse, so park it off-screen and release any held
-		// button, or a widget under the last position stays hovered or keeps
-		// dragging (the menu can close mid-drag on Escape). The Win32 backend
-		// still polls the OS cursor on its own while it is not tracking the
-		// mouse, as it does after F2 closes, so the parked position may not
-		// last; the button release is what ends the drag.
-		const bool menuCursor = !uiOpen &&
-			(g_callbacks.IsPauseMenuOpen ? g_callbacks.IsPauseMenuOpen() : false);
-		if (g_prevMenuCursor && !menuCursor && !uiOpen)
-		{
-			frameIO.AddMousePosEvent(-FLT_MAX, -FLT_MAX);
-			for (int button = 0; button < ImGuiMouseButton_COUNT; ++button)
-				frameIO.AddMouseButtonEvent(button, false);
-		}
-		g_prevMenuCursor = menuCursor;
-
-		// Rebuild font atlas if the user changed the font family.
-		// Must happen before NewFrame to avoid using a destroyed font texture.
-		if (g_pendingFontRebuild.exchange(false))
-			RebuildFontAtlas(/*initialSetup=*/false);
-
-		ImGui_ImplDX12_NewFrame();
-		ImGui_ImplWin32_NewFrame();
-		ImGui::NewFrame();
-
-		if (g_callbacks.RenderFrame)
-			g_callbacks.RenderFrame(&g_imguiAPI);
-
-		ImGui::Render();
+		BuildImGuiFrame();
 
 		g_cmdList->OMSetRenderTargets(1, &rtvHandle, FALSE, nullptr);
 		g_cmdList->SetDescriptorHeaps(1, &g_srvHeap);
@@ -1433,68 +1741,7 @@ static HRESULT STDMETHODCALLTYPE HookedPresent(IDXGISwapChain* swapChain, UINT s
 
 	backBuffer->Release();
 
-	HRESULT hr = g_originalPresent(swapChain, syncInterval, flags);
-
-	// Tracks whether we're currently in a run of transient Present failures
-	// (e.g. DXGI_ERROR_INVALID_CALL while the game is minimised/alt-tabbed out
-	// of fullscreen exclusive).  Lets us log once on entry and once on
-	// recovery instead of every frame for as long as the game is minimised.
-	static std::atomic<bool> s_transientPresentFailure{ false };
-
-	if (FAILED(hr) && hr != DXGI_ERROR_DEVICE_REMOVED && hr != DXGI_ERROR_DEVICE_RESET && hr != DXGI_ERROR_DEVICE_HUNG)
-	{
-		// Transient failure -- the device is fine, the game keeps running.
-		// Skip ImGui rendering this frame and retry on the next one.
-		bool expected = false;
-		if (s_transientPresentFailure.compare_exchange_strong(expected, true))
-			IMGUI_LOG_WARN("[ImGuiBackend] g_originalPresent transient failure: 0x%08X (frame %llu)",
-				static_cast<unsigned>(hr), frameIdx);
-
-		g_presentOwnerThread.store(0, std::memory_order_release);
-		return hr;
-	}
-
-	if (s_transientPresentFailure.exchange(false))
-		IMGUI_LOG_INFO("[ImGuiBackend] g_originalPresent recovered (frame %llu)", frameIdx);
-
-	if (FAILED(hr))
-	{
-		IMGUI_LOG_ERROR("[ImGuiBackend] g_originalPresent failed: 0x%08X (frame %llu)",
-			static_cast<unsigned>(hr), frameIdx);
-
-		// On device removal, shut ImGui down immediately and surface a splash
-		// error. Use a flag so this only fires once even if Present keeps firing.
-		static std::atomic<bool> s_deviceLostNotified{ false };
-		bool expected = false;
-		if (s_deviceLostNotified.compare_exchange_strong(expected, true))
-		{
-			g_shutdown = true;
-
-			// Proactively write [UI] Enabled=0 to modloader.ini so the overlay
-			// is disabled automatically on next launch -- no manual editing needed.
-			wchar_t iniPath[MAX_PATH]{};
-			GetModuleFileNameW(nullptr, iniPath, MAX_PATH);
-			wchar_t* lastSlash = wcsrchr(iniPath, L'\\');
-			if (lastSlash)
-				wcscpy_s(lastSlash + 1,
-					static_cast<rsize_t>(MAX_PATH - (lastSlash + 1 - iniPath)),
-					L"ModLoader\\modloader.ini");
-			WritePrivateProfileStringW(L"UI", L"Enabled", L"0", iniPath);
-
-			IMGUI_LOG_ERROR("[ImGuiBackend] ImGui disabled. "
-				"[UI] Enabled=0 written to modloader.ini -- overlay off on next launch.");
-
-			if (g_callbacks.OnDeviceLost)
-				g_callbacks.OnDeviceLost(L"ImGui error: GPU device lost. Overlay disabled for next launch.");
-		}
-		else
-		{
-			g_shutdown = true;
-		}
-	}
-
-	g_presentOwnerThread.store(0, std::memory_order_release);
-	return hr;
+	return PresentAndCheck(swapChain, syncInterval, flags, frameIdx);
 }
 
 // ---------------------------------------------------------------------------
@@ -3392,6 +3639,7 @@ extern "C" __declspec(dllexport) void ImGuiHost_Shutdown()
 				g_fence->SetEventOnCompletion(g_fenceValue, g_fenceEvent);
 				WaitForSingleObject(g_fenceEvent, 500);
 			}
+			UiPass::ReleaseResources();
 			CleanupD3D12Resources();
 			g_initialized = false;
 		}
@@ -3430,4 +3678,22 @@ extern "C" __declspec(dllexport) void ImGuiHost_RequestFontRebuild()
 {
 	if (g_initialized)
 		g_pendingFontRebuild.store(true, std::memory_order_release);
+}
+
+// Slate's present step: see UiPass and hooks/game/slate_present.
+extern "C" __declspec(dllexport) int ImGuiHost_RecordUiOverlay(void* rhiBackBuffer)
+{
+	if (!rhiBackBuffer || !g_initialized || g_shutdown)
+		return -1;
+	// FRHITexture::GetNativeResource: the window's back buffer, UE's own texture.
+	using GetNativeResourceFn = void* (*)(void*);
+	void** vtable = *static_cast<void***>(rhiBackBuffer);
+	auto* resource = static_cast<ID3D12Resource*>(
+		reinterpret_cast<GetNativeResourceFn>(vtable[kFRHITexture_GetNativeResource_Slot])(rhiBackBuffer));
+	return UiPass::Record(resource);
+}
+
+extern "C" __declspec(dllexport) bool ImGuiHost_SubmitUiOverlay(int slot, ImGuiUiOverlaySync* sync)
+{
+	return UiPass::Submit(slot, sync);
 }

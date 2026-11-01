@@ -22,6 +22,7 @@ image size). There are four kinds of row.
 | data | a global's name | A function row of kind `DATA` |
 | field | `Class::Member` | `offset`, `size`, a bool mask, and the member's new name when it was renamed |
 | absent | any function key | No locator: CI could not place the key on that build |
+| absent (field) | `Class::Member` | CI only: a member CI could not find on that build. It is the `kAbsentFields` array in the generated header; the loader never reads it, and a feed has no such line |
 
 **Key.** A key names a function, a global or a member in Dumper-7 naming. A global key (kinds
 `FUNCTION_START` and `DATA`) names one game symbol, the same for every plugin, and has no `/`. A
@@ -57,8 +58,9 @@ request. The order for a function key is:
 
 1. **The loader's row for the running CL.** On the row's own exe (CL, stamp and size all equal)
    the result must equal the row's `rva`; a mismatch is a failure with no fallback. On another
-   exe of the same CL the row's pattern must match. A site row must also have the request's `fp`,
-   or it is skipped.
+   exe of the same CL the row's pattern is tried, and if it is not found the row is skipped with a
+   warning and the other locators decide. A site row must also have the request's `fp`, or it is
+   skipped.
 2. **The plugin's own row for the running CL** (`candidates`, or its pattern on its built CL).
    When it is for the running exe, its `rva` must equal the loader's pick, or the result is
    AMBIGUOUS.
@@ -92,8 +94,9 @@ in a tail from interface v72: `gameBuiltCL` (the build its Game-SDK came from,
 
 - On its own built CL a plugin loads as it always did.
 - On any other supported CL it is admitted only if it is interface 72 or later, sets
-  `PLUGIN_MAP_MIGRATED` in `mapFlags`, and took non-null globals from `GetSdkGlobals` in
-  `PluginInit`. Otherwise the Plugins tab shows it as **Incompatible**, with "Needs an update to
+  `PLUGIN_MAP_MIGRATED` in `mapFlags`, and called `GetSdkGlobals` in `PluginInit` (the call is what
+  counts; a build where the loader cannot find GObjects, `FName::AppendString` or `GWorld` hands
+  the plugin none, with a log line saying which). Otherwise the Plugins tab shows it as **Incompatible**, with "Needs an update to
   run on CL-...", and it still loads on its own build.
 - A plugin before v72 has no tail and counts as built for `kLegacyPluginCL` (127004), the build
   the last loader without a map required. So does a v72 plugin whose `gameBuiltCL` is 0, with the
@@ -128,8 +131,12 @@ loader fetches only on the client, with `[AutoUpdate] Enabled` on, and only:
 - at startup, when the running exe is in neither the built-in map nor the cache, or has an
   `absent` row and the cache is over a day old. The splash shows "Downloading game data for
   CL-n". This happens with the game's main thread parked, where WinHTTP is safe;
-- after the version check refuses the game build, for the next launch, before the process exits;
+- after the version check or the pattern preflight refuses the game build, for the next launch,
+  before the process exits (not when the startup request just made one);
 - from the auto-update thread, at most once a day, for the next launch.
+
+An exe the map has never seen asks at every launch until a cached feed covers it; the once-a-day
+limit applies to the `absent` case and to the auto-update thread.
 
 **Request.** One HTTPS GET. A URL that is not `https` is refused, redirects from HTTPS to HTTP are
 disallowed, each operation has a 2 s timeout, the whole request has an 8 s deadline, and the body
@@ -177,37 +184,42 @@ which is why the file is signed.
 
 ```
 new Steam build
-  -> client check (build, scan patterns, PDB layouts)
-  -> decide.mjs          path M / B / C, from the gate results
-  -> map-mode.mjs        function and site rows from the harness (sr-aobscan)
-  -> field-rows.mjs      field rows from the layouts
-  -> staging.mjs         rows on the loader fork's auto/update-<CL> branch
-  -> export-feed         the header as the unsigned feed
-  -> vmap-sign.mjs       sign (k2 for a release, k1 for a dry run), verify
-  -> promote.mjs         only when public is the same build as the staged one
-  -> publish             the vmap-feed release in starrupture-ci
-  -> vmap-publish.yml    in the loader repo: verify, upload to Latest
-  -> players             fetch on their next launch
+  -> client check       build, scan patterns, PDB layouts
+  -> map-mode.mjs       function and site rows from the harness (sr-aobscan)
+  -> field-rows.mjs     field rows from the layouts
+  -> decide.mjs         path M / B / C, from the gate results
+  -> export-feed        the header as the unsigned feed
+  -> vmap-sign.mjs      sign with the test key (k1) and verify
+  -> staging            a plan for the loader fork's auto/update-<CL> branch
+  -> promote.mjs        a plan: only when public is the same build as the staged one
+  -> publish            sign with k2, the vmap-feed release in starrupture-ci (not yet wired, below)
+  -> vmap-publish.yml   in the loader repo: verify, upload to Latest
+  -> players            fetch on their next launch
 ```
 
 1. **Client check.** Checks the build and scans the loader's and the plugins' patterns on it.
-2. **Decide.** `decide.mjs` turns the gates into a path. M is a clean update: rows only. B is a
+2. **Rows.** `map-mode.mjs` writes a function row per key (the pattern the harness saw match at
+   the key's address, otherwise a high-confidence suggestion unique on the build, otherwise an
+   `absent` row) and `field-rows.mjs` writes the field rows.
+3. **Decide.** `decide.mjs` turns the gates into a path. M is a clean update: rows only. B is a
    required pattern missed, repaired by a source patch. C is a used class that moved, held until
    that path is proven. A used class that moved is settled under M when the field rows cover it
-   with a row, an absent row or a class-size move.
-3. **Rows.** `map-mode.mjs` writes a function row per key (the request's own pattern if it
-   resolved, otherwise a high-confidence suggestion unique on the build, otherwise an `absent`
-   row) and `field-rows.mjs` writes the field rows.
-4. **Export, sign, verify.** The header is exported as the feed and signed. `seq` is the larger
-   of the clock and the last published `seq` plus one, and the signer refuses a `seq` more than a
-   day ahead.
-5. **Promote.** A beta build is staged, and promoted when public flips to the same build (same
-   build id, exe SHA-256 and CL), after the DLLs are scanned again on the public exe.
-6. **Publish.** The `publish` job signs with `k2`, in the `vmap-sign` environment, verifies the
-   result without the test key, and replaces the asset on the `vmap-feed` release.
-   `vmap-publish.yml` in this repository pulls it every 15 minutes, checks it against the keys in
-   `version_feed.cpp`, and uploads it to Latest only if it verifies and its `seq` is higher than
-   the one already there. This repository holds none of the signing secrets.
+   with a row, an absent row or a class-size move. It reads the client check's gates, not the
+   plugin scan results.
+4. **Export, sign, verify.** The header is exported as the feed and signed with the test key.
+   `seq` is the larger of the clock and the last published `seq` plus one, and the signer refuses
+   a `seq` more than a day ahead.
+5. **Stage and promote.** Staging and promotion are plans: a beta build is staged, and promoted
+   when public flips to the same build (same build id, exe SHA-256 and CL). The gate that re-scans
+   the DLLs on the public exe is not yet backed by a real re-scan.
+6. **Publish.** Not yet wired: the staged index promote reads is not stored anywhere, so a public
+   run always plans the normal flow and the `publish` job never runs. Once it does, the job signs
+   with `k2`, verifies the result without the test key, and replaces the asset on the `vmap-feed`
+   release. The release key has to be held somewhere only the publishing job on `main` can read
+   before that happens. `vmap-publish.yml` in this repository pulls the asset every 15 minutes,
+   checks it against the keys in `version_feed.cpp`, and uploads it to Latest only if it verifies
+   and its `seq` is higher than the one already there. This repository holds none of the signing
+   secrets.
 
 **Publishing is off by default.** The `publish` input of `sr-client-check.yml` defaults to false,
 and `state/autopilot.json` decides what may run unattended: its `enabled` switch, the `paths` it
@@ -225,7 +237,7 @@ What a player sees, and what the log says (`ModLoader\Logs\ModLoader.log`).
 | The running build is in the map | Starts with no network request. This is the normal case. |
 | New build, no feed published yet, or no network | The gate refuses the build. The player gets the "Start Game Without ModLoader" dialog and can play unmodded or quit. The loader tries again for the next launch. |
 | New build, feed published | The splash shows "Downloading game data for CL-n" for a moment, then the game starts modded. |
-| A fetch fails (404, timeout, over 1 MiB, not https) | As if there were no feed: a known build runs, an unknown one is refused. At most one fetch per day while a cache would help. |
+| A fetch fails (404, timeout, over 1 MiB, not https) | As if there were no feed: a known build runs, an unknown one is refused. An unknown build asks again at the next launch; the other triggers wait a day. |
 | The feed's signature is bad, the key unknown or the file malformed | The file is discarded whole, and the cache is untouched. Same as no feed. |
 | The feed is older than the cache (`seq` not higher) | Ignored. The cache stays. |
 | A release build is handed a `k1` (TEST) feed | Rejected as a bad key. |
@@ -234,7 +246,7 @@ What a player sees, and what the log says (`ModLoader\Logs\ModLoader.log`).
 | The feed has the build but misses a required loader entry | That CL is dropped from the feed, and the build is refused as above. |
 | A plugin built for another build does not declare `PLUGIN_MAP_MIGRATED` | **Incompatible**: "Needs an update to run on CL-...". It loads on its own build. |
 | Two keys for one request disagree (AMBIGUOUS) | The request fails. The plugin is refused with the locators listed. |
-| A game class a plugin reads moved | The loader's layout check turns every plugin off for the session, with a report, as before. |
+| A game class a plugin reads moved | That plugin's own field request, or its `SR_SIZE_CHECK`, fails and the plugin alone is refused, with the reason in the failure window. The loader's layout check covers the loader's own classes only. |
 
 A fetched map is read once at startup and never changes mid-session, so a RELOAD sees the same
 rows the loader's own hooks were installed from.

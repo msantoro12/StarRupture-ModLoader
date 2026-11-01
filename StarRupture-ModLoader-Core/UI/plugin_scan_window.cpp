@@ -34,6 +34,7 @@ namespace UI::PluginScanWindow
         case PluginManager::ScanStatus::Late:
         case PluginManager::ScanStatus::NeedsRestart:
         case PluginManager::ScanStatus::Retry:
+        case PluginManager::ScanStatus::Refused:
             return ImVec4(1.0f, 0.5f, 0.1f, 1.0f);
         default:
             return ImVec4(1.0f, 0.3f, 0.3f, 1.0f);

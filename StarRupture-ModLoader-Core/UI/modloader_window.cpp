@@ -506,6 +506,13 @@ namespace UI::ModLoaderWindow
                         ? "Update The Mod Loader"
                         : "Please Update The Plugin");
                 }
+                else if (s.isLoaded ? s.unloadBlock[0] != '\0' : s.reloadBlock[0] != '\0')
+                {
+                    // The plugin, or the state of the game, does not allow it
+                    // right now (plugins/reload_policy.h). Say why, in place of
+                    // the buttons that would be refused.
+                    ImGui::TextDisabled("%s", s.isLoaded ? s.unloadBlock : s.reloadBlock);
+                }
                 else
                 {
                     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, actionPadding);
@@ -529,14 +536,24 @@ namespace UI::ModLoaderWindow
                     ImGui::SameLine();
 
                     // Reload — always active when idle; accented as the
-                    // primary action.
-                    if (busy) ImGui::BeginDisabled();
-                    ImGui::PushStyleColor(ImGuiCol_Button, UI::Theme::AccentColorVec4(0.20f));
-                    ImGui::PushStyleColor(ImGuiCol_Text, UI::Theme::AccentColorVec4(1.0f));
-                    if (ImGui::Button(busy ? "..." : "RELOAD"))
-                        PostPluginAction(i, [](int idx) { PluginManager::ReloadPlugin(idx); });
-                    ImGui::PopStyleColor(2);
-                    if (busy) ImGui::EndDisabled();
+                    // primary action. A loaded plugin that may be unloaded but
+                    // not loaded again right now (its load setting) says why
+                    // instead.
+                    if (s.reloadBlock[0])
+                    {
+                        ImGui::AlignTextToFramePadding();
+                        ImGui::TextDisabled("%s", s.reloadBlock);
+                    }
+                    else
+                    {
+                        if (busy) ImGui::BeginDisabled();
+                        ImGui::PushStyleColor(ImGuiCol_Button, UI::Theme::AccentColorVec4(0.20f));
+                        ImGui::PushStyleColor(ImGuiCol_Text, UI::Theme::AccentColorVec4(1.0f));
+                        if (ImGui::Button(busy ? "..." : "RELOAD"))
+                            PostPluginAction(i, [](int idx) { PluginManager::ReloadPlugin(idx); });
+                        ImGui::PopStyleColor(2);
+                        if (busy) ImGui::EndDisabled();
+                    }
 
                     ImGui::PopStyleVar();
                 }

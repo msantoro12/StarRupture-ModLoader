@@ -36,6 +36,15 @@ struct PluginInfo;
 // component's. When the component's own row is for this very exe, the map's
 // pick must land on that row's RVA, or the result is AMBIGUOUS (no scan).
 //
+// With no map row for the running changelist, the map supplies the row of the
+// latest changelist it has one for (ResolveMapKey reads no older ones), and
+// rule 2 rescans it on this build: its pattern must resolve, uniquely and as
+// the request's kind, before it counts. A row that does not resolve here is
+// not used. Then the component's own pattern and rows; if none of them
+// resolves, the key is unresolved, which the caller turns into a feature
+// turned off or a plugin refused (plugins/plugin_hook_report.h). An address
+// that was not found on this build is never used.
+//
 // One "[Map]" line per key says which rule picked the address, and from
 // where: "loader map, CL-128786 row", "own CL-127004 row", "own pattern".
 // ---------------------------------------------------------------------------
@@ -142,15 +151,17 @@ namespace VersionMap
 	// True when the ProductVersion ends in the CL of one of SupportedBuilds().
 	bool IsSupported(const std::wstring& productVersion);
 
-	// The game build every plugin before interface 72 was compiled against:
-	// the one the last loader without a version map required.
+	// The game build every v70 and v71 plugin was compiled against: the one
+	// the last loader without a version map required. A plugin before v70 was
+	// compiled against an older build, and gets gameCL 0, which matches none.
 	constexpr uint32_t kLegacyPluginCL = 127004;
+	constexpr int      kLegacyPluginInterface = 70;
 
 	// The game build a plugin says its Game-SDK came from (the v72 PluginInfo
-	// tail), and what it declares about itself. A plugin before interface 72
-	// has no tail and gets kLegacyPluginCL; so does a v72 plugin whose tail is
-	// 0, with declared false. The plugin manager copies this into the plugin's
-	// record at load.
+	// tail), and what it declares about itself. A v70 or v71 plugin has no
+	// tail and gets kLegacyPluginCL; so does a v72 plugin whose tail is 0,
+	// with declared false. One before v70 gets 0. The plugin manager copies
+	// this into the plugin's record at load.
 	struct PluginGameBuild
 	{
 		uint32_t gameCL   = kLegacyPluginCL;
@@ -159,7 +170,7 @@ namespace VersionMap
 	};
 	PluginGameBuild ReadPluginGameBuild(const PluginInfo& info);
 
-	// "CL-127004", or "CL-127004 (none declared)", for log lines.
+	// "CL-127004", "CL-127004 (none declared)", or "a build before CL-127004".
 	std::string DescribePluginGameBuild(const PluginGameBuild& build);
 
 	// Whether a plugin may run on `running`, judged against the build it was
@@ -168,7 +179,8 @@ namespace VersionMap
 	// Offsets:: point where its own build had things, so it runs only when it
 	// takes all of them from this build: interface 72 or later, PLUGIN_MAP_MIGRATED
 	// in the tail, and GetSdkGlobals in PluginInit. A tail that sets
-	// PLUGIN_MAP_MIGRATED and names no build is refused on every build. The
+	// PLUGIN_MAP_MIGRATED and names no build is refused on every build, and so
+	// is a plugin built for gameCL 0 (before v70), whatever runs. The
 	// loader asks at DLL load, passing true for the globals it cannot know yet,
 	// and again after PluginInit. Empty = admitted; else the reason, for the
 	// log and the plugin list.
@@ -252,11 +264,14 @@ namespace VersionMap
 	// Where a member of a game class sits on the running build (see
 	// PluginFieldRequest in plugins/plugin_interface.h for what a component
 	// asks). A reflected member's offset is read from the running game's own
-	// reflection data, and a row for the running changelist must agree with
-	// it; a native member (one reflection does not describe) is the running
-	// changelist's row, or the compiled offset on the build it was compiled
-	// for, and nothing else, and it must lie inside its class as the running
-	// game reflects the class.
+	// reflection data. A row (the running changelist's, else the latest one's,
+	// which can also give the member's new name) only cross-checks it: where
+	// the row and the game disagree the game wins and the disagreement is
+	// logged. A native member (one reflection does not describe) is the
+	// running changelist's row, or the compiled offset on the build it was
+	// compiled for, and nothing else: a row carried forward from an older
+	// changelist cannot be checked on this build, so it is not used. It must
+	// lie inside its class as the running game reflects the class.
 	//
 	// The rows are the loader's map's (kFields, under the request's key) and
 	// then the component's own. The map's are used only when its key names

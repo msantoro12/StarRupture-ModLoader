@@ -111,9 +111,10 @@ is available.
     already fired; load a save to catch it up (the any-world start also re-fires on returning to
     the main menu), unless the plugin checks the current world itself.
   - **Needs restart** is a new DLL in the Preload folder, which only loads at game start.
-  - **Incompatible** names the plugin interface the DLL was built for and the range this loader accepts,
-    or, on a game build other than the one the plugin was built for, says the plugin needs an update (see
-    [Game updates](#game-updates)).
+  - **Incompatible** is a plugin built for a newer plugin interface than this loader's (update the mod
+    loader), or, on a game build other than the one the plugin was built for, says the plugin needs an
+    update (see [Game updates](#game-updates)). A plugin is never refused for an older interface; one from
+    before interface v70 counts as built for a game build before CL-127004.
   - **Hooks failed** has a **WHY?** button for the [report](#pop-up-windows).
   - **Retry** is a DLL Windows could not open yet, usually still being copied or locked.
   - **Duplicate** is a plugin whose name is already in the list.
@@ -122,6 +123,8 @@ is available.
 - **Cannot Load** is a server plugin on a client, or the reverse.
 - **Needs Update** names the side that is behind: the plugin or the mod loader.
 - **WHY?** on a Hooks Failed row reopens the [report](#pop-up-windows).
+- **Loaded (2 off)** is a plugin that runs with two of its features turned off because a game
+  update moved something they need. Hover the name or the count to see which. <sup>[✦](#msantoro12)</sup>
 - Unload removes the panels, widgets and callbacks the plugin registered, even ones it left
   behind.
 - If the overlay is still drawing its panel after about a second, the unload is skipped and the log
@@ -141,6 +144,8 @@ is available.
 - Press and release a modifier alone to bind just that modifier. <sup>[✦](#msantoro12)</sup>
 - **Block** stops the game also reacting to the combo.
 - A setting with a fixed set of choices is a dropdown. <sup>[✦](#msantoro12)</sup>
+- A setting that belongs to a turned-off feature is greyed out. Hover it for the reason; its value
+  is kept, and it works again when the feature does. <sup>[✦](#msantoro12)</sup>
 - **Saved state** stands for values a plugin keeps by itself, such as where its windows were
   dragged. **Clear** puts them back to their defaults. <sup>[✦](#msantoro12)</sup>
 - The reset arrow restores the default. A plugin's `[General] Enabled` has none, nor does a
@@ -192,6 +197,10 @@ changed in each plugin when the plugin's release ships notes.
 when a later load or reload adds one. **Copy Details** puts the report on the clipboard for a bug
 report. **WHY?** reopens it; `hookfailures` prints the same list.
 
+When a plugin loads with a feature turned off, the same window opens as **Plugin Features Off**,
+with a short list at the top: one line for each plugin and feature. The detail below it is for the
+plugin's author. <sup>[✦](#msantoro12)</sup>
+
 <img src="images/popup-hooks-failed.png" width="383" alt="Plugin Hooks Failed pop-up with the missing hooks of one plugin">
 
 ---
@@ -214,7 +223,7 @@ in `help` ([Console.md](Console.md)).
 | Command | Also | Does |
 |---|---|---|
 | `help [command]` | `?`, `commands` | List commands, or explain one |
-| `plugins` | `list`, `mods` | List every plugin, its version and state |
+| `plugins` | `list`, `mods` | List every plugin, its version and state (`Loaded (2 off)` when features are turned off) |
 | `reload <target>` | | Shut a plugin down, free its DLL and load it again |
 | `unload <target>` | | Shut a plugin down and free its DLL |
 | `load <target>` | | Load a plugin that is unloaded |
@@ -339,7 +348,7 @@ the whole API and you can hot-reload it while the game runs.
 | Game will not start after adding a preload plugin | Launch with `-NoPreload`, or set `Enabled=0` under `[Preload]` in `modloader.ini`. The loader also skips any preload plugin that did not finish loading last launch, and says which it was. Delete `Preload\.state` to let it try again. |
 | A dialog offers "Start Game Without ModLoader" | The game build changed or a scan pattern no longer matches. The mod loader stays off until it is updated. **Copy Details** has the report. `-SkipPatternValidation` overrides an ambiguous or wrong-kind pattern, not a missing one. |
 | A dialog says the game has changed in a way that would break your plugins | At startup the mod loader checks that the game classes it and its plugins read are still laid out the way it was built for. A game update moved some of them, so no plugins load this session: start the game without them, or quit until an update is out. The loader writes `ModLoader\compat-report-<CL>.json` (the game build, the executable's SHA-256 and what moved). It is what a loader update is made from, so attach it to your report. |
-| A plugin says "Needs an update to run on CL-..." | The plugin was built for another game build and does not declare that it takes its game data from the version map, so it would read this game's data where its own build had it. It loads on the build it names. Ask its author for an update. See [Game updates](#game-updates). |
+| A plugin says "Needs an update to run on CL-..." | The plugin was built for another game build and does not declare that it takes its game data from the version map, so it would read this game's data where its own build had it. It loads on the build it names. Ask its author for an update. See [Game updates](#game-updates) and [VersionMap.md](VersionMap.md). |
 | Logs / diagnostics | Check `ModLoader\Logs\ModLoader.log`. Raise the detail in the **Logging** tab, or set `Level=DEBUG` under `[Logging]` in `ModLoader\modloader.ini`. |
 | One plugin is flooding the log | See [Log Levels](#log-levels) — turn that plugin down on its own, or use `-PluginLogLevel=` if it happens during startup. |
 | The *game's* log is flooding on a dedicated server | Hundreds of `LogTemp` / `LogSkinnedMeshComp` warnings a second come from the game itself, not the mod loader. Server builds turn those two categories down to errors automatically; edit `GameLogCategories` under `[Logging]` in `ModLoader\modloader.ini` to change the list, or blank it to leave the game log alone. `-LogCmds=` has no effect on this build. |
@@ -360,14 +369,9 @@ run on any listed build. A plugin that does not declare it loads only on the bui
 against, and shows **Incompatible** on the others.
 
 On a client build with `[AutoUpdate] Enabled` on, the loader can also fetch a newer map as a signed
-file (`version-map-client.v1.txt`, attached to the loader's Latest release). It checks the Ed25519
-signature before it reads anything else in the file, rejects a file over 1 MiB, and keeps the last
-good copy in `ModLoader\version-map-client.v1.cache`. A fetched map never changes where the loader
-looks for something it already shipped with for your game build; it adds builds and keys. The
-request is made when the running game is in neither the built-in map nor the cache, after a refusal
-for the next launch, and at most once a day otherwise. The map is read once at startup and does
-not change during a session. Until the project's own signing key is compiled in, a release build
-trusts no key and reads no feed. A server build never makes the request.
+file, so a new game build can be supported without a loader update. A server build never does.
+How the map is chosen, how the feed is fetched, signed and cached, how CI publishes it and what
+each failure looks like is in [VersionMap.md](VersionMap.md).
 
 ## Net timeouts
 

@@ -257,7 +257,7 @@ namespace PluginManager
 		std::string cachedVersion;
 		std::string cachedAuthor;
 
-		bool isOutOfDate;            // true when plugin interface version is too old
+		bool isOutOfDate;            // true when it may not run here: a newer interface, or another game build
 		bool needsModLoaderUpdate;   // true when plugin interface version is too new
 		bool isWrongTarget;          // true when plugin was built for a different build target
 		bool hookScanFailed;         // true when OnPluginLoadHooks missed anything at all
@@ -299,7 +299,7 @@ namespace PluginManager
 	{
 		LoadFailure kind             = LoadFailure::None;
 		DWORD       win32Error       = 0;   // CouldNotLoad: GetLastError() of LoadLibrary
-		int         interfaceVersion = 0;   // OutOfDate: what the plugin was built for
+		int         interfaceVersion = 0;   // OutOfDate: the newer interface the plugin was built for
 		std::string name;                   // whatever name the DLL reported, if it got that far
 		std::string detail;                 // OffBuild: VersionMap::OffBuildRefusal's reason
 	};
@@ -381,24 +381,48 @@ namespace PluginManager
 			return false;
 		}
 
-		if (info->interfaceVersion < PLUGIN_INTERFACE_VERSION_MIN ||
-			info->interfaceVersion > PLUGIN_INTERFACE_VERSION_MAX)
+		// Only a newer interface is refused here: the tables only grow, so an
+		// older plugin gets the slots it knows. Whether it may run on this game
+		// build is the game-build check below, before anything else is read.
+		if (info->interfaceVersion > PLUGIN_INTERFACE_VERSION_MAX)
 		{
-			ModLoaderLogger::LogMessage(L"Plugin interface version %d not in supported range [%d, %d]: %s",
-				info->interfaceVersion,
-				PLUGIN_INTERFACE_VERSION_MIN, PLUGIN_INTERFACE_VERSION_MAX,
-				rec.fileName.c_str());
+			ModLoaderLogger::LogMessage(L"Plugin interface version %d is newer than this loader supports (up to %d): %s",
+				info->interfaceVersion, PLUGIN_INTERFACE_VERSION_MAX, rec.fileName.c_str());
 			// Cache what we can from the DLL so the UI can display it.
 			rec.cachedName          = info->name    ? info->name    : "";
 			rec.cachedVersion       = info->version ? info->version : "";
 			rec.cachedAuthor        = info->author  ? info->author  : "";
 			rec.isOutOfDate         = true;
-			rec.needsModLoaderUpdate = (info->interfaceVersion > PLUGIN_INTERFACE_VERSION_MAX);
+			rec.needsModLoaderUpdate = true;
 			// info points into the plugin's own image, so read it before the free.
 			if (why) { why->kind = LoadFailure::OutOfDate; why->interfaceVersion = info->interfaceVersion; }
 			FreeLibrary(hModule);
 			return false;
 		}
+
+		// A plugin is judged against the build its own SDK came from. Off that
+		// build it reads the game where its build had things, unless it takes
+		// everything from the map. The globals are asked for after PluginInit.
+		// It reads only interfaceVersion and the v72 tail, so it runs before
+		// pluginTarget, which a very old PluginInfo does not have.
+		rec.gameBuild = VersionMap::ReadPluginGameBuild(*info);
+		if (info->interfaceVersion >= 72 && !rec.gameBuild.declared)
+			ModLoaderLogger::LogWarn(L"Plugin '%S' declares no game build; judging it as built on CL-%u.",
+				info->name ? info->name : "(unknown)", rec.gameBuild.gameCL);
+		if (const std::string refusal = VersionMap::OffBuildRefusal(VersionMap::RunningExe(),
+				info->interfaceVersion, rec.gameBuild, true); !refusal.empty())
+		{
+			ModLoaderLogger::LogWarn(L"Plugin '%S' is not loaded: %S", info->name ? info->name : "(unknown)", refusal.c_str());
+			rec.cachedName           = info->name    ? info->name    : "";
+			rec.cachedVersion        = info->version ? info->version : "";
+			rec.cachedAuthor         = info->author  ? info->author  : "";
+			rec.isOutOfDate          = true;
+			rec.needsModLoaderUpdate = false;
+			if (why) { why->kind = LoadFailure::OffBuild; why->detail = refusal; }
+			FreeLibrary(hModule);
+			return false;
+		}
+
 
 		rec.isWrongTarget = false;
 
@@ -423,27 +447,6 @@ namespace PluginManager
 			rec.isWrongTarget = true;
 			FreeLibrary(hModule);
 			if (why) why->kind = LoadFailure::WrongTarget;
-			return false;
-		}
-
-		// A plugin is judged against the build its own SDK came from. Off that
-		// build it reads the game where its build had things, unless it takes
-		// everything from the map. The globals are asked for after PluginInit.
-		rec.gameBuild = VersionMap::ReadPluginGameBuild(*info);
-		if (info->interfaceVersion >= 72 && !rec.gameBuild.declared)
-			ModLoaderLogger::LogWarn(L"Plugin '%S' declares no game build; judging it as built on CL-%u.",
-				info->name ? info->name : "(unknown)", rec.gameBuild.gameCL);
-		if (const std::string refusal = VersionMap::OffBuildRefusal(VersionMap::RunningExe(),
-				info->interfaceVersion, rec.gameBuild, true); !refusal.empty())
-		{
-			ModLoaderLogger::LogWarn(L"Plugin '%S' is not loaded: %S", info->name ? info->name : "(unknown)", refusal.c_str());
-			rec.cachedName           = info->name    ? info->name    : "";
-			rec.cachedVersion        = info->version ? info->version : "";
-			rec.cachedAuthor         = info->author  ? info->author  : "";
-			rec.isOutOfDate          = true;
-			rec.needsModLoaderUpdate = false;
-			if (why) { why->kind = LoadFailure::OffBuild; why->detail = refusal; }
-			FreeLibrary(hModule);
 			return false;
 		}
 
@@ -1322,18 +1325,9 @@ namespace PluginManager
 			break;
 		case LoadFailure::OutOfDate:
 			r.status = ScanStatus::Incompatible;
-			if (why.interfaceVersion > PLUGIN_INTERFACE_VERSION_MAX)
-				snprintf(text, sizeof(text),
-					"Built for plugin interface v%d, newer than this loader (%s accepts up to v%d). Update the mod loader.",
-					why.interfaceVersion, MODLOADER_BUILD_TAG, PLUGIN_INTERFACE_VERSION_MAX);
-			else if (PLUGIN_INTERFACE_VERSION_MIN == PLUGIN_INTERFACE_VERSION_MAX)
-				snprintf(text, sizeof(text),
-					"Built for plugin interface v%d, older than this loader (%s accepts v%d). Ask its author for an update.",
-					why.interfaceVersion, MODLOADER_BUILD_TAG, PLUGIN_INTERFACE_VERSION_MAX);
-			else
-				snprintf(text, sizeof(text),
-					"Built for plugin interface v%d, older than this loader (%s accepts v%d to v%d). Ask its author for an update.",
-					why.interfaceVersion, MODLOADER_BUILD_TAG, PLUGIN_INTERFACE_VERSION_MIN, PLUGIN_INTERFACE_VERSION_MAX);
+			snprintf(text, sizeof(text),
+				"Built for plugin interface v%d, newer than this loader (%s accepts up to v%d). Update the mod loader.",
+				why.interfaceVersion, MODLOADER_BUILD_TAG, PLUGIN_INTERFACE_VERSION_MAX);
 			break;
 		case LoadFailure::OffBuild:
 			r.status = ScanStatus::Incompatible;

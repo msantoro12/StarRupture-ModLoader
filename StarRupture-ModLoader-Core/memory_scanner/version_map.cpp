@@ -336,6 +336,16 @@ namespace VersionMap
 		return cl != 0 && std::find(builds.begin(), builds.end(), cl) != builds.end();
 	}
 
+	namespace
+	{
+		// "CL-127004", or for gameCL 0 the builds before kLegacyPluginCL.
+		std::string DescribeBuiltFor(uint32_t gameCL)
+		{
+			return gameCL != 0 ? "CL-" + std::to_string(gameCL)
+				: "a build before CL-" + std::to_string(kLegacyPluginCL);
+		}
+	}
+
 	std::string OffBuildRefusal(const Exe& running, int interfaceVersion, const PluginGameBuild& built, bool askedSdkGlobals)
 	{
 		constexpr int kFirstMapInterface = 72;   // ResolveField, candidates, GetSdkGlobals
@@ -343,7 +353,7 @@ namespace VersionMap
 		if (migrated && !built.declared)
 			return "It declares that it takes its game data from the version map, but its PluginInfo names no game build"
 				" (gameBuiltCL is 0), so the loader cannot tell which build its SDK came from.";
-		if (running.cl == built.gameCL)
+		if (built.gameCL != 0 && running.cl == built.gameCL)
 			return {};
 		std::string why;
 		if (interfaceVersion < kFirstMapInterface)
@@ -354,14 +364,17 @@ namespace VersionMap
 			why = "it does not take the Game-SDK globals from the loader (GetSdkGlobals)";
 		else
 			return {};
-		const std::string was = "CL-" + std::to_string(built.gameCL);
+		const std::string was = DescribeBuiltFor(built.gameCL);
 		return "Needs an update to run on CL-" + std::to_string(running.cl) + ": " + why
-			+ ", so it would read this game's data where " + was + " had it. It loads on " + was + ".";
+			+ ", so it would read this game's data where " + was + " had it."
+			+ (built.gameCL != 0 ? " It loads on " + was + "." : std::string());
 	}
 
 	PluginGameBuild ReadPluginGameBuild(const PluginInfo& info)
 	{
 		PluginGameBuild build;
+		if (info.interfaceVersion < kLegacyPluginInterface)
+			build.gameCL = 0;
 		if (info.interfaceVersion < 72)   // the struct ends before the tail
 			return build;
 		build.mapFlags = info.mapFlags;
@@ -375,6 +388,8 @@ namespace VersionMap
 
 	std::string DescribePluginGameBuild(const PluginGameBuild& build)
 	{
+		if (build.gameCL == 0)
+			return DescribeBuiltFor(0);
 		return "CL-" + std::to_string(build.gameCL) + (build.declared ? "" : " (none declared)");
 	}
 
@@ -734,9 +749,10 @@ namespace VersionMap
 			if (key.empty() || std::none_of(map.functions.begin(), map.functions.end(),
 					[&](const MapFunctionRow& f) { return f.key == key; }))
 				return out;
-			int  otherKind  = 0;
-			bool otherFp    = false;
-			bool absentHere = false;
+			int      otherKind  = 0;
+			bool     otherFp    = false;
+			bool     absentHere = false;
+			uint32_t absentCL   = 0;   // the newest build the key is absent on, for a request it binds
 			for (const MapFunctionRow& f : map.functions)
 			{
 				if (f.key != key)
@@ -754,7 +770,11 @@ namespace VersionMap
 				if (f.absent)
 				{
 					if (f.gameCL != runningCL)
+					{
+						if (fp != 0 || ListsOwner(f.owners.c_str(), owner))
+							absentCL = std::max(absentCL, f.gameCL);
 						continue;
+					}
 					// A site's absent row binds its fingerprint, a global one the owners it lists.
 					if (fp != 0 || ListsOwner(f.owners.c_str(), owner))
 					{
@@ -777,6 +797,27 @@ namespace VersionMap
 				c.fromMap         = true;
 				out.rows.push_back(std::move(c));
 			}
+			// The map is consulted for the running build's row, and failing that
+			// for the latest build's, which Select then rescans on this build.
+			// Older rows are not used: the latest one is the one CI last
+			// verified, and an older locator that still matches adds nothing a
+			// newer one lacks. When the key is absent on a build newer than the
+			// latest row, that row is not used either: CI could not place it
+			// there, so it is not known to hold.
+			uint32_t latestCL = 0;
+			for (const Candidate& c : out.rows)
+				if (c.gameCL != runningCL && !c.pattern.empty() && c.gameCL > latestCL)
+					latestCL = c.gameCL;
+			std::string newerAbsent;
+			if (absentCL > latestCL)
+			{
+				if (latestCL)
+					newerAbsent = "loader map: absent on " + ClText(absentCL) + ", newer than its latest row";
+				latestCL = 0;
+			}
+			out.rows.erase(std::remove_if(out.rows.begin(), out.rows.end(),
+				[&](const Candidate& c) { return c.gameCL != runningCL && c.gameCL != latestCL; }), out.rows.end());
+
 			// Absent on this build for other owners: for this request the key is
 			// not placed, so none of its rows is used.
 			if (absentHere)
@@ -784,6 +825,8 @@ namespace VersionMap
 				out.rows.clear();
 				out.setAside = "loader map: absent on " + ClText(runningCL) + " for other requests";
 			}
+			else if (out.rows.empty() && !newerAbsent.empty())
+				out.setAside = newerAbsent;
 			else if (out.rows.empty() && otherKind)
 				out.setAside = std::string("loader map row is for another kind (")
 					+ ScanValidation::KindName(static_cast<ScanValidation::Kind>(otherKind)) + ")";
@@ -982,6 +1025,16 @@ namespace VersionMap
 			return nullptr;
 		}
 
+		// The row for the newest build, whatever the running one is.
+		const FieldCandidate* LatestRow(const std::vector<FieldCandidate>& rows)
+		{
+			const FieldCandidate* latest = nullptr;
+			for (const FieldCandidate& row : rows)
+				if (!latest || row.gameCL > latest->gameCL)
+					latest = &row;
+			return latest;
+		}
+
 		FieldValue ValueOf(const FieldCandidate& row)
 		{
 			return FieldValue{ row.offset, row.size, row.boolMask };
@@ -1045,9 +1098,18 @@ namespace VersionMap
 				}
 				if (!SameField(ValueOf(*same), ValueOf(own), bitfield) || same->member != own.member)
 				{
-					error = "the loader map's " + ClText(own.gameCL) + " row says " + text(*same)
+					const std::string disagreement = "the loader map's " + ClText(own.gameCL) + " row says " + text(*same)
 						+ ", the plugin's own says " + text(own);
-					return false;
+					// A native member has no live source to tell them apart, so
+					// neither is used. A reflected one is read from the game
+					// anyway, and the rows only cross-check it.
+					if ((request.flags & PLUGIN_FIELD_NATIVE) != 0)
+					{
+						error = disagreement;
+						return false;
+					}
+					ModLoaderLogger::LogWarn(L"[Map] %S: %S: %S; the game's reflection decides",
+						owner ? owner : "?", request.key.c_str(), disagreement.c_str());
 				}
 			}
 			rows = std::move(map);
@@ -1122,6 +1184,12 @@ namespace VersionMap
 				else
 				{
 					error = "no row for " + ClText(running.cl) + ", and a native member has no other source";
+					// A row for an older build says where the member sat then.
+					// Nothing on this build can confirm it still does, so it
+					// is not used: the feature using it turns off until CI has
+					// verified a row for this build.
+					if (const FieldCandidate* carried = LatestRow(rows))
+						error += "; the " + RowLabel(*carried) + " cannot be checked on this build, so it is not used";
 					return false;
 				}
 				if (value.size != request.size)
@@ -1137,8 +1205,16 @@ namespace VersionMap
 					error = "no reflection data to read a reflected field from";
 					return false;
 				}
-				const std::string member = row && !row->member.empty() ? row->member : request.member;
-				const LiveField live = g_liveFields(request.className, member);
+				// The row to check the game against: this build's, else the newest.
+				const FieldCandidate* checked = row ? row : LatestRow(rows);
+				std::string member = checked && !checked->member.empty() ? checked->member : request.member;
+				LiveField live = g_liveFields(request.className, member);
+				if (!live.error.empty() && member != request.member)
+				{
+					// The row's new name is not in this build: ask for it by its own.
+					member = request.member;
+					live   = g_liveFields(request.className, member);
+				}
 				if (!live.error.empty())
 				{
 					error = "reflection: " + live.error;
@@ -1160,15 +1236,18 @@ namespace VersionMap
 					error = "the game's member is " + Hex(value.size) + " bytes, the code was compiled for " + Hex(request.size);
 					return false;
 				}
-				if (row)
+				// The game is the source. A row is a cross-check, and where it
+				// disagrees the game wins and the disagreement is logged.
+				if (checked)
 				{
-					if (!SameField(ValueOf(*row), value, bitfield) && !(sizeRow && row->size == value.size))
-					{
-						error = "the " + RowLabel(*row) + " says " + FieldText(ValueOf(*row), bitfield)
-							+ ", the game says " + FieldText(value, bitfield);
-						return false;
-					}
-					how = RowLabel(*row) + ", as reflected";
+					const bool agrees = SameField(ValueOf(*checked), value, bitfield) || (sizeRow && checked->size == value.size);
+					if (!agrees)
+						ModLoaderLogger::LogWarn(L"[Map] %S: %S: the %S says %S, the game says %S; the game wins",
+							owner ? owner : "?", request.key.c_str(), RowLabel(*checked).c_str(),
+							FieldText(ValueOf(*checked), bitfield).c_str(), FieldText(value, bitfield).c_str());
+					how = row ? RowLabel(*row) + (agrees ? ", as reflected" : ", overruled by reflection")
+					          : "reflected (no row for " + ClText(running.cl) + "; the " + RowLabel(*checked)
+					            + (agrees ? " agrees)" : " does not)");
 				}
 				else
 				{

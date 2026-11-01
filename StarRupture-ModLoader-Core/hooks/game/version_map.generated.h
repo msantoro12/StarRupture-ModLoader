@@ -19,7 +19,7 @@ inline constexpr std::array<Build, 2> kBuilds = {{
 	{ 128786, 0xCF8579A6, 0x0F47D000, "public_test_branch 26271156" },
 }};
 
-inline constexpr std::array<FunctionRow, 122> kFunctionRows = {{
+inline constexpr std::array<FunctionRow, 132> kFunctionRows = {{
 	// AAbstractMassEnemySpawner::ActivateSpawner
 	{ 127004, 0xE8972298, 0x0F35C000, 1, 0x00000000, false, "48 89 5C 24 ?? 57 48 83 EC ?? 48 8B 81 ?? ?? ?? ?? 48 8B D9 33 D2", 0, -1, -1, 0x08C4AF80, nullptr },
 	{ 128786, 0xCF8579A6, 0x0F47D000, 1, 0x00000000, false, "48 89 5C 24 ?? 57 48 83 EC ?? 48 8B 81 ?? ?? ?? ?? 48 8B D9 33 D2", 0, -1, -1, 0x08CDACC0, nullptr },
@@ -62,6 +62,8 @@ inline constexpr std::array<FunctionRow, 122> kFunctionRows = {{
 	// FControlChannelOutBunch::ctor
 	{ 127004, 0xE8972298, 0x0F35C000, 1, 0x00000000, false, "40 53 48 83 EC ?? 48 8B D9 E8 ?? ?? ?? ?? 80 8B ?? ?? ?? ?? ?? 48 8D 05 ?? ?? ?? ?? ?? ?? ?? 48 8B C3", 0, -1, -1, 0x04988950, nullptr },
 	{ 128786, 0xCF8579A6, 0x0F47D000, 1, 0x00000000, false, "40 53 48 83 EC ?? 48 8B D9 E8 ?? ?? ?? ?? 80 8B ?? ?? ?? ?? ?? 48 8D 05 ?? ?? ?? ?? ?? ?? ?? 48 8B C3", 0, -1, -1, 0x0498F200, nullptr },
+	// FCrMassEntityReplicationHelper::FCrMassEntityReplicationHelper
+	{ 127004, 0xE8972298, 0x0F35C000, 1, 0x00000000, false, "48 89 5C 24 ?? 48 89 6C 24 ?? 48 89 74 24 ?? 57 48 83 EC ?? 33 ED C7 41 ?? ?? ?? ?? ?? ?? ?? 48 8B F9", 0, -1, -1, 0x06689F60, nullptr },
 	// FEngineLoop::Exit
 	{ 127004, 0xE8972298, 0x0F35C000, 1, 0x00000000, false, "40 53 55 56 57 48 83 EC ?? ?? ?? ?? 48 8B F9 FF 50", 0, -1, -1, 0x054EB3F0, nullptr },
 	{ 128786, 0xCF8579A6, 0x0F47D000, 1, 0x00000000, false, "40 53 55 56 57 48 83 EC ?? ?? ?? ?? 48 8B F9 FF 50", 0, -1, -1, 0x054F1BA0, nullptr },
@@ -80,6 +82,12 @@ inline constexpr std::array<FunctionRow, 122> kFunctionRows = {{
 	// FMassEntityManager::GetArchetypeForEntity
 	{ 127004, 0xE8972298, 0x0F35C000, 1, 0x00000000, false, "48 89 5C 24 ?? 48 89 74 24 ?? 57 48 83 EC ?? 48 8B FA 49 8B D8 49 8B D0 48 8B F1 E8 ?? ?? ?? ?? 84 C0", 0, -1, -1, 0x04459900, nullptr },
 	{ 128786, 0xCF8579A6, 0x0F47D000, 1, 0x00000000, false, "48 89 5C 24 ?? 48 89 74 24 ?? 57 48 83 EC ?? 48 8B FA 49 8B D8 49 8B D0 48 8B F1 E8 ?? ?? ?? ?? 84 C0", 0, -1, -1, 0x0445FEC0, nullptr },
+	// FMassEntityManager::InternalGetFragmentDataPtr
+	{ 127004, 0xE8972298, 0x0F35C000, 1, 0x00000000, false, "E8 ?? ?? ?? ?? 4C 8B C0 48 8B D3 48 8B CE E8 ?? ?? ?? ?? 48 85 C0 0F 84 ?? ?? ?? ?? 0F 10 48 20 66 41 0F 2F 4D 30 0F 10 40 30 0F 11 4D EF F2 0F 11 45 FF", 0, 14, -1, 0x044653A0, nullptr },
+	// FMassEntityManager::IsEntityBuilt
+	{ 127004, 0xE8972298, 0x0F35C000, 1, 0x00000000, false, "48 89 5C 24 18 48 89 54 24 10 57 48 83 EC 40 48 8B DA 48 8B F9 E8 ?? ?? ?? ?? 84 C0 75 4B 48 8D 0D ?? ?? ?? ?? 85 DB 48 8D 05 ?? ?? ?? ?? 41 B8 45 07 00 00 48 0F 44 C1 4C 8D 0D ?? ?? ?? ?? 48 89 44 24 30 48 8D 15 ?? ?? ?? ??", 0, -1, -1, 0x044657F0, nullptr },
+	// FMassEntityManager::IsEntityValid
+	{ 127004, 0xE8972298, 0x0F35C000, 1, 0x00000000, false, "48 89 5C 24 18 48 89 54 24 10 57 48 83 EC 40 48 8B DA 48 8B F9 E8 ?? ?? ?? ?? 84 C0 75 4B 48 8D 0D ?? ?? ?? ?? 85 DB 48 8D 05 ?? ?? ?? ?? 41 B8 45 07 00 00 48 0F 44 C1 4C 8D 0D ?? ?? ?? ?? 48 89 44 24 30 48 8D 15 ?? ?? ?? ??", 0, 21, -1, 0x044658A0, nullptr },
 	// FName::AppendString
 	{ 127004, 0xE8972298, 0x0F35C000, 1, 0x00000000, false, "48 89 5C 24 ?? 48 89 74 24 ?? 57 48 83 EC 20 80 3D ?? ?? ?? ?? 00 48 8B F2 8B 19 48 8B F9 74", 0, -1, -1, 0x014B4970, nullptr },
 	{ 128786, 0xCF8579A6, 0x0F47D000, 1, 0x00000000, false, "48 89 5C 24 ?? 48 89 74 24 ?? 57 48 83 EC 20 80 3D ?? ?? ?? ?? 00 48 8B F2 8B 19 48 8B F9 74", 0, -1, -1, 0x014BAF10, nullptr },
@@ -110,6 +118,8 @@ inline constexpr std::array<FunctionRow, 122> kFunctionRows = {{
 	// GWorld
 	{ 127004, 0xE8972298, 0x0F35C000, 4, 0x00000000, false, "48 8B 1D ?? ?? ?? ?? 48 85 DB 74 ?? 41 B0 01", 0, -1, 0, 0x0E4F61B8, nullptr },
 	{ 128786, 0xCF8579A6, 0x0F47D000, 4, 0x00000000, false, "48 8B 1D ?? ?? ?? ?? 48 85 DB 74 ?? 41 B0 01", 0, -1, 0, 0x0E600D38, nullptr },
+	// GetMassFragment<FCrCraftingFragment>
+	{ 127004, 0xE8972298, 0x0F35C000, 1, 0x00000000, false, "E8 ?? ?? ?? ?? 48 85 C0 75 ?? 33 C0 48 8B 5C 24 ?? 48 83 C4 ?? 5F C3 ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? 48 83 EC", 0, 0, -1, 0x073E0C00, nullptr },
 	// LoadPackage
 	{ 127004, 0xE8972298, 0x0F35C000, 1, 0x00000000, false, "48 89 5C 24 ?? 48 89 74 24 ?? 48 89 7C 24 ?? 55 41 54 41 55 41 56 41 57 48 8D 6C 24 ?? 48 81 EC ?? ?? ?? ?? 45 33 ED 4D 8B E1", 0, -1, -1, 0x017B2F40, nullptr },
 	{ 128786, 0xCF8579A6, 0x0F47D000, 1, 0x00000000, false, "48 89 5C 24 ?? 48 89 74 24 ?? 48 89 7C 24 ?? 55 41 54 41 55 41 56 41 57 48 8D 6C 24 ?? 48 81 EC ?? ?? ?? ?? 45 33 ED 4D 8B E1", 0, -1, -1, 0x017B94E0, nullptr },
@@ -152,6 +162,14 @@ inline constexpr std::array<FunctionRow, 122> kFunctionRows = {{
 	// UControlChannel::SendBunch
 	{ 127004, 0xE8972298, 0x0F35C000, 1, 0x00000000, false, "48 89 5C 24 ?? 48 89 74 24 ?? 57 48 83 EC ?? 8B 41 ?? 49 8B F0 48 8B FA 48 8B D9 85 C0", 0, -1, -1, 0x049BACB0, nullptr },
 	{ 128786, 0xCF8579A6, 0x0F47D000, 1, 0x00000000, false, "48 89 5C 24 ?? 48 89 74 24 ?? 57 48 83 EC ?? 8B 41 ?? 49 8B F0 48 8B FA 48 8B D9 85 C0", 0, -1, -1, 0x049C1560, nullptr },
+	// UCrBaseCoreSubsystem::GetBaseCoresRangedBuilding
+	{ 127004, 0xE8972298, 0x0F35C000, 1, 0x00000000, false, "48 89 5C 24 ?? 48 89 6C 24 ?? 56 57 41 56 48 83 EC ?? 65 48 8B 04 25 ?? ?? ?? ?? 48 8B FA", 0, -1, -1, 0x07401E70, nullptr },
+	// UCrBuildingCustomNameSubsystem::GetBuildingCustomNameByReplicationHelper
+	{ 127004, 0xE8972298, 0x0F35C000, 1, 0x00000000, false, "48 89 5C 24 ?? 48 89 6C 24 ?? 48 89 74 24 ?? 57 48 83 EC ?? 49 8B E9 49 8B D8 48 8B FA 48 8B F1 E8 ?? ?? ?? ?? 48 8B C8 E8", 0, -1, -1, 0x07455520, nullptr },
+	// UCrBuildingItemStorageComponent::GetStoredItemsContainerInternal
+	{ 127004, 0xE8972298, 0x0F35C000, 1, 0x00000000, false, "40 53 48 83 EC 50 48 8B 81 A8 00 00 00 48 8B D9 48 85 C0 75 ?? E8 ?? ?? ?? ?? 48 8B C8 E8 ?? ?? ?? ?? 48 8B 8B 50 02 00 00", 0, -1, -1, 0x0740BC20, nullptr },
+	// UCrCraftingComponent::GetCraftingFragment
+	{ 127004, 0xE8972298, 0x0F35C000, 1, 0x00000000, false, "48 89 5C 24 ?? 57 48 83 EC ?? 48 8B 99 ?? ?? ?? ?? ?? ?? ?? 48 8B B8 ?? ?? ?? ?? E8 ?? ?? ?? ?? 80 3D ?? ?? ?? ?? ?? 48 89 44 24 ?? 74 ?? 48 85 C0 74 ?? 48 8B C8 E8 ?? ?? ?? ?? 48 8D 54 24 ?? 48 8B CB FF D7 48 85 C0 74 ?? 48 8B C8 E8 ?? ?? ?? ?? 48 85 C0 75 ?? 33 C0 48 8B 5C 24 ?? 48 83 C4 ?? 5F C3 ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? 48 83 EC", 0, -1, -1, 0x07402F50, nullptr },
 	// UCrExperienceManagerComponent::OnExperienceLoadComplete
 	{ 127004, 0xE8972298, 0x0F35C000, 1, 0x00000000, false, "48 89 4C 24 ?? 55 53 56 41 54 41 55 48 8D 6C 24 ?? 48 81 EC ?? ?? ?? ?? 83 B9", 0, -1, -1, 0x07686B30, nullptr },
 	{ 128786, 0xCF8579A6, 0x0F47D000, 1, 0x00000000, false, "48 89 4C 24 ?? 55 53 56 41 54 41 55 48 8D 6C 24 ?? 48 81 EC ?? ?? ?? ?? 83 B9", 0, -1, -1, 0x076CFBC0, nullptr },
@@ -203,9 +221,11 @@ inline constexpr std::array<FunctionRow, 122> kFunctionRows = {{
 	// UWorld::EndPlay
 	{ 127004, 0xE8972298, 0x0F35C000, 1, 0x00000000, false, "40 55 41 56 48 81 EC ?? ?? ?? ?? 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 84 24 ?? ?? ?? ?? F6 81", 0, -1, -1, 0x0537F590, nullptr },
 	{ 128786, 0xCF8579A6, 0x0F47D000, 1, 0x00000000, false, "40 55 41 56 48 81 EC ?? ?? ?? ?? 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 84 24 ?? ?? ?? ?? F6 81", 0, -1, -1, 0x05385D40, nullptr },
+	// UWorld::GetSubsystem<UMassEntitySubsystem>
+	{ 127004, 0xE8972298, 0x0F35C000, 1, 0x00000000, false, "49 8B CD E8 ?? ?? ?? ?? 48 85 C0 74 ?? 48 8B C8 E8 ?? ?? ?? ?? 48 8B D8 EB ?? 33 DB 48 83 7B 38 00 75 ?? 4C 8D 0D ?? ?? ?? ?? 41 B8 ?? ?? ?? ??", 0, 16, -1, 0x0442A290, nullptr },
 }};
 
-inline constexpr std::array<FieldRow, 28> kFieldRows = {{
+inline constexpr std::array<FieldRow, 32> kFieldRows = {{
 	// AAuPlayerCameraManager::AdditionalFOVOffset
 	{ 127004, 0x299C, 0x4, 0x00, nullptr },
 	// AAuPlayerCameraManager::FOV
@@ -224,6 +244,14 @@ inline constexpr std::array<FieldRow, 28> kFieldRows = {{
 	{ 127004, 0x3A8, 0x1, 0xFF, nullptr },
 	// APlayerController::bPlayerIsWaiting
 	{ 127004, 0x4D0, 0x1, 0x10, nullptr },
+	// FCrGridEntityHandle::Data
+	{ 127004, 0x8, 0x10, 0x00, nullptr },
+	// FCrGridEntityHandle::EntityHandle
+	{ 127004, 0x0, 0x8, 0x00, nullptr },
+	// FMassEnemyHealthFragment::HP
+	{ 127004, 0x0, 0x4, 0x00, nullptr },
+	// FTransform::Translation
+	{ 127004, 0x20, 0x18, 0x00, nullptr },
 	// UCrEnviroWaveTimerSubsystem::NextWaveTimer
 	{ 127004, 0x7C, 0x4, 0x00, nullptr },
 	// UCrEnviroWaveTimerSubsystem::TimerActor
@@ -259,7 +287,7 @@ inline constexpr std::array<FieldRow, 28> kFieldRows = {{
 	{ 128786, 0x38, 0x8, 0x00, nullptr },
 }};
 
-inline constexpr std::array<Index, 61> kFunctions = {{
+inline constexpr std::array<Index, 71> kFunctions = {{
 	{ "AAbstractMassEnemySpawner::ActivateSpawner", 0, 2 },
 	{ "AAbstractMassEnemySpawner::DeactivateSpawner", 2, 2 },
 	{ "AActor::BeginPlay", 4, 2 },
@@ -274,56 +302,66 @@ inline constexpr std::array<Index, 61> kFunctions = {{
 	{ "FBitReader::SerializeBits", 22, 2 },
 	{ "FBitWriter::Serialize", 24, 2 },
 	{ "FControlChannelOutBunch::ctor", 26, 2 },
-	{ "FEngineLoop::Exit", 28, 2 },
-	{ "FEngineLoop::Init", 30, 2 },
-	{ "FLogSuppressionImplementation::ApplyGlobalChanges", 32, 2 },
-	{ "FLogSuppressionImplementation::ProcessConfigAndCommandLine", 34, 2 },
-	{ "FLogSuppressionInterface::Get", 36, 2 },
-	{ "FMassEntityManager::GetArchetypeForEntity", 38, 2 },
-	{ "FName::AppendString", 40, 2 },
-	{ "FOutBunch::~FOutBunch", 42, 2 },
-	{ "FPakFileModule::ShutdownModule", 44, 2 },
-	{ "FPakPlatformFile::HandleMountPakDelegate", 46, 2 },
-	{ "FPakPlatformFile::HandleUnmountPakDelegate", 48, 2 },
-	{ "FText::AsLocalizable_Advanced", 50, 2 },
-	{ "FTextKey::FTextKey", 52, 2 },
-	{ "FindPackage", 54, 2 },
-	{ "GNames (NamePoolData)", 56, 2 },
-	{ "GWorld", 58, 2 },
-	{ "LoadPackage", 60, 2 },
-	{ "ModLoader/GObjects (GUObjectArray.ObjObjects)", 62, 2 },
-	{ "ModLoader/HandleCrashInternal_FatalReportCallSite", 64, 2 },
-	{ "ModLoader/UEngine::PreExit", 66, 2 },
-	{ "ReportCrashUsingCrashReportClient", 68, 2 },
-	{ "StaticFindObject (ByName)", 70, 2 },
-	{ "StaticFindObject (ByPath)", 72, 2 },
-	{ "StaticFindObjectFast", 74, 2 },
-	{ "StaticFindObjectSafe (ByName)", 76, 2 },
-	{ "StaticFindObjectSafe (ByPath)", 78, 2 },
-	{ "StaticLoadObject", 80, 2 },
-	{ "UClass::FindFunctionByName", 82, 2 },
-	{ "UControlChannel::ReceivedBunch", 84, 2 },
-	{ "UControlChannel::SendBunch", 86, 2 },
-	{ "UCrExperienceManagerComponent::OnExperienceLoadComplete", 88, 2 },
-	{ "UCrMapManuSubsystem::GatherPlayersData", 90, 2 },
-	{ "UCrMassSaveSubsystem::OnSaveLoaded", 92, 2 },
-	{ "UCrUW_MainMenuWidget::NativeConstruct", 94, 2 },
-	{ "UCrUW_PauseMenu::NativeConstruct", 96, 2 },
-	{ "UGameEngine::Exec", 98, 2 },
-	{ "UGameEngine::Init", 100, 2 },
-	{ "UGameEngine::Tick", 102, 2 },
-	{ "UGameInstance::Init", 104, 2 },
-	{ "UGameViewportClient::InputKey", 106, 2 },
-	{ "ULineBatchComponent::DrawLines", 108, 2 },
-	{ "ULineBatchComponent::Flush", 110, 2 },
-	{ "UMassSignalSubsystem::SignalEntity", 112, 2 },
-	{ "UObject::ProcessEvent", 114, 2 },
-	{ "UPackage::FullyLoad", 116, 2 },
-	{ "UWorld::BeginPlay", 118, 2 },
-	{ "UWorld::EndPlay", 120, 2 },
+	{ "FCrMassEntityReplicationHelper::FCrMassEntityReplicationHelper", 28, 1 },
+	{ "FEngineLoop::Exit", 29, 2 },
+	{ "FEngineLoop::Init", 31, 2 },
+	{ "FLogSuppressionImplementation::ApplyGlobalChanges", 33, 2 },
+	{ "FLogSuppressionImplementation::ProcessConfigAndCommandLine", 35, 2 },
+	{ "FLogSuppressionInterface::Get", 37, 2 },
+	{ "FMassEntityManager::GetArchetypeForEntity", 39, 2 },
+	{ "FMassEntityManager::InternalGetFragmentDataPtr", 41, 1 },
+	{ "FMassEntityManager::IsEntityBuilt", 42, 1 },
+	{ "FMassEntityManager::IsEntityValid", 43, 1 },
+	{ "FName::AppendString", 44, 2 },
+	{ "FOutBunch::~FOutBunch", 46, 2 },
+	{ "FPakFileModule::ShutdownModule", 48, 2 },
+	{ "FPakPlatformFile::HandleMountPakDelegate", 50, 2 },
+	{ "FPakPlatformFile::HandleUnmountPakDelegate", 52, 2 },
+	{ "FText::AsLocalizable_Advanced", 54, 2 },
+	{ "FTextKey::FTextKey", 56, 2 },
+	{ "FindPackage", 58, 2 },
+	{ "GNames (NamePoolData)", 60, 2 },
+	{ "GWorld", 62, 2 },
+	{ "GetMassFragment<FCrCraftingFragment>", 64, 1 },
+	{ "LoadPackage", 65, 2 },
+	{ "ModLoader/GObjects (GUObjectArray.ObjObjects)", 67, 2 },
+	{ "ModLoader/HandleCrashInternal_FatalReportCallSite", 69, 2 },
+	{ "ModLoader/UEngine::PreExit", 71, 2 },
+	{ "ReportCrashUsingCrashReportClient", 73, 2 },
+	{ "StaticFindObject (ByName)", 75, 2 },
+	{ "StaticFindObject (ByPath)", 77, 2 },
+	{ "StaticFindObjectFast", 79, 2 },
+	{ "StaticFindObjectSafe (ByName)", 81, 2 },
+	{ "StaticFindObjectSafe (ByPath)", 83, 2 },
+	{ "StaticLoadObject", 85, 2 },
+	{ "UClass::FindFunctionByName", 87, 2 },
+	{ "UControlChannel::ReceivedBunch", 89, 2 },
+	{ "UControlChannel::SendBunch", 91, 2 },
+	{ "UCrBaseCoreSubsystem::GetBaseCoresRangedBuilding", 93, 1 },
+	{ "UCrBuildingCustomNameSubsystem::GetBuildingCustomNameByReplicationHelper", 94, 1 },
+	{ "UCrBuildingItemStorageComponent::GetStoredItemsContainerInternal", 95, 1 },
+	{ "UCrCraftingComponent::GetCraftingFragment", 96, 1 },
+	{ "UCrExperienceManagerComponent::OnExperienceLoadComplete", 97, 2 },
+	{ "UCrMapManuSubsystem::GatherPlayersData", 99, 2 },
+	{ "UCrMassSaveSubsystem::OnSaveLoaded", 101, 2 },
+	{ "UCrUW_MainMenuWidget::NativeConstruct", 103, 2 },
+	{ "UCrUW_PauseMenu::NativeConstruct", 105, 2 },
+	{ "UGameEngine::Exec", 107, 2 },
+	{ "UGameEngine::Init", 109, 2 },
+	{ "UGameEngine::Tick", 111, 2 },
+	{ "UGameInstance::Init", 113, 2 },
+	{ "UGameViewportClient::InputKey", 115, 2 },
+	{ "ULineBatchComponent::DrawLines", 117, 2 },
+	{ "ULineBatchComponent::Flush", 119, 2 },
+	{ "UMassSignalSubsystem::SignalEntity", 121, 2 },
+	{ "UObject::ProcessEvent", 123, 2 },
+	{ "UPackage::FullyLoad", 125, 2 },
+	{ "UWorld::BeginPlay", 127, 2 },
+	{ "UWorld::EndPlay", 129, 2 },
+	{ "UWorld::GetSubsystem<UMassEntitySubsystem>", 131, 1 },
 }};
 
-inline constexpr std::array<Index, 23> kFields = {{
+inline constexpr std::array<Index, 27> kFields = {{
 	{ "AAuPlayerCameraManager::AdditionalFOVOffset", 0, 1 },
 	{ "AAuPlayerCameraManager::FOV", 1, 1 },
 	{ "ACrCrafter::CraftComponent", 2, 2 },
@@ -332,20 +370,24 @@ inline constexpr std::array<Index, 23> kFields = {{
 	{ "ACrPlayerControllerBase::bMapMenuOpen", 7, 1 },
 	{ "ACrTechnologyKeeper::bUnlockAllBuildings", 8, 1 },
 	{ "APlayerController::bPlayerIsWaiting", 9, 1 },
-	{ "UCrEnviroWaveTimerSubsystem::NextWaveTimer", 10, 1 },
-	{ "UCrEnviroWaveTimerSubsystem::TimerActor", 11, 1 },
-	{ "UCrEnviroWaveTimerSubsystem::WaitingDuration", 12, 1 },
-	{ "UCrEnviroWaveTimerSubsystem::bPause", 13, 1 },
-	{ "UCrEnviroWaveTimerSubsystem::bStopWaves", 14, 1 },
-	{ "UCrEnviroWaveTimerSubsystem::bWaitingForNextWave", 15, 1 },
-	{ "UCrGameInstance::ServerSessionName", 16, 1 },
-	{ "UCrUW_InventoryContainer::InventoryComponent", 17, 1 },
-	{ "ULocalPlayer::Origin", 18, 1 },
-	{ "ULocalPlayer::Size", 19, 1 },
-	{ "UMassActorSubsystem::ActorManager", 20, 1 },
-	{ "UMassEntitySubsystem::EntityManager", 21, 1 },
-	{ "UWorld::GameState", 22, 2 },
-	{ "UWorld::LineBatchers", 24, 2 },
-	{ "UWorld::NetDriver", 26, 2 },
+	{ "FCrGridEntityHandle::Data", 10, 1 },
+	{ "FCrGridEntityHandle::EntityHandle", 11, 1 },
+	{ "FMassEnemyHealthFragment::HP", 12, 1 },
+	{ "FTransform::Translation", 13, 1 },
+	{ "UCrEnviroWaveTimerSubsystem::NextWaveTimer", 14, 1 },
+	{ "UCrEnviroWaveTimerSubsystem::TimerActor", 15, 1 },
+	{ "UCrEnviroWaveTimerSubsystem::WaitingDuration", 16, 1 },
+	{ "UCrEnviroWaveTimerSubsystem::bPause", 17, 1 },
+	{ "UCrEnviroWaveTimerSubsystem::bStopWaves", 18, 1 },
+	{ "UCrEnviroWaveTimerSubsystem::bWaitingForNextWave", 19, 1 },
+	{ "UCrGameInstance::ServerSessionName", 20, 1 },
+	{ "UCrUW_InventoryContainer::InventoryComponent", 21, 1 },
+	{ "ULocalPlayer::Origin", 22, 1 },
+	{ "ULocalPlayer::Size", 23, 1 },
+	{ "UMassActorSubsystem::ActorManager", 24, 1 },
+	{ "UMassEntitySubsystem::EntityManager", 25, 1 },
+	{ "UWorld::GameState", 26, 2 },
+	{ "UWorld::LineBatchers", 28, 2 },
+	{ "UWorld::NetDriver", 30, 2 },
 }};
 }

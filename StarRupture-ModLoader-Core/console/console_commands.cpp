@@ -475,11 +475,18 @@ namespace ModConsole
         {
             const PluginManager::PluginStatus& s = statuses[static_cast<size_t>(i)];
 
+            // "Loaded (2 off)": it runs, with that many features turned off for
+            // this game build (see `hookfailures`).
+            char loadedState[24] = "Loaded";
+            const int featuresOff = s.isLoaded ? PluginHookReport::GetFeaturesOffCount(s.name) : 0;
+            if (featuresOff > 0)
+                sprintf_s(loadedState, "Loaded (%d off)", featuresOff);
+
             const char* state = "Unloaded";
             if (s.isWrongTarget)        state = "Wrong target";
             else if (s.hookScanFailed)  state = "Hooks failed";
             else if (s.isOutOfDate)     state = s.needsModLoaderUpdate ? "Needs loader" : "Needs update";
-            else if (s.isLoaded)        state = "Loaded";
+            else if (s.isLoaded)        state = loadedState;
 
             out.Printf(s.isWrongTarget || s.isOutOfDate || s.hookScanFailed ? LineKind::Error : LineKind::Output,
                        "%-3d %-26s %-12s %-14s %s",
@@ -621,11 +628,19 @@ namespace ModConsole
                            fail.required ? "required" : "optional", fail.hookName.c_str());
                 out.Notice("          %s", fail.detail.c_str());
             }
+
+            for (const PluginHookReport::FeatureOff& feature : r.featuresOff)
+            {
+                out.Out("      [feature off] %s", feature.title.c_str());
+                for (const PluginHookReport::FeatureMiss& miss : feature.misses)
+                    out.Notice("          %s: %s", miss.key.c_str(), miss.detail.c_str());
+            }
         }
 
         out.Notice("A hook that no longer resolves usually means the game updated and the");
-        out.Notice("plugin needs a new build. Any unresolved hook stops the plugin loading --");
-        out.Notice("required or optional, and a pattern that matches more than once counts as");
+        out.Notice("plugin needs a new build. A hook the plugin cannot do without stops it");
+        out.Notice("loading; a hook only one feature needs turns that feature off and the");
+        out.Notice("rest of the plugin runs. A pattern that matches more than once counts as");
         out.Notice("unresolved too. Full detail is in modloader.log.");
     }
 

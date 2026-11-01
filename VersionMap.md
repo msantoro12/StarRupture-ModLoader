@@ -269,6 +269,52 @@ allows (`M`) and `max_releases_per_day`. With `enabled: false`, `decide.mjs` ret
 the owner turns it on. `vmap-watchdog.yml` opens an issue when Latest's feed lags the last signed
 `seq` by more than two hours.
 
+## Getting a value added to the shared map
+
+A plugin does not have to wait for the shared map. It can carry its own row for a key (the SDK's
+`plugin_version_map.h` builds them into the plugin), and the loader uses the shared row first
+and the plugin's own row second (see [Selection](#selection)). A plugin written for interface v73
+or later can also declare features, so a value that does not resolve turns one feature off instead
+of refusing the plugin. Older plugins are accepted too, as [Admission](#admission) says.
+
+A plugin's own rows are only as current as its last release. To have the pipeline keep a value
+current on every game build, send a PR that adds it to the shared map and to the CI key list:
+
+1. **A function or global.** Add the plugin's rows for the build you tested to
+   `hooks/game/version_map.generated.h` (`kFunctionRows`), with the `rva` you verified. The key is
+   `Class::Function` for a game symbol. A site key is `<PluginName>/<hookName>` and carries the
+   request's `fp`. The CI pipeline regenerates these rows for each new build, from the scans of
+   the plugins it tracks (the `plugins` input of `sr-client-check.yml`), so name your plugin there
+   too.
+2. **A member.** Add a row to `kFieldRows` for the build you tested, and a line to
+   `ci/native-keys.txt` in starrupture-ci so `field-rows.mjs` reads it from the PDB on every build.
+3. **Optional or required.** A key is optional if the plugin runs without it. Mark it `optional`
+   on the `native-keys.txt` line so a miss on a new build is not a failure; a key is optional
+   only when every plugin's line for it says so.
+
+The row formats, from the generated header:
+
+    // MiniMap/FBulkData::GetBulkDataSize
+    { 127004, 0xE8972298, 0x0F35C000, 3, 0x26FFCBE0, false, "44 0F B6 49 0C ...", 0, -1, -1, 0x015BFD50, nullptr },
+    // UCrPlayerMapMenuDataComponent::FOWData
+    { 127004, 0x100, 0x10, 0x00, nullptr },
+
+A function row is: CL, image stamp, image size, kind, `fp`, absent, pattern, `resultOffset`,
+`followRel32At`, `followRipDispAt`, `rva`. A field row is: CL, offset, size, bool mask. And the
+`native-keys.txt` line for a member:
+
+    MiniMap UTexture::SRGB optional
+
+That is `<plugin> <Class::Member>`, then optionally an offset, size and mask in hex when the
+PDB's size is not the plugin's, then `optional`. The header of `ci/native-keys.txt` has the full
+format.
+
+Before you send it, check that the plugin meets what the map relies on. `PluginGameBuild.props`
+(in the SDK) defines the plugin's `PLUGIN_GAME_BUILT_CL`, `PLUGIN_MAP_MIGRATED` is the promise
+that it reads no game data from compiled-in offsets, and the SDK's rule-3 check
+(`tools/rule3-check.mjs`) is the scan that backs that promise. Run `Tests\VersionMapTests` and
+`node --test ci/*.test.mjs` in starrupture-ci; both must pass.
+
 ## Failure modes
 
 What a player sees, and what the log says (`ModLoader\Logs\ModLoader.log`).

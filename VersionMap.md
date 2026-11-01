@@ -98,13 +98,22 @@ class's live size. See the SDK guide for the `[Map]` log lines.
 
 ## Features
 
-A plugin can group the keys one part of it needs with `DeclareFeature` (or `DeclareFeatures`),
-during `OnPluginLoadHooks`. A key that fails and belongs to a declared feature turns that
-feature off, and the plugin still loads. A key that fails and belongs to no feature refuses the
-plugin, as before. The loader also refuses a plugin for an interface mismatch, for no built CL,
-and for missing core globals (`GetSdkGlobals`). A feature that is off is listed in the failure
-window and in the log (`[Map] <plugin>: feature "<title>" is off: <keys>`), and its config
-entries are reported as off so a settings page can grey them out.
+A plugin can group the keys one part of it needs into a feature, with a plain-English title and
+the config entries it drives. How to declare one is in the SDK guide
+([Features](https://github.com/AlienXAXS/StarRupture-Plugin-SDK/blob/main/PluginDevelopment.md#features----declarefeature)).
+
+What the loader does with it:
+- A key that fails (step 4 of [Selection](#selection)) and belongs to a declared feature turns
+  that feature off. The plugin still loads, `refused` stays false, and `GetCommitSerial()` still
+  bumps so the failure window opens.
+- A key that fails and belongs to no feature refuses the plugin, as before.
+- The failure window lists the feature by its title; the log has one line,
+  `[Map] <plugin>: feature "<title>" is off: <keys> (<reason>)`.
+- Its config entries are reported as off (`PluginHookReport::ConfigOffReason`) so the config page
+  can grey them out. Stored values are kept.
+
+A plugin is still refused, whatever it declared, for an interface mismatch, for no built CL, and
+for missing core globals (`GetSdkGlobals`); see [Admission](#admission).
 
 ## Admission
 

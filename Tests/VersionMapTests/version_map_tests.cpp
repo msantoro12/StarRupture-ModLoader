@@ -242,7 +242,7 @@ int main()
 		"loader site: a new pattern is not used, the built row stands in");
 
 	// The real map against the registry: every key is a registry row's, with its kind and fingerprint.
-	int unmatched = 0, wrong = 0;
+	int unmatched = 0, wrong = 0, pluginKeys = 0;
 	for (const Real::VersionMap::Index& index : Real::VersionMap::kFunctions)
 	{
 		const ScanPatterns::PreflightEntry* entry = nullptr;
@@ -251,8 +251,18 @@ int main()
 				entry = &e;
 		if (!entry)
 		{
-			++unmatched;
-			printf("  not a registry key: %s\n", index.key);
+			// A plugin's own function key: a global kind with no fingerprint, so any plugin may ask for it by name.
+			for (uint16_t i = index.first; i < index.first + index.count; ++i)
+			{
+				const Real::VersionMap::FunctionRow& row = Real::VersionMap::kFunctionRows[i];
+				if (row.kind != static_cast<int>(Kind::FunctionStart) || row.fp != 0)
+				{
+					++unmatched;
+					printf("  not a registry key, and not a global key: %s\n", index.key);
+					break;
+				}
+			}
+			++pluginKeys;
 			continue;
 		}
 		for (uint16_t i = index.first; i < index.first + index.count; ++i)
@@ -725,7 +735,8 @@ int main()
 	}
 
 	Check(Real::VersionMap::kFormatVersion == 2, "the real map is format 2");
-	Check(unmatched == 0, "every real map key is a registry row's");
+	Check(unmatched == 0, "every real map key is a registry row's or a plugin's global key");
+	Check(pluginKeys == 10, "the real map holds the ten plugin function keys of the version-map build");
 	Check(wrong == 0, "every real map row has its registry row's kind and fp");
 
 	printf("%d checks, %d failed\n", g_checks, g_failed);

@@ -1195,6 +1195,665 @@ static void STDMETHODCALLTYPE HookedECL(ID3D12CommandQueue* pQueue,
 }
 
 // ---------------------------------------------------------------------------
+// BuildImGuiFrame -- one ImGui frame: cursor ownership, font rebuild, every
+// RenderFrame callback, ImGui::Render. Caller holds g_imguiMutex.
+//
+// Cursor management: hand control to ImGui whenever any modloader UI
+// surface is visible (main window OR any open plugin panel).
+// NoMouseCursorChange prevents ImGui's Win32 backend from calling
+// SetCursor() every frame -- without it, it fights UE5's cursor management
+// and causes visible flickering whenever our window is closed.
+// ---------------------------------------------------------------------------
+static void BuildImGuiFrame()
+{
+	// Cursor ownership follows EXCLUSIVE capture only.
+	//
+	// Cooperative passthrough used to count here too, on the reasoning that a
+	// plugin's always-on windows have to stay clickable. But that put a
+	// simulated cursor on screen for as long as any passthrough token was
+	// held -- so a plugin doing nothing but drawing a HUD readout took the
+	// pointer away from the game and the player lost mouse look. When the
+	// only thing on screen is a passthrough window, the game keeps focus.
+	//
+	// This also keeps the invariant HookedWndProc relies on: ImGui is only
+	// fed mouse messages while it actually owns the cursor. UE5 hides and
+	// re-centres the OS cursor during gameplay, so an ImGui that was still
+	// tracking it would sit at a frozen position and any widget underneath
+	// would swallow clicks meant for the game.
+	bool uiOpen = (g_callbacks.ShouldCaptureInput ? g_callbacks.ShouldCaptureInput() : false);
+	ImGuiIO& frameIO = ImGui::GetIO();
+	if (uiOpen)
+	{
+		frameIO.ConfigFlags &= ~ImGuiConfigFlags_NoMouseCursorChange;
+		frameIO.MouseDrawCursor = true;
+
+		// Only sample the game's clip on the closed -> open edge; by the
+		// second frame the clip is already ours to manage.
+		if (!g_prevUiOpen)
+		{
+			RECT existing{};
+			g_hadGameClip = GetClipCursor(&existing) && IsRealClip(existing);
+		}
+		ClipCursor(nullptr);
+	}
+	else
+	{
+		frameIO.ConfigFlags |= ImGuiConfigFlags_NoMouseCursorChange;
+		frameIO.MouseDrawCursor = false;
+
+		// open -> closed edge: hand the cursor back to the game. ClipCursor
+		// pulls the cursor inside the rect if it had already escaped, so
+		// this also recovers a cursor sitting outside the window.
+		if (g_prevUiOpen)
+			RestoreGameCursorClip();
+	}
+	g_prevUiOpen = uiOpen;
+
+	// Pause menu closed without exclusive capture taking over: ImGui stops
+	// being fed the mouse, so park it off-screen and release any held
+	// button, or a widget under the last position stays hovered or keeps
+	// dragging (the menu can close mid-drag on Escape). The Win32 backend
+	// still polls the OS cursor on its own while it is not tracking the
+	// mouse, as it does after F2 closes, so the parked position may not
+	// last; the button release is what ends the drag.
+	const bool menuCursor = !uiOpen &&
+		(g_callbacks.IsPauseMenuOpen ? g_callbacks.IsPauseMenuOpen() : false);
+	if (g_prevMenuCursor && !menuCursor && !uiOpen)
+	{
+		frameIO.AddMousePosEvent(-FLT_MAX, -FLT_MAX);
+		for (int button = 0; button < ImGuiMouseButton_COUNT; ++button)
+			frameIO.AddMouseButtonEvent(button, false);
+	}
+	g_prevMenuCursor = menuCursor;
+
+	// Rebuild font atlas if the user changed the font family.
+	// Must happen before NewFrame to avoid using a destroyed font texture.
+	if (g_pendingFontRebuild.exchange(false))
+		RebuildFontAtlas(/*initialSetup=*/false);
+
+	ImGui_ImplDX12_NewFrame();
+	ImGui_ImplWin32_NewFrame();
+	ImGui::NewFrame();
+
+	if (g_callbacks.RenderFrame)
+		g_callbacks.RenderFrame(&g_imguiAPI);
+
+	ImGui::Render();
+}
+
+// ---------------------------------------------------------------------------
+// Frame generation
+//
+// DLSS Frame Generation presents the frames it generates from inside
+// Streamline; they never pass through HookedPresent, so ImGui drawn there is
+// on the real frames only. The game's own HUD survives because UE tags a UI
+// buffer (kBufferTypeUIColorAndAlpha) that DLSS-G composites over every frame
+// it generates. The overlay takes the same path:
+//
+//   * slSetTagForFrame / slSetTag (render thread): the UI tag is pointed at a
+//     texture of ours, and UE's UI buffer is copied into it on UE's own
+//     command list.
+//   * slHookPresent, DLSS-G's present hook (present thread, before DLSS-G
+//     reads the frame): the ImGui frame is built and drawn into that texture.
+//     HookedPresent then draws the same frame onto the back buffer, so real
+//     frames look exactly as they did before.
+//
+// Without Streamline, or while nothing tags a UI buffer (frame generation
+// off), none of this runs and HookedPresent builds its own frame as before.
+// ---------------------------------------------------------------------------
+namespace SlAbi
+{
+	// Streamline 2.x structs as the tag functions receive them (sl_struct.h,
+	// sl_core_types.h, kStructVersion1). Only what the overlay reads or
+	// replaces is used; the rest is there for the layout.
+	struct BaseStructure
+	{
+		BaseStructure* next;
+		GUID           structType;
+		size_t         structVersion;
+	};
+
+	struct Resource : BaseStructure
+	{
+		char     type;              // sl::ResourceType, 0 = eTex2d
+		void*    native;
+		void*    memory;
+		void*    view;
+		uint32_t state;             // D3D12_RESOURCE_STATES, UINT_MAX = unknown
+		uint32_t width;
+		uint32_t height;
+		uint32_t nativeFormat;
+		uint32_t mipLevels;
+		uint32_t arrayLayers;
+		uint64_t gpuVirtualAddress;
+		uint32_t flags;
+		uint32_t usage;
+		uint32_t reserved;
+	};
+	static_assert(sizeof(Resource) == 112, "sl::Resource layout");
+
+	struct ResourceTag : BaseStructure
+	{
+		Resource* resource;
+		uint32_t  type;             // sl::BufferType
+		uint32_t  lifecycle;        // sl::ResourceLifecycle
+		uint32_t  extent[4];
+	};
+	static_assert(sizeof(ResourceTag) == 64, "sl::ResourceTag layout");
+
+	constexpr GUID     kResourceStructType    = { 0x3a9d70cf, 0x2418, 0x4b72, { 0x83, 0x91, 0x13, 0xf8, 0x72, 0x1c, 0x72, 0x61 } };
+	constexpr GUID     kResourceTagStructType = { 0x4c6a5aad, 0xb445, 0x496c, { 0x87, 0xff, 0x1a, 0xf3, 0x84, 0x5b, 0xe6, 0x53 } };
+	constexpr uint32_t kBufferTypeUIColorAndAlpha = 23;
+	constexpr uint32_t kValidUntilPresent = 1;
+	constexpr uint32_t kUnknownState = UINT_MAX;
+
+	using SetTagForFrameFn    = int (*)(const void* frame, const void* viewport, const ResourceTag* tags, uint32_t numTags, void* cmdBuffer);
+	using SetTagFn            = int (*)(const void* viewport, const ResourceTag* tags, uint32_t numTags, void* cmdBuffer);
+	using PresentBeforeFn     = HRESULT (*)(IDXGISwapChain* swapChain, UINT syncInterval, UINT flags, bool& skip);
+	using GetPluginFunctionFn = void* (*)(const char* name);
+}
+
+namespace FrameGen
+{
+	// Where our UI texture rests between uses, and the state it is tagged in.
+	constexpr D3D12_RESOURCE_STATES kRestState =
+		D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+	constexpr uint32_t  kMaxTags = 16;
+	constexpr int       kIdlePresents = 4;        // presents without a UI tag before HookedPresent builds again
+	constexpr int       kRetiredPresents = 8;     // presents a replaced texture is kept alive for
+	constexpr int       kMaxRetired = 4;
+	constexpr ULONGLONG kStatsIntervalMs = 10000;
+
+	static HookHandle g_presentHook = nullptr;
+	static HookHandle g_tagForFrameHook = nullptr;
+	static HookHandle g_tagHook = nullptr;
+	static SlAbi::PresentBeforeFn  g_originalSlPresent = nullptr;
+	static SlAbi::SetTagForFrameFn g_originalSetTagForFrame = nullptr;
+	static SlAbi::SetTagFn         g_originalSetTag = nullptr;
+
+	// The texture the UI tag is pointed at. Replaced by the tag hook on the
+	// render thread, read by the present hook; both under g_uiMutex.
+	struct RetiredTexture { ID3D12Resource* resource; int presentsLeft; };
+	static std::mutex          g_uiMutex;
+	static ID3D12Resource*     g_uiTexture = nullptr;
+	static D3D12_RESOURCE_DESC g_uiDesc = {};
+	static RetiredTexture      g_retired[kMaxRetired] = {};
+	static std::atomic<UINT64> g_uiTagSerial{ 0 };
+
+	// Present thread, under g_imguiMutex. The draw context exists only to own
+	// a second DX12 backend in the UI texture's format: the backend bakes one
+	// RTV format into its pipeline, and the back buffer's is not this one.
+	static ImGuiContext*              g_drawContext = nullptr;
+	static DXGI_FORMAT                g_drawFormat = DXGI_FORMAT_UNKNOWN;
+	static ID3D12DescriptorHeap*      g_uiRtvHeap = nullptr;
+	static ID3D12CommandAllocator*    g_uiAllocator = nullptr;
+	static ID3D12GraphicsCommandList* g_uiCmdList = nullptr;
+	static ID3D12Fence*               g_uiFence = nullptr;
+	static HANDLE                     g_uiFenceEvent = nullptr;
+	static UINT64                     g_uiFenceValue = 0;
+	static std::atomic<bool>          g_frameBuilt{ false };
+
+	// Counts for the periodic log line; reset each time it is written.
+	struct Stats
+	{
+		std::atomic<uint32_t> tagsReplaced{ 0 };
+		std::atomic<uint32_t> tagsPassed{ 0 };
+		std::atomic<uint32_t> prePresentBuilds{ 0 };
+		std::atomic<uint32_t> nativeDrawsOfBuilt{ 0 };
+		std::atomic<uint32_t> nativeBuilds{ 0 };
+		std::atomic<DWORD>    tagThread{ 0 };
+		std::atomic<DWORD>    prePresentThread{ 0 };
+		std::atomic<DWORD>    nativeThread{ 0 };
+	};
+	static Stats g_stats;
+
+	static D3D12_RESOURCE_BARRIER Transition(ID3D12Resource* resource,
+		D3D12_RESOURCE_STATES before, D3D12_RESOURCE_STATES after)
+	{
+		D3D12_RESOURCE_BARRIER barrier = {};
+		barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+		barrier.Transition.pResource = resource;
+		barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+		barrier.Transition.StateBefore = before;
+		barrier.Transition.StateAfter = after;
+		return barrier;
+	}
+
+	static bool IsUiFormat(DXGI_FORMAT format)
+	{
+		return format == DXGI_FORMAT_B8G8R8A8_UNORM
+			|| format == DXGI_FORMAT_R8G8B8A8_UNORM
+			|| format == DXGI_FORMAT_R16G16B16A16_FLOAT;
+	}
+
+	// Our texture, sized and formatted like UE's UI buffer. Caller holds g_uiMutex.
+	static ID3D12Resource* EnsureUiTexture(const D3D12_RESOURCE_DESC& source, uint32_t sourceState)
+	{
+		if (g_uiTexture && g_uiDesc.Width == source.Width && g_uiDesc.Height == source.Height
+			&& g_uiDesc.Format == source.Format)
+			return g_uiTexture;
+
+		// The old one may still be read by work already queued: keep it a few
+		// presents before letting it go.
+		if (g_uiTexture)
+		{
+			RetiredTexture* slot = &g_retired[0];
+			for (RetiredTexture& retired : g_retired)
+				if (!retired.resource || retired.presentsLeft < slot->presentsLeft)
+					slot = &retired;
+			if (slot->resource) slot->resource->Release();
+			*slot = { g_uiTexture, kRetiredPresents };
+			g_uiTexture = nullptr;
+		}
+
+		D3D12_RESOURCE_DESC desc = {};
+		desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+		desc.Width = source.Width;
+		desc.Height = source.Height;
+		desc.DepthOrArraySize = 1;
+		desc.MipLevels = 1;
+		desc.Format = source.Format;
+		desc.SampleDesc.Count = 1;
+		desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+
+		D3D12_HEAP_PROPERTIES heap = {};
+		heap.Type = D3D12_HEAP_TYPE_DEFAULT;
+
+		ID3D12Resource* texture = nullptr;
+		if (FAILED(g_device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc,
+			kRestState, nullptr, IID_PPV_ARGS(&texture))))
+		{
+			IMGUI_LOG_ERROR("[ImGuiBackend] FG overlay: UI texture %llux%u (fmt %u) could not be created",
+				static_cast<unsigned long long>(desc.Width), desc.Height, static_cast<unsigned>(desc.Format));
+			return nullptr;
+		}
+
+		g_uiTexture = texture;
+		g_uiDesc = desc;
+		IMGUI_LOG_INFO("[ImGuiBackend] FG overlay: UI buffer %llux%u fmt %u state 0x%X, texture created",
+			static_cast<unsigned long long>(desc.Width), desc.Height,
+			static_cast<unsigned>(desc.Format), sourceState);
+		return texture;
+	}
+
+	// Copies the tags with UE's UI buffer replaced by ours, and records the
+	// copy of UE's buffer into ours on UE's command list. False: nothing was
+	// replaced and UE's tags go on unchanged.
+	static bool RedirectUiTag(const SlAbi::ResourceTag* tags, uint32_t numTags, void* cmdBuffer,
+		SlAbi::ResourceTag* out, SlAbi::Resource& outResource)
+	{
+		if (g_shutdown || !g_initialized || !tags || !cmdBuffer || numTags > kMaxTags)
+			return false;
+
+		uint32_t ui = numTags;
+		for (uint32_t i = 0; i < numTags; ++i)
+			if (tags[i].type == SlAbi::kBufferTypeUIColorAndAlpha && tags[i].resource)
+				ui = i;
+		if (ui == numTags)
+			return false;
+
+		g_stats.tagThread = GetCurrentThreadId();
+		const SlAbi::ResourceTag& tag = tags[ui];
+		const SlAbi::Resource& source = *tag.resource;
+		ID3D12Resource* ueBuffer = static_cast<ID3D12Resource*>(source.native);
+		if (!IsEqualGUID(tag.structType, SlAbi::kResourceTagStructType)
+			|| !IsEqualGUID(source.structType, SlAbi::kResourceStructType)
+			|| source.type != 0 || !ueBuffer || source.state == SlAbi::kUnknownState)
+		{
+			++g_stats.tagsPassed;
+			return false;
+		}
+
+		const D3D12_RESOURCE_DESC desc = ueBuffer->GetDesc();
+		if (desc.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D || desc.SampleDesc.Count != 1
+			|| desc.DepthOrArraySize != 1 || desc.MipLevels != 1 || !IsUiFormat(desc.Format))
+		{
+			++g_stats.tagsPassed;
+			return false;
+		}
+
+		std::lock_guard<std::mutex> lock(g_uiMutex);
+		ID3D12Resource* ours = EnsureUiTexture(desc, source.state);
+		if (!ours)
+		{
+			++g_stats.tagsPassed;
+			return false;
+		}
+
+		// UE's buffer goes back to the state it was tagged in, so UE's own
+		// state tracking stays right.
+		auto* list = static_cast<ID3D12GraphicsCommandList*>(cmdBuffer);
+		const auto ueState = static_cast<D3D12_RESOURCE_STATES>(source.state);
+		const UINT ueBarrier = (ueState & D3D12_RESOURCE_STATE_COPY_SOURCE) ? 0u : 1u;
+		D3D12_RESOURCE_BARRIER before[] = {
+			Transition(ours, kRestState, D3D12_RESOURCE_STATE_COPY_DEST),
+			Transition(ueBuffer, ueState, D3D12_RESOURCE_STATE_COPY_SOURCE),
+		};
+		D3D12_RESOURCE_BARRIER after[] = {
+			Transition(ours, D3D12_RESOURCE_STATE_COPY_DEST, kRestState),
+			Transition(ueBuffer, D3D12_RESOURCE_STATE_COPY_SOURCE, ueState),
+		};
+		list->ResourceBarrier(1 + ueBarrier, before);
+		list->CopyResource(ours, ueBuffer);
+		list->ResourceBarrier(1 + ueBarrier, after);
+
+		// UE's buffer was valid only now, so Streamline would copy it; ours
+		// holds until present, where the overlay is drawn into it.
+		outResource = source;
+		outResource.native = ours;
+		outResource.state = static_cast<uint32_t>(kRestState);
+		for (uint32_t i = 0; i < numTags; ++i)
+			out[i] = tags[i];
+		out[ui].resource = &outResource;
+		out[ui].lifecycle = SlAbi::kValidUntilPresent;
+
+		g_uiTagSerial.fetch_add(1);
+		++g_stats.tagsReplaced;
+		return true;
+	}
+
+	static int HookedSetTagForFrame(const void* frame, const void* viewport,
+		const SlAbi::ResourceTag* tags, uint32_t numTags, void* cmdBuffer)
+	{
+		SlAbi::ResourceTag redirected[kMaxTags];
+		SlAbi::Resource uiResource;
+		if (RedirectUiTag(tags, numTags, cmdBuffer, redirected, uiResource))
+			return g_originalSetTagForFrame(frame, viewport, redirected, numTags, cmdBuffer);
+		return g_originalSetTagForFrame(frame, viewport, tags, numTags, cmdBuffer);
+	}
+
+	static int HookedSetTag(const void* viewport,
+		const SlAbi::ResourceTag* tags, uint32_t numTags, void* cmdBuffer)
+	{
+		SlAbi::ResourceTag redirected[kMaxTags];
+		SlAbi::Resource uiResource;
+		if (RedirectUiTag(tags, numTags, cmdBuffer, redirected, uiResource))
+			return g_originalSetTag(viewport, redirected, numTags, cmdBuffer);
+		return g_originalSetTag(viewport, tags, numTags, cmdBuffer);
+	}
+
+	static void ReleaseDrawContext()
+	{
+		if (!g_drawContext) return;
+		ImGuiContext* mainContext = ImGui::GetCurrentContext();
+		ImGui::SetCurrentContext(g_drawContext);
+		ImGui_ImplDX12_Shutdown();
+		ImGui::SetCurrentContext(mainContext);
+		ImGui::DestroyContext(g_drawContext);
+		g_drawContext = nullptr;
+		g_drawFormat = DXGI_FORMAT_UNKNOWN;
+	}
+
+	// The draw-only context and the objects the UI pass records with.
+	// Caller holds g_imguiMutex.
+	static bool EnsureDrawContext(DXGI_FORMAT format)
+	{
+		if (!g_uiRtvHeap)
+		{
+			D3D12_DESCRIPTOR_HEAP_DESC heapDesc = {};
+			heapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
+			heapDesc.NumDescriptors = 1;
+			if (FAILED(g_device->CreateDescriptorHeap(&heapDesc, IID_PPV_ARGS(&g_uiRtvHeap))))
+				return false;
+		}
+		if (!g_uiAllocator && FAILED(g_device->CreateCommandAllocator(
+			D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&g_uiAllocator))))
+			return false;
+		if (!g_uiCmdList)
+		{
+			if (FAILED(g_device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT,
+				g_uiAllocator, nullptr, IID_PPV_ARGS(&g_uiCmdList))))
+				return false;
+			g_uiCmdList->Close();
+		}
+		if (!g_uiFence)
+		{
+			if (FAILED(g_device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&g_uiFence))))
+				return false;
+			g_uiFenceEvent = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+		}
+
+		if (g_drawContext && g_drawFormat == format)
+			return true;
+		ReleaseDrawContext();
+
+		ImGuiContext* mainContext = ImGui::GetCurrentContext();
+		g_drawContext = ImGui::CreateContext();
+		ImGui::SetCurrentContext(g_drawContext);
+
+		// It never creates a texture: the main backend updates every texture
+		// before this one draws.
+		ImGui_ImplDX12_InitInfo info = {};
+		info.Device = g_device;
+		info.CommandQueue = g_cmdQueue;
+		info.NumFramesInFlight = static_cast<int>(g_frameCount);
+		info.RTVFormat = format;
+		info.SrvDescriptorHeap = g_srvHeap;
+		info.SrvDescriptorAllocFn = [](ImGui_ImplDX12_InitInfo*,
+			D3D12_CPU_DESCRIPTOR_HANDLE* cpu, D3D12_GPU_DESCRIPTOR_HANDLE* gpu)
+			{
+				IM_ASSERT(false && "the draw-only backend creates no textures");
+				*cpu = g_srvHeap->GetCPUDescriptorHandleForHeapStart();
+				*gpu = g_srvHeap->GetGPUDescriptorHandleForHeapStart();
+			};
+		info.SrvDescriptorFreeFn = [](ImGui_ImplDX12_InitInfo*,
+			D3D12_CPU_DESCRIPTOR_HANDLE, D3D12_GPU_DESCRIPTOR_HANDLE) {};
+		const bool ok = ImGui_ImplDX12_Init(&info) && ImGui_ImplDX12_CreateDeviceObjects();
+		ImGui::SetCurrentContext(mainContext);
+		if (!ok)
+		{
+			IMGUI_LOG_ERROR("[ImGuiBackend] FG overlay: draw backend for fmt %u failed", static_cast<unsigned>(format));
+			ReleaseDrawContext();
+			return false;
+		}
+		g_drawFormat = format;
+		return true;
+	}
+
+	// Builds this present's ImGui frame and draws it into the UI texture,
+	// before DLSS-G composites the texture over the frames it generates.
+	static void PrepareGeneratedFrames(IDXGISwapChain* swapChain)
+	{
+		if (g_shutdown || !g_initialized || swapChain != g_swapChain)
+			return;
+
+		// Only while UE tags a UI buffer. With frame generation off it stops,
+		// and after a few presents HookedPresent builds its own frames again.
+		static UINT64 s_lastSerial = 0;
+		static int s_idlePresents = kIdlePresents;
+		const UINT64 serial = g_uiTagSerial.load();
+		if (serial != s_lastSerial)
+		{
+			s_lastSerial = serial;
+			s_idlePresents = 0;
+		}
+		else if (s_idlePresents < kIdlePresents)
+		{
+			++s_idlePresents;
+		}
+
+		ID3D12Resource* target = nullptr;
+		{
+			std::lock_guard<std::mutex> lock(g_uiMutex);
+			for (RetiredTexture& retired : g_retired)
+				if (retired.resource && --retired.presentsLeft <= 0)
+				{
+					retired.resource->Release();
+					retired = {};
+				}
+			if (s_idlePresents < kIdlePresents && g_uiTexture)
+			{
+				target = g_uiTexture;
+				target->AddRef();
+			}
+		}
+		if (!target)
+			return;
+
+		const D3D12_RESOURCE_DESC desc = target->GetDesc();
+		std::lock_guard<std::recursive_mutex> imguiLock(g_imguiMutex);
+		if (!EnsureDrawContext(desc.Format))
+		{
+			target->Release();
+			return;
+		}
+
+		ReclaimRetiredTextures();
+		BuildImGuiFrame();
+		g_frameBuilt = true;
+		++g_stats.prePresentBuilds;
+		g_stats.prePresentThread = GetCurrentThreadId();
+
+		ImDrawData* drawData = ImGui::GetDrawData();
+		if (drawData && drawData->Textures)
+		{
+			// The main backend uploads new and changed textures, as its own
+			// RenderDrawData would, so the draw-only backend never owns one.
+			for (ImTextureData* tex : *drawData->Textures)
+				if (tex->Status != ImTextureStatus_OK)
+					ImGui_ImplDX12_UpdateTexture(tex);
+		}
+
+		g_uiAllocator->Reset();
+		g_uiCmdList->Reset(g_uiAllocator, nullptr);
+
+		D3D12_RESOURCE_BARRIER barrier = Transition(target, kRestState, D3D12_RESOURCE_STATE_RENDER_TARGET);
+		g_uiCmdList->ResourceBarrier(1, &barrier);
+
+		D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle = g_uiRtvHeap->GetCPUDescriptorHandleForHeapStart();
+		D3D12_RENDER_TARGET_VIEW_DESC rtvDesc = {};
+		rtvDesc.Format = desc.Format;
+		rtvDesc.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2D;
+		g_device->CreateRenderTargetView(target, &rtvDesc, rtvHandle);
+		g_uiCmdList->OMSetRenderTargets(1, &rtvHandle, FALSE, nullptr);
+		g_uiCmdList->SetDescriptorHeaps(1, &g_srvHeap);
+
+		ImGuiContext* mainContext = ImGui::GetCurrentContext();
+		ImGui::SetCurrentContext(g_drawContext);
+		ImGui_ImplDX12_RenderDrawData(drawData, g_uiCmdList);
+		ImGui::SetCurrentContext(mainContext);
+
+		barrier = Transition(target, D3D12_RESOURCE_STATE_RENDER_TARGET, kRestState);
+		g_uiCmdList->ResourceBarrier(1, &barrier);
+		g_uiCmdList->Close();
+
+		// Same queue and same CPU wait as HookedPresent: done before DLSS-G
+		// reads the texture.
+		ID3D12CommandList* cmdLists[] = { g_uiCmdList };
+		g_cmdQueue->ExecuteCommandLists(1, cmdLists);
+		const UINT64 signalVal = ++g_uiFenceValue;
+		g_cmdQueue->Signal(g_uiFence, signalVal);
+		if (g_uiFence->GetCompletedValue() < signalVal)
+		{
+			g_uiFence->SetEventOnCompletion(signalVal, g_uiFenceEvent);
+			WaitForSingleObject(g_uiFenceEvent, 500);
+		}
+		target->Release();
+	}
+
+	static HRESULT HookedSlPresent(IDXGISwapChain* swapChain, UINT syncInterval, UINT flags, bool& skip)
+	{
+		PrepareGeneratedFrames(swapChain);
+		return g_originalSlPresent(swapChain, syncInterval, flags, skip);
+	}
+
+	// Present thread, right after D3D12 init: Streamline and DLSS-G are
+	// loaded long before the first frame.
+	static void InstallHooks()
+	{
+		const IPluginHookUtils* hooks = g_callbacks.CodeHooks;
+		if (!g_streamlineActive || !hooks || !hooks->Install)
+			return;
+
+		HMODULE interposer = GetModuleHandleW(L"sl.interposer.dll");
+		HMODULE dlssg = GetModuleHandleW(L"sl.dlss_g.dll");
+		auto getPluginFunction = dlssg
+			? reinterpret_cast<SlAbi::GetPluginFunctionFn>(GetProcAddress(dlssg, "slGetPluginFunction"))
+			: nullptr;
+		void* present = getPluginFunction ? getPluginFunction("slHookPresent") : nullptr;
+		void* tagForFrame = interposer ? reinterpret_cast<void*>(GetProcAddress(interposer, "slSetTagForFrame")) : nullptr;
+		void* tag = interposer ? reinterpret_cast<void*>(GetProcAddress(interposer, "slSetTag")) : nullptr;
+		if (!present || !tagForFrame)
+		{
+			IMGUI_LOG_INFO("[ImGuiBackend] FG overlay: DLSS-G present hook or slSetTagForFrame not found, overlay stays on real frames");
+			return;
+		}
+
+		// The present hook first: without it the UI tag must stay UE's.
+		g_presentHook = hooks->Install(reinterpret_cast<uintptr_t>(present),
+			reinterpret_cast<void*>(&HookedSlPresent), reinterpret_cast<void**>(&g_originalSlPresent));
+		if (!g_presentHook)
+		{
+			IMGUI_LOG_WARN("[ImGuiBackend] FG overlay: hooking DLSS-G's present failed, overlay stays on real frames");
+			return;
+		}
+		g_tagForFrameHook = hooks->Install(reinterpret_cast<uintptr_t>(tagForFrame),
+			reinterpret_cast<void*>(&HookedSetTagForFrame), reinterpret_cast<void**>(&g_originalSetTagForFrame));
+		if (tag)
+			g_tagHook = hooks->Install(reinterpret_cast<uintptr_t>(tag),
+				reinterpret_cast<void*>(&HookedSetTag), reinterpret_cast<void**>(&g_originalSetTag));
+
+		IMGUI_LOG_INFO("[ImGuiBackend] FG overlay: hooks present=ok slSetTagForFrame=%s slSetTag=%s",
+			g_tagForFrameHook ? "ok" : "failed", g_tagHook ? "ok" : (tag ? "failed" : "absent"));
+	}
+
+	static void RemoveHooks()
+	{
+		const IPluginHookUtils* hooks = g_callbacks.CodeHooks;
+		if (!hooks || !hooks->Remove)
+			return;
+		for (HookHandle* handle : { &g_tagHook, &g_tagForFrameHook, &g_presentHook })
+			if (*handle)
+			{
+				hooks->Remove(*handle);
+				*handle = nullptr;
+			}
+	}
+
+	// After the GPU flush at shutdown.
+	static void ReleaseResources()
+	{
+		std::lock_guard<std::recursive_mutex> imguiLock(g_imguiMutex);
+		ReleaseDrawContext();
+		if (g_uiCmdList)    { g_uiCmdList->Release();   g_uiCmdList = nullptr; }
+		if (g_uiAllocator)  { g_uiAllocator->Release(); g_uiAllocator = nullptr; }
+		if (g_uiRtvHeap)    { g_uiRtvHeap->Release();   g_uiRtvHeap = nullptr; }
+		if (g_uiFence)      { g_uiFence->Release();     g_uiFence = nullptr; }
+		if (g_uiFenceEvent) { CloseHandle(g_uiFenceEvent); g_uiFenceEvent = nullptr; }
+
+		std::lock_guard<std::mutex> lock(g_uiMutex);
+		for (RetiredTexture& retired : g_retired)
+			if (retired.resource)
+			{
+				retired.resource->Release();
+				retired = {};
+			}
+		if (g_uiTexture) { g_uiTexture->Release(); g_uiTexture = nullptr; }
+	}
+
+	// One line every ten seconds while the hooks are in, for the in-game test.
+	static void LogStats()
+	{
+		if (!g_presentHook)
+			return;
+		static ULONGLONG s_nextLog = 0;
+		const ULONGLONG now = GetTickCount64();
+		if (now < s_nextLog)
+			return;
+		if (s_nextLog != 0)
+			IMGUI_LOG_INFO("[ImGuiBackend] FG overlay: UI tags replaced %u passed %u | pre-present builds %u | "
+				"native draws of a built frame %u, native builds %u | threads tag %lu pre-present %lu native %lu",
+				g_stats.tagsReplaced.exchange(0), g_stats.tagsPassed.exchange(0),
+				g_stats.prePresentBuilds.exchange(0), g_stats.nativeDrawsOfBuilt.exchange(0),
+				g_stats.nativeBuilds.exchange(0), static_cast<unsigned long>(g_stats.tagThread.load()),
+				static_cast<unsigned long>(g_stats.prePresentThread.load()),
+				static_cast<unsigned long>(g_stats.nativeThread.load()));
+		s_nextLog = now + kStatsIntervalMs;
+	}
+}
+
+
+// ---------------------------------------------------------------------------
 // IDXGISwapChain::Present hook
 // ---------------------------------------------------------------------------
 static HRESULT STDMETHODCALLTYPE HookedPresent(IDXGISwapChain* swapChain, UINT syncInterval, UINT flags)
@@ -1231,6 +1890,8 @@ static HRESULT STDMETHODCALLTYPE HookedPresent(IDXGISwapChain* swapChain, UINT s
 			}
 			// else: size filter rejected this swap chain, try again next frame.
 		}
+		else
+			FrameGen::InstallHooks();
 		g_presentOwnerThread.store(0, std::memory_order_release);
 		return g_originalPresent(swapChain, syncInterval, flags);
 	}
@@ -1273,7 +1934,10 @@ static HRESULT STDMETHODCALLTYPE HookedPresent(IDXGISwapChain* swapChain, UINT s
 	// Release plugin textures freed since the GPU last caught up. Before
 	// RenderFrame, so a slot freed here can be reused by a Load* without this
 	// frame ever having seen the old SRV.
-	ReclaimRetiredTextures();
+	// A frame DLSS-G's present hook built has reclaimed already, and its
+	// draw data may still name a slot this would free.
+	if (!FrameGen::g_frameBuilt)
+		ReclaimRetiredTextures();
 
 	// Acquire the back buffer just for this frame -- released before returning
 	// so that ResizeBuffers is never blocked by our reference.
@@ -1315,87 +1979,22 @@ static HRESULT STDMETHODCALLTYPE HookedPresent(IDXGISwapChain* swapChain, UINT s
 	barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
 	g_cmdList->ResourceBarrier(1, &barrier);
 
-	// Cursor management: hand control to ImGui whenever any modloader UI
-	// surface is visible (main window OR any open plugin panel).
-	// NoMouseCursorChange prevents ImGui's Win32 backend from calling
-	// SetCursor() every frame -- without it, it fights UE5's cursor management
-	// and causes visible flickering whenever our window is closed.
 	{
 		std::lock_guard<std::recursive_mutex> imguiLock(g_imguiMutex);
 
-		// Cursor ownership follows EXCLUSIVE capture only.
-		//
-		// Cooperative passthrough used to count here too, on the reasoning that a
-		// plugin's always-on windows have to stay clickable. But that put a
-		// simulated cursor on screen for as long as any passthrough token was
-		// held -- so a plugin doing nothing but drawing a HUD readout took the
-		// pointer away from the game and the player lost mouse look. When the
-		// only thing on screen is a passthrough window, the game keeps focus.
-		//
-		// This also keeps the invariant HookedWndProc relies on: ImGui is only
-		// fed mouse messages while it actually owns the cursor. UE5 hides and
-		// re-centres the OS cursor during gameplay, so an ImGui that was still
-		// tracking it would sit at a frozen position and any widget underneath
-		// would swallow clicks meant for the game.
-		bool uiOpen = (g_callbacks.ShouldCaptureInput ? g_callbacks.ShouldCaptureInput() : false);
-		ImGuiIO& frameIO = ImGui::GetIO();
-		if (uiOpen)
+		// DLSS-G's present hook may already have built this frame and drawn
+		// it into the UI buffer. Draw that same frame here: the real frame
+		// then matches the generated ones, and no overlay ticks twice.
+		if (FrameGen::g_frameBuilt.exchange(false))
 		{
-			frameIO.ConfigFlags &= ~ImGuiConfigFlags_NoMouseCursorChange;
-			frameIO.MouseDrawCursor = true;
-
-			// Only sample the game's clip on the closed -> open edge; by the
-			// second frame the clip is already ours to manage.
-			if (!g_prevUiOpen)
-			{
-				RECT existing{};
-				g_hadGameClip = GetClipCursor(&existing) && IsRealClip(existing);
-			}
-			ClipCursor(nullptr);
+			++FrameGen::g_stats.nativeDrawsOfBuilt;
 		}
 		else
 		{
-			frameIO.ConfigFlags |= ImGuiConfigFlags_NoMouseCursorChange;
-			frameIO.MouseDrawCursor = false;
-
-			// open -> closed edge: hand the cursor back to the game. ClipCursor
-			// pulls the cursor inside the rect if it had already escaped, so
-			// this also recovers a cursor sitting outside the window.
-			if (g_prevUiOpen)
-				RestoreGameCursorClip();
+			BuildImGuiFrame();
+			++FrameGen::g_stats.nativeBuilds;
 		}
-		g_prevUiOpen = uiOpen;
-
-		// Pause menu closed without exclusive capture taking over: ImGui stops
-		// being fed the mouse, so park it off-screen and release any held
-		// button, or a widget under the last position stays hovered or keeps
-		// dragging (the menu can close mid-drag on Escape). The Win32 backend
-		// still polls the OS cursor on its own while it is not tracking the
-		// mouse, as it does after F2 closes, so the parked position may not
-		// last; the button release is what ends the drag.
-		const bool menuCursor = !uiOpen &&
-			(g_callbacks.IsPauseMenuOpen ? g_callbacks.IsPauseMenuOpen() : false);
-		if (g_prevMenuCursor && !menuCursor && !uiOpen)
-		{
-			frameIO.AddMousePosEvent(-FLT_MAX, -FLT_MAX);
-			for (int button = 0; button < ImGuiMouseButton_COUNT; ++button)
-				frameIO.AddMouseButtonEvent(button, false);
-		}
-		g_prevMenuCursor = menuCursor;
-
-		// Rebuild font atlas if the user changed the font family.
-		// Must happen before NewFrame to avoid using a destroyed font texture.
-		if (g_pendingFontRebuild.exchange(false))
-			RebuildFontAtlas(/*initialSetup=*/false);
-
-		ImGui_ImplDX12_NewFrame();
-		ImGui_ImplWin32_NewFrame();
-		ImGui::NewFrame();
-
-		if (g_callbacks.RenderFrame)
-			g_callbacks.RenderFrame(&g_imguiAPI);
-
-		ImGui::Render();
+		FrameGen::g_stats.nativeThread = tid;
 
 		g_cmdList->OMSetRenderTargets(1, &rtvHandle, FALSE, nullptr);
 		g_cmdList->SetDescriptorHeaps(1, &g_srvHeap);
@@ -1430,6 +2029,8 @@ static HRESULT STDMETHODCALLTYPE HookedPresent(IDXGISwapChain* swapChain, UINT s
 		g_fence->SetEventOnCompletion(signalVal, g_fenceEvent);
 		WaitForSingleObject(g_fenceEvent, 500);
 	}
+
+	FrameGen::LogStats();
 
 	backBuffer->Release();
 
@@ -3349,6 +3950,7 @@ extern "C" __declspec(dllexport) void ImGuiHost_Shutdown()
 {
 	g_shutdown = true;
 	if (g_callbacks.RemoveInputHook) g_callbacks.RemoveInputHook();
+	FrameGen::RemoveHooks();
 
 		// Restore the original vtable entry.
 		if (g_vtableSlot && g_originalPresent)
@@ -3392,6 +3994,7 @@ extern "C" __declspec(dllexport) void ImGuiHost_Shutdown()
 				g_fence->SetEventOnCompletion(g_fenceValue, g_fenceEvent);
 				WaitForSingleObject(g_fenceEvent, 500);
 			}
+			FrameGen::ReleaseResources();
 			CleanupD3D12Resources();
 			g_initialized = false;
 		}

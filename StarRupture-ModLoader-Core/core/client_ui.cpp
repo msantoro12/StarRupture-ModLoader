@@ -8,7 +8,6 @@
 #include "../hooks/game/world_begin_play/world_begin_play.h"
 #include "../hooks/game/engine_tick/engine_tick.h"
 #include "../hooks/game/framegen_pause/framegen_pause.h"
-#include "../hooks/hooks_interface.h"
 #include "../hooks/game/game_menu/game_menu.h"
 #include "../hooks/game/game_menu/game_menu_registry.h"
 #include "../hooks/input/input_processor.h"
@@ -204,7 +203,6 @@ void InitClientUI()
         {
             Hooks::InputHook::Remove();
         };
-        cbs.CodeHooks = ModLoaderLogger::GetPluginHooks()->Hooks;
 
         UI::ImGuiBackend::Initialize(cbs);
     }

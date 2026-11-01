@@ -31,12 +31,11 @@ namespace VersionFeed
 		//
 		// k1 is a TEST key, generated locally for the unit tests and test
 		// feeds. Only a build that defines VMAP_TRUST_TEST_KEY (the tests and
-		// sr-aobscan) trusts it; any other build skips the slot, so a release
-		// reads no feed until a real key is in a slot. The real public key goes
-		// in kK2Hex.
+		// sr-aobscan) trusts it; any other build skips the slot. k2 is the release
+		// key: every build trusts it, with no define.
 		constexpr const char* kK1Hex = "e1650a7bb99a2941c9c034f22f2a22fb16f482b67e7f2edc31489c43975020cf";
 		constexpr bool        kK1TestOnly = true;
-		constexpr const char* kK2Hex = "";
+		constexpr const char* kK2Hex = "5457aba109e92926917d74e15932e4ff689f28f83510ec1a9679e7b8e7c81a85";
 		constexpr bool        kK2TestOnly = false;
 
 #if defined(VMAP_TRUST_TEST_KEY)

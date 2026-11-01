@@ -276,12 +276,22 @@ int main()
 		const std::string fixture = Slurp(FixturePath("test-feed-k1.txt"));
 		SignedFeed f;
 		std::string e;
+#if defined(VMAP_TRUST_TEST_KEY)
 		Check(!fixture.empty() && Read(fixture, VersionFeed::CompiledKeys(), f, e) && f.seq == 1761900000 && f.keyId == "k1"
 			&& f.testKey && f.map.builds.size() == 2, "a feed signed by Node with the TEST key verifies against slot k1");
+#endif
 		std::string flipped = fixture;
 		flipped[flipped.find("AA 55") + 1] ^= 1;
 		Check(Rejected(flipped, VersionFeed::CompiledKeys()), "the Node-signed fixture with a flipped byte is rejected");
-		Check(VersionFeed::CompiledKeys().size() == 1 && VersionFeed::CompiledKeys()[0].testOnly, "slot k1 is flagged TEST ONLY; k2 is empty");
+#if defined(VMAP_TRUST_TEST_KEY)
+		Check(VersionFeed::CompiledKeys().size() == 2 && VersionFeed::CompiledKeys()[0].id == "k1" && VersionFeed::CompiledKeys()[0].testOnly
+			&& VersionFeed::CompiledKeys()[1].id == "k2" && !VersionFeed::CompiledKeys()[1].testOnly, "a test build trusts the TEST key k1 and the release key k2");
+#else
+		// Built without the define, as a release is: the TEST key is skipped and the fixture signed with it is refused.
+		Check(VersionFeed::CompiledKeys().size() == 1 && VersionFeed::CompiledKeys()[0].id == "k2" && !VersionFeed::CompiledKeys()[0].testOnly,
+			"a release-style build trusts only the release key k2");
+		Check(!Read(fixture, VersionFeed::CompiledKeys(), f, e), "a release-style build refuses a feed signed with the TEST key");
+#endif
 	}
 
 	// ---- the merge --------------------------------------------------------
@@ -493,7 +503,8 @@ int main()
 		DeleteFileW(path.c_str());
 	}
 
-	// ---- one generation per process ----------------------------------------
+#if defined(VMAP_TRUST_TEST_KEY)
+	// ---- one generation per process (the cache holds the TEST-key fixture) ----
 	{
 		const std::wstring path = TempPath(L"b.cache");
 		Put(path, Slurp(FixturePath("test-feed-k1.txt")));
@@ -508,6 +519,7 @@ int main()
 		Check(!VersionFeed::ActivateCached(path) && &VersionMap::ActiveMap() == once, "a second call changes nothing");
 		DeleteFileW(path.c_str());
 	}
+#endif
 
 	printf("%d checks, %d failed\n", g_checks, g_failed);
 	return g_failed ? 1 : 0;

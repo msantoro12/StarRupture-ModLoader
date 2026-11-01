@@ -93,6 +93,11 @@ std::string HttpGet(const char* url, const char* label, const HttpGetOptions& op
 	                 static_cast<int>(uc.nPort));
 
 	const bool plain = options.allowPlainHttp && uc.nScheme == INTERNET_SCHEME_HTTP;
+	if (uc.nScheme != INTERNET_SCHEME_HTTPS && !plain)
+	{
+		LogToFile::Warn("[AutoUpdate] HttpGet [%s]: refused %s: the URL is not https", label, url);
+		return {};
+	}
 
 	// WINHTTP_ACCESS_TYPE_NO_PROXY: connect directly without reading IE/user
 	// proxy registry settings.  Dedicated game servers run as SYSTEM which has

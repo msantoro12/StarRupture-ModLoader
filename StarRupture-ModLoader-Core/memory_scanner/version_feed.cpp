@@ -29,14 +29,21 @@ namespace VersionFeed
 		// feed. Two slots so a key can be rotated: a loader release adds the
 		// new key to the free slot, and a later one drops the old.
 		//
-		// TODO(release gate, R10 decision 1): k1 is a TEST key, generated
-		// locally for the unit tests and the fork's test feed. The real signing
-		// key, and the trust in it, are the owner's to settle before any
-		// loader built from here is released or any feed is published; this
-		// line then takes the real public key and loses the TEST flag.
+		// k1 is a TEST key, generated locally for the unit tests and test
+		// feeds. Only a build that defines VMAP_TRUST_TEST_KEY (the tests and
+		// sr-aobscan) trusts it; any other build skips the slot, so a release
+		// reads no feed until a real key is in a slot. The real public key goes
+		// in kK2Hex.
 		constexpr const char* kK1Hex = "18eb4c9f4b59b3711317574094f3e6efcf1403a12561a941bb771b2be7e8fd84";
 		constexpr bool        kK1TestOnly = true;
 		constexpr const char* kK2Hex = "";
+		constexpr bool        kK2TestOnly = false;
+
+#if defined(VMAP_TRUST_TEST_KEY)
+		constexpr bool kTrustTestKeys = true;
+#else
+		constexpr bool kTrustTestKeys = false;
+#endif
 
 		bool HexKey(const char* hex, std::array<uint8_t, 32>& out)
 		{
@@ -146,19 +153,18 @@ namespace VersionFeed
 		static const std::vector<PublicKey> keys = []
 		{
 			std::vector<PublicKey> k;
-			PublicKey p;
-			if (HexKey(kK1Hex, p.key))
+			const auto slot = [&](const char* id, const char* hex, bool testOnly)
 			{
-				p.id = "k1";
-				p.testOnly = kK1TestOnly;
-				k.push_back(p);
-			}
-			p = PublicKey{};
-			if (HexKey(kK2Hex, p.key))
-			{
-				p.id = "k2";
-				k.push_back(p);
-			}
+				PublicKey p;
+				if ((kTrustTestKeys || !testOnly) && HexKey(hex, p.key))
+				{
+					p.id = id;
+					p.testOnly = testOnly;
+					k.push_back(p);
+				}
+			};
+			slot("k1", kK1Hex, kK1TestOnly);
+			slot("k2", kK2Hex, kK2TestOnly);
 			return k;
 		}();
 		return keys;
@@ -447,6 +453,8 @@ namespace VersionFeed
 				ModLoaderLogger::LogWarn(L"[VersionFeed] The feed cache '%ls' could not be read (or is over 1 MiB); using the loader's own map", path.c_str());
 			return nullptr;
 		}
+		if (file.empty())
+			return nullptr;   // the mark a request that got no feed leaves
 		SignedFeed feed;
 		std::string error;
 		if (!ReadSigned(file, keys, feed, error))

@@ -387,7 +387,7 @@ int main()
 	// ---- WhyNot -------------------------------------------------------------
 	{
 		FeedFetch::Config cfg;
-		cfg.url = "https://example.invalid/version-map-feed.txt";
+		cfg.url = "https://example.invalid/version-map-client.v1.txt";
 		cfg.keys = keys;
 		cfg.client = true;
 		Check(FeedFetch::WhyNot(cfg) == nullptr, "WhyNot: a full client config may ask");
@@ -440,8 +440,10 @@ int main()
 			&& Slurp(cache) == before, "a 404 fails and leaves the cache as it was");
 		const std::wstring none = TempPath(L"none.cache");
 		DeleteFileW(none.c_str());
-		Check(FeedFetch::Refresh(ConfigFor(srv, "/missing", keys, none), "test") == FeedFetch::Result::Failed && !Exists(none),
-			"a 404 with no cache makes no cache");
+		Check(FeedFetch::Refresh(ConfigFor(srv, "/missing", keys, none), "test") == FeedFetch::Result::Failed && Exists(none)
+			&& Slurp(none).empty() && FeedFetch::CacheAgeSeconds(none) < 60,
+			"a 404 with no cache leaves an empty cache, so the next request waits a day");
+		DeleteFileW(none.c_str());
 	}
 
 	// ---- stall ---------------------------------------------------------------
@@ -540,7 +542,7 @@ int main()
 		srv.hits = 0;
 		Check(!FeedFetch::Stage1(s1, false) && srv.hits == 0, "Stage 1 with the main thread not parked makes no request");
 		static uint32_t announced = 0;
-		Check(FeedFetch::Stage1(s1, true, [](uint32_t cl) { announced = cl + 1; }) && srv.hits == 1 && announced != 0 && Exists(none),
+		Check(FeedFetch::Stage1(s1, true, [](uint32_t cl) { announced = cl + 1; }) && srv.hits == 1 && announced != 0 && !Slurp(none).empty(),
 			"Stage 1 on an unknown exe, main parked: announces, asks once, stores");
 		DeleteFileW(none.c_str());
 	}
@@ -550,11 +552,11 @@ int main()
 		const std::wstring none = TempPath(L"unroutable.cache");
 		DeleteFileW(none.c_str());
 		FeedFetch::Config cfg = ConfigFor(srv, "/ok", keys, none);
-		cfg.url = "http://192.0.2.1:81/version-map-feed.txt";   // TEST-NET-1: nothing answers
+		cfg.url = "http://192.0.2.1:81/version-map-client.v1.txt";   // TEST-NET-1: nothing answers
 		const auto t = Clock::now();
 		const auto r = FeedFetch::Refresh(cfg, "test");
 		const long long ms = MsSince(t);
-		Check(r == FeedFetch::Result::Failed && !Exists(none) && ms < FeedFetch::kDeadlineMs + FeedFetch::kOperationMs, "an unroutable host fails within the deadline plus one timeout");
+		Check(r == FeedFetch::Result::Failed && Slurp(none).empty() && ms < FeedFetch::kDeadlineMs + FeedFetch::kOperationMs, "an unroutable host fails within the deadline plus one timeout");
 		printf("  unroutable %lld ms\n", ms);
 	}
 

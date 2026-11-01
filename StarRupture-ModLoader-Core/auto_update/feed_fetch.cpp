@@ -44,10 +44,12 @@ namespace
 	}
 
 	// Marks the cache as checked now, so "over a day old" counts from the
-	// last request and not from the last change. No cache file, nothing to mark.
+	// last request and not from the last change. With no cache file it makes
+	// an empty one, which reads as no feed, so a request that got none still
+	// waits a day.
 	void TouchCache(const std::wstring& path)
 	{
-		HANDLE h = CreateFileW(path.c_str(), FILE_WRITE_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING,
+		HANDLE h = CreateFileW(path.c_str(), FILE_WRITE_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_ALWAYS,
 			FILE_ATTRIBUTE_NORMAL, nullptr);
 		if (h == INVALID_HANDLE_VALUE)
 			return;

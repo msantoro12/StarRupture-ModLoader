@@ -30,6 +30,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <algorithm>
+#include <map>
 #include <vector>
 #include <string>
 #include <functional>
@@ -299,20 +300,69 @@ namespace UI::ModLoaderWindow
         ImGui::PopStyleVar();
     }
 
+    // The report as the plugin list and the config page read it, copied again
+    // only when PluginHookReport's generation moves (the same cache
+    // hook_failure_window.cpp keeps): Snapshot() copies every string, and a
+    // config page asks about every row of every frame.
+    static const std::vector<PluginHookReport::PluginReport>& CachedReports()
+    {
+        static std::vector<PluginHookReport::PluginReport> s_reports;
+        static unsigned s_generation = 0;
+        static bool     s_valid      = false;
+
+        const unsigned generation = PluginHookReport::GetGeneration();
+        if (!s_valid || generation != s_generation)
+        {
+            s_reports    = PluginHookReport::Snapshot();
+            s_generation = generation;
+            s_valid      = true;
+        }
+        return s_reports;
+    }
+
+    // ConfigOffReason for one config entry, kept per entry for as long as the
+    // report has not changed.
+    static const std::string& CachedConfigOffReason(const char* plugin, const char* section, const char* key)
+    {
+        static std::map<std::string, std::string> s_reasons;
+        static unsigned s_generation = 0;
+        static bool     s_valid      = false;
+
+        const unsigned generation = PluginHookReport::GetGeneration();
+        if (!s_valid || generation != s_generation)
+        {
+            s_reasons.clear();
+            s_generation = generation;
+            s_valid      = true;
+        }
+
+        std::string id = plugin;
+        id += '\n';
+        id += section;
+        id += '\n';
+        id += key;
+        auto it = s_reasons.find(id);
+        if (it == s_reasons.end())
+            it = s_reasons.emplace(std::move(id), PluginHookReport::ConfigOffReason(plugin, section, key)).first;
+        return it->second;
+    }
+
     // The hover text for a plugin row that has features turned off: which ones,
     // and that the rest of the plugin runs. Built only while the row is hovered.
-    static void FeaturesOffTooltip(const char* plugin)
+    // clickable: the item under the pointer opens the failure window when clicked.
+    static void FeaturesOffTooltip(const char* plugin, bool clickable)
     {
         ImGui::BeginTooltip();
         ImGui::TextUnformatted("Turned off for this game build:");
-        for (const PluginHookReport::PluginReport& r : PluginHookReport::Snapshot())
+        for (const PluginHookReport::PluginReport& r : CachedReports())
         {
-            if (_stricmp(r.plugin.c_str(), plugin) != 0)
+            if (r.preload || _stricmp(r.plugin.c_str(), plugin) != 0)
                 continue;
             for (const PluginHookReport::FeatureOff& f : r.featuresOff)
                 ImGui::BulletText("%s", f.title.c_str());
         }
-        ImGui::TextDisabled("The rest of the plugin runs.");
+        ImGui::TextDisabled(clickable ? "The rest of the plugin runs. Click for details."
+                                      : "The rest of the plugin runs.");
         ImGui::EndTooltip();
     }
 
@@ -367,7 +417,7 @@ namespace UI::ModLoaderWindow
                 ImGui::TextUnformatted(s.name[0] ? s.name : "?");
                 const int featuresOff = s.isLoaded ? PluginHookReport::GetFeaturesOffCount(s.name) : 0;
                 if (featuresOff > 0 && ImGui::IsItemHovered())
-                    FeaturesOffTooltip(s.name);
+                    FeaturesOffTooltip(s.name, false);
 
                 ImGui::TableSetColumnIndex(1);
                 ImGui::TextUnformatted(s.version[0] ? s.version : "?");
@@ -389,8 +439,14 @@ namespace UI::ModLoaderWindow
                     {
                         ImGui::SameLine();
                         ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.1f, 1.0f), "(%d off)", featuresOff);
+                        // The Actions column already has no room for a fourth
+                        // button, so the label itself reopens the failure
+                        // window at this plugin, as WHY? does for one that
+                        // did not load.
                         if (ImGui::IsItemHovered())
-                            FeaturesOffTooltip(s.name);
+                            FeaturesOffTooltip(s.name, true);
+                        if (ImGui::IsItemClicked())
+                            UI::HookFailureWindow::ShowFor(s.name);
                     }
                 }
                 else
@@ -406,10 +462,11 @@ namespace UI::ModLoaderWindow
                 else if (s.hookScanFailed)
                 {
                     // The popup has already been dismissed by the time anyone
-                    // comes looking here, so this reopens it rather than trying
-                    // to restate a multi-line report inside a table cell.
+                    // comes looking here, so this reopens it, at this plugin,
+                    // rather than trying to restate a multi-line report inside
+                    // a table cell.
                     if (ImGui::Button("WHY?"))
-                        UI::HookFailureWindow::Show();
+                        UI::HookFailureWindow::ShowFor(s.name);
                     ImGui::SameLine();
                     ImGui::TextDisabled("A hook it needs could not be found in this game build");
                 }
@@ -566,7 +623,7 @@ namespace UI::ModLoaderWindow
         // A feature the plugin declared is off on this game build: its entries
         // stay on the page, but the controls cannot be changed and hovering
         // them says why. The stored value is not touched.
-        const std::string offReason = PluginHookReport::ConfigOffReason(pluginName, kv.section, kv.key);
+        const std::string& offReason = CachedConfigOffReason(pluginName, kv.section, kv.key);
         const bool        off       = !offReason.empty();
 
         const bool  isBool       = e && e->type == ConfigValueType::Boolean;

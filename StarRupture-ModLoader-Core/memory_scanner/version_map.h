@@ -3,6 +3,7 @@
 #include "memory_scanner/scan_validation.h"
 
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -53,6 +54,65 @@ namespace VersionMap
 		uint32_t    rva = 0;          // 0 = none
 		bool        fromMap = false;  // a row of the loader's map, not the component's own
 	};
+
+	// The loader's map as data: one row per record of the generated header
+	// (hooks/game/version_map.generated.h) or of the feed (below). Strings are
+	// owned, so a map read at run time outlives its text. An empty pattern is
+	// the header's nullptr, an empty member or owners likewise.
+	struct MapBuild
+	{
+		uint32_t    gameCL = 0, imageStamp = 0, imageSize = 0;
+		std::string source;
+	};
+	struct MapFunctionRow
+	{
+		std::string key;
+		uint32_t    gameCL = 0, imageStamp = 0, imageSize = 0;
+		int32_t     kind = 0;
+		uint32_t    fp = 0;
+		bool        absent = false;
+		std::string pattern;
+		int32_t     resultOffset = 0, followRel32At = -1, followRipDispAt = -1;
+		uint32_t    rva = 0;
+		std::string owners;   // an absent row of a global key: "A,B", empty = every owner
+	};
+	struct MapFieldRow
+	{
+		std::string key;      // "Class::Member"
+		uint32_t    gameCL = 0;
+		int32_t     offset = 0;
+		uint32_t    size = 0;
+		uint8_t     boolMask = 0;
+		std::string member;   // the member's name on this build, when it was renamed
+	};
+	struct MapData
+	{
+		std::vector<MapBuild>       builds;      // by CL
+		std::vector<MapFunctionRow> functions;   // by key, fp, CL
+		std::vector<MapFieldRow>    fields;      // by key, CL
+	};
+
+	// The map compiled into this loader.
+	const MapData& BaselineMap();
+
+	// The map every lookup reads: the baseline, unless SetActiveMap replaced
+	// it. SetActiveMap is for the start of the process (a loader that merged a
+	// feed; a tool given a map to test with), before anything reads; the map
+	// stays as it was set for the rest of the process.
+	const MapData& ActiveMap();
+	void SetActiveMap(std::shared_ptr<const MapData> map);
+
+	// The feed format this loader reads (the `format` line of a feed).
+	constexpr int kFeedFormat = 1;
+
+	// Reads the text of a feed (version-map-client.v1.txt without its `sig`
+	// line) into `out`: tab-separated lines, LF, a final LF, in the order
+	// `format`, `build`, `function`/`absent`, `field`, as ci/VERSION-MAP.md
+	// lists. Strict: a line off the format, a number out of range, a row whose
+	// build line is missing or says another stamp or size, or a scoped row
+	// (any kind but FunctionStart and Data) with no fp rejects the whole text,
+	// with `error` naming the line. `out` is left empty on failure.
+	bool ParseFeed(const std::string& text, MapData& out, std::string& error);
 
 	// A game exe: the CL from the end of its ProductVersion, the stamp and
 	// size from its PE headers.

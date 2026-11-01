@@ -11,6 +11,9 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
+#include <memory>
+#include <set>
+#include <tuple>
 #include <unordered_map>
 
 namespace VersionMap
@@ -119,11 +122,202 @@ namespace VersionMap
 		return cl;
 	}
 
+	const MapData& BaselineMap()
+	{
+		static const MapData baseline = []
+		{
+			MapData m;
+			for (const Build& b : kBuilds)
+				m.builds.push_back({ b.gameCL, b.imageStamp, b.imageSize, b.source ? b.source : "" });
+			for (const Index& i : kFunctions)
+				for (uint16_t n = i.first; n < i.first + i.count; ++n)
+				{
+					const FunctionRow& f = kFunctionRows[n];
+					m.functions.push_back({ i.key, f.gameCL, f.imageStamp, f.imageSize, f.kind, f.fp, f.absent,
+						f.pattern ? f.pattern : "", f.resultOffset, f.followRel32At, f.followRipDispAt, f.rva,
+						f.owners ? f.owners : "" });
+				}
+			for (const Index& i : kFields)
+				for (uint16_t n = i.first; n < i.first + i.count; ++n)
+				{
+					const FieldRow& f = kFieldRows[n];
+					m.fields.push_back({ i.key, f.gameCL, f.offset, f.size, f.boolMask, f.member ? f.member : "" });
+				}
+			return m;
+		}();
+		return baseline;
+	}
+
+	namespace
+	{
+		std::shared_ptr<const MapData> g_activeMap;   // set at most once, before any read
+	}
+
+	const MapData& ActiveMap()
+	{
+		return g_activeMap ? *g_activeMap : BaselineMap();
+	}
+
+	void SetActiveMap(std::shared_ptr<const MapData> map)
+	{
+		g_activeMap = std::move(map);
+	}
+
+	namespace
+	{
+		// "0x" and 1 to 8 upper-case hex digits, as the feed writes every hex number.
+		bool FeedHex(const std::string& s, uint32_t& v)
+		{
+			if (s.size() < 3 || s.size() > 10 || s[0] != '0' || s[1] != 'x')
+				return false;
+			uint64_t n = 0;
+			for (size_t i = 2; i < s.size(); ++i)
+			{
+				const char c = s[i];
+				const int d = (c >= '0' && c <= '9') ? c - '0' : (c >= 'A' && c <= 'F') ? c - 'A' + 10 : -1;
+				if (d < 0)
+					return false;
+				n = n * 16 + static_cast<uint64_t>(d);
+			}
+			v = static_cast<uint32_t>(n);
+			return true;
+		}
+
+		// An optional minus and 1 to 10 digits with no leading zero, in [lo, hi].
+		bool FeedDec(const std::string& s, int64_t lo, int64_t hi, int64_t& v)
+		{
+			const size_t i = (!s.empty() && s[0] == '-') ? 1 : 0;
+			if (s.size() == i || s.size() - i > 10 || (s[i] == '0' && s.size() - i > 1) || (i && s[i] == '0'))
+				return false;
+			int64_t n = 0;
+			for (size_t k = i; k < s.size(); ++k)
+			{
+				if (s[k] < '0' || s[k] > '9')
+					return false;
+				n = n * 10 + (s[k] - '0');
+			}
+			v = i ? -n : n;
+			return v >= lo && v <= hi;
+		}
+	}
+
+	bool ParseFeed(const std::string& text, MapData& out, std::string& error)
+	{
+		out = MapData{};
+		MapData m;
+		const auto fail = [&](size_t line, const std::string& why)
+		{
+			error = "feed line " + std::to_string(line) + ": " + why;
+			return false;
+		};
+		if (text.empty() || text.back() != '\n')
+			return fail(1, "the text does not end in a line feed");
+		if (text.find('\r') != std::string::npos)
+			return fail(1, "a carriage return (the feed is LF only)");
+
+		const int64_t firstKind = static_cast<int>(ScanValidation::Kind::Unspecified) + 1;
+		const int64_t lastKind  = static_cast<int>(ScanValidation::Kind::Any);
+		int    phase = 0;   // 0 build, 1 function and absent, 2 field
+		size_t lineNo = 0;
+		std::set<std::tuple<std::string, uint32_t, uint32_t>> seenFunction;
+		std::set<std::pair<std::string, uint32_t>> seenField;
+		for (size_t pos = 0; pos < text.size();)
+		{
+			const size_t end = text.find('\n', pos);
+			const std::string line = text.substr(pos, end - pos);
+			pos = end + 1;
+			++lineNo;
+			std::vector<std::string> f;
+			for (size_t a = 0;;)
+			{
+				const size_t tab = line.find('\t', a);
+				f.push_back(line.substr(a, tab == std::string::npos ? std::string::npos : tab - a));
+				if (tab == std::string::npos)
+					break;
+				a = tab + 1;
+			}
+			if (lineNo == 1)
+			{
+				if (f.size() != 2 || f[0] != "format" || f[1] != std::to_string(kFeedFormat))
+					return fail(1, "not a format " + std::to_string(kFeedFormat) + " feed");
+				continue;
+			}
+			int64_t cl = 0, kind = 0, ro = 0, r32 = 0, rip = 0;
+			uint32_t stamp = 0, size = 0, fp = 0, rva = 0, offset = 0, fsize = 0, mask = 0;
+			const std::string& type = f[0];
+			if (type == "build" && f.size() == 5)
+			{
+				if (phase > 0)
+					return fail(lineNo, "a build line after a function, absent or field line");
+				if (!FeedDec(f[1], 1, 0x7FFFFFFF, cl) || !FeedHex(f[2], stamp) || !FeedHex(f[3], size) || f[4].empty())
+					return fail(lineNo, "a build line with a bad number or no source");
+				for (const MapBuild& b : m.builds)
+					if (b.gameCL == cl)
+						return fail(lineNo, "two build lines for CL-" + std::to_string(cl));
+				m.builds.push_back({ static_cast<uint32_t>(cl), stamp, size, f[4] });
+			}
+			else if ((type == "function" && f.size() == 12) || (type == "absent" && f.size() == 8))
+			{
+				if (phase > 1)
+					return fail(lineNo, "a function or absent line after a field line");
+				phase = 1;
+				const bool absent = type == "absent";
+				if (f[1].empty() || !FeedHex(f[2], fp) || !FeedDec(f[3], 1, 0x7FFFFFFF, cl) || !FeedHex(f[4], stamp)
+					|| !FeedHex(f[5], size) || !FeedDec(f[6], firstKind, lastKind, kind))
+					return fail(lineNo, "a " + type + " line with a bad key, fp, CL, stamp, size or kind");
+				const bool global = kind == static_cast<int>(ScanValidation::Kind::FunctionStart)
+					|| kind == static_cast<int>(ScanValidation::Kind::Data);
+				if (global != (fp == 0))
+					return fail(lineNo, "a global key (FunctionStart, Data) has fp 0 and a scoped key has an fp");
+				const auto build = std::find_if(m.builds.begin(), m.builds.end(),
+					[&](const MapBuild& b) { return b.gameCL == cl; });
+				if (build == m.builds.end() || build->imageStamp != stamp || build->imageSize != size)
+					return fail(lineNo, "CL-" + std::to_string(cl) + " has no build line with this stamp and size");
+				if (!seenFunction.insert({ f[1], fp, static_cast<uint32_t>(cl) }).second)
+					return fail(lineNo, "a second row for this key, fp and CL");
+				MapFunctionRow row;
+				row.key = f[1]; row.gameCL = static_cast<uint32_t>(cl); row.imageStamp = stamp; row.imageSize = size;
+				row.kind = static_cast<int32_t>(kind); row.fp = fp; row.absent = absent;
+				if (absent)
+				{
+					if (f[7].empty())
+						return fail(lineNo, "an absent line with an empty owner list (use -)");
+					row.owners = f[7] == "-" ? "" : f[7];
+				}
+				else
+				{
+					if (f[7].empty() || !FeedDec(f[8], -0x7FFFFFFF, 0x7FFFFFFF, ro) || !FeedDec(f[9], -1, 0x7FFFFFFF, r32)
+						|| !FeedDec(f[10], -1, 0x7FFFFFFF, rip) || !FeedHex(f[11], rva))
+						return fail(lineNo, "a function line with a bad pattern, offset or RVA");
+					row.pattern = f[7] == "-" ? "" : f[7];
+					row.resultOffset = static_cast<int32_t>(ro); row.followRel32At = static_cast<int32_t>(r32);
+					row.followRipDispAt = static_cast<int32_t>(rip); row.rva = rva;
+				}
+				m.functions.push_back(std::move(row));
+			}
+			else if (type == "field" && f.size() == 7)
+			{
+				phase = 2;
+				if (f[1].empty() || !FeedDec(f[2], 1, 0x7FFFFFFF, cl) || !FeedHex(f[3], offset) || offset > 0x7FFFFFFF
+					|| !FeedHex(f[4], fsize) || fsize == 0 || !FeedHex(f[5], mask) || mask > 0xFF || f[6].empty())
+					return fail(lineNo, "a field line with a bad key, CL, offset, size, mask or member");
+				if (!seenField.insert({ f[1], static_cast<uint32_t>(cl) }).second)
+					return fail(lineNo, "a second row for this key and CL");
+				m.fields.push_back({ f[1], static_cast<uint32_t>(cl), static_cast<int32_t>(offset), fsize,
+					static_cast<uint8_t>(mask), f[6] == "-" ? "" : f[6] });
+			}
+			else
+				return fail(lineNo, "not a feed line");
+		}
+		out = std::move(m);
+		return true;
+	}
+
 	std::vector<uint32_t> SupportedBuilds()
 	{
 		std::vector<uint32_t> builds;
 #if defined(MODLOADER_CLIENT_BUILD)
-		for (const Build& b : kBuilds)
+		for (const MapBuild& b : ActiveMap().builds)
 			builds.push_back(b.gameCL);
 #else
 		builds.push_back(kBuiltCL);
@@ -529,16 +723,17 @@ namespace VersionMap
 		{
 			Lookup out;
 #if defined(MODLOADER_CLIENT_BUILD)
-			const auto index = std::find_if(kFunctions.begin(), kFunctions.end(),
-				[&](const Index& i) { return key == i.key; });
-			if (key.empty() || index == kFunctions.end())
+			const MapData& map = ActiveMap();
+			if (key.empty() || std::none_of(map.functions.begin(), map.functions.end(),
+					[&](const MapFunctionRow& f) { return f.key == key; }))
 				return out;
 			int  otherKind  = 0;
 			bool otherFp    = false;
 			bool absentHere = false;
-			for (uint16_t i = index->first; i < index->first + index->count; ++i)
+			for (const MapFunctionRow& f : map.functions)
 			{
-				const FunctionRow& f = kFunctionRows[i];
+				if (f.key != key)
+					continue;
 				if (f.kind != kind)
 				{
 					otherKind = f.kind;
@@ -554,7 +749,7 @@ namespace VersionMap
 					if (f.gameCL != runningCL)
 						continue;
 					// A site's absent row binds its fingerprint, a global one the owners it lists.
-					if (fp != 0 || ListsOwner(f.owners, owner))
+					if (fp != 0 || ListsOwner(f.owners.c_str(), owner))
 					{
 						out.rows.clear();
 						out.refusal = "loader map: absent on " + ClText(runningCL);
@@ -567,7 +762,7 @@ namespace VersionMap
 				c.gameCL          = f.gameCL;
 				c.imageStamp      = f.imageStamp;
 				c.imageSize       = f.imageSize;
-				c.pattern         = f.pattern ? f.pattern : "";
+				c.pattern         = f.pattern;
 				c.resultOffset    = f.resultOffset;
 				c.followRel32At   = f.followRel32At;
 				c.followRipDispAt = f.followRipDispAt;
@@ -792,9 +987,9 @@ namespace VersionMap
 		{
 			rows = request.candidates;
 #if defined(MODLOADER_CLIENT_BUILD)
-			const auto index = std::find_if(kFields.begin(), kFields.end(),
-				[&](const Index& i) { return request.key == i.key; });
-			if (index == kFields.end())
+			const MapData& data = ActiveMap();
+			if (std::none_of(data.fields.begin(), data.fields.end(),
+					[&](const MapFieldRow& f) { return f.key == request.key; }))
 				return true;
 
 			const bool bitfield = (request.flags & PLUGIN_FIELD_BITFIELD) != 0;
@@ -810,11 +1005,12 @@ namespace VersionMap
 			const std::string keyMember = split == std::string::npos ? std::string() : request.key.substr(split + 2);
 			std::vector<FieldCandidate> map;
 			bool renamed = false;
-			for (uint16_t i = index->first; i < index->first + index->count; ++i)
+			for (const MapFieldRow& f : data.fields)
 			{
-				const FieldRow& f = kFieldRows[i];
-				const std::string name = f.member ? f.member : keyMember;
-				renamed = renamed || (f.member && name == request.member);
+				if (f.key != request.key)
+					continue;
+				const std::string name = f.member.empty() ? keyMember : f.member;
+				renamed = renamed || (!f.member.empty() && name == request.member);
 				map.push_back(FieldCandidate{ f.gameCL, f.offset, f.size, f.boolMask,
 					name == request.member ? std::string() : name, true });
 			}

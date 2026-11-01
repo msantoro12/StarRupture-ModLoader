@@ -340,6 +340,57 @@ int main()
 		Check(!refusal(127004, 72, 0, kM, true).empty() && !refusal(128786, 72, 0, kM, true).empty(), "admission: zero tail with MIGRATED is refused");
 	}
 
+	// The feed reader and the active map.
+	{
+		const std::string head = "format\t1\nbuild\t128786\t0x22222222\t0x2000000\tpublic_test_branch 2\n";
+		const std::string good = head
+			+ "function\tTest::MapOnly\t0x0\t128786\t0x22222222\t0x2000000\t1\tB0 01\t0\t-1\t-1\t0x7000\n"
+			+ "absent\tTest::Gone\t0x0\t128786\t0x22222222\t0x2000000\t1\t-\n"
+			+ "field\tATest::Reflected\t128786\t0x30\t0x8\t0x0\t-\n";
+		VersionMap::MapData m;
+		std::string error;
+		Check(VersionMap::ParseFeed(good, m, error) && m.builds.size() == 1 && m.functions.size() == 2 && m.fields.size() == 1
+			&& m.functions[0].pattern == "B0 01" && m.functions[1].absent && m.fields[0].offset == 0x30, "feed: a good feed reads");
+		const auto bad = [&](const std::string& text, const char* what)
+		{
+			VersionMap::MapData out;
+			std::string e;
+			Check(!VersionMap::ParseFeed(text, out, e) && !e.empty() && out.builds.empty() && out.functions.empty(), what);
+		};
+		bad("", "feed: empty text");
+		bad(good.substr(0, good.size() - 1), "feed: no final line feed");
+		bad("format\t2\n", "feed: another format");
+		bad("format\t1\r\n", "feed: a carriage return");
+		bad(head + "function\tTest::MapOnly\t0x0\t128786\t0x22222222\t0x2000001\t1\tB0 01\t0\t-1\t-1\t0x7000\n", "feed: a row whose size is not its build's");
+		bad(head + "function\tTest::MapOnly\t0x0\t127004\t0x22222222\t0x2000000\t1\tB0 01\t0\t-1\t-1\t0x7000\n", "feed: a row for a CL with no build line");
+		bad(head + "function\tTest::MapOnly\t0x0\t128786\t0x22222222\t0x2000000\t2\tB0 01\t0\t-1\t-1\t0x7000\n", "feed: a scoped kind with fp 0");
+		bad(head + "function\tTest::MapOnly\t0xabcd\t128786\t0x22222222\t0x2000000\t1\tB0 01\t0\t-1\t-1\t0x7000\n", "feed: lower-case hex");
+		bad(head + "function\tTest::MapOnly\t0x0\t0128786\t0x22222222\t0x2000000\t1\tB0 01\t0\t-1\t-1\t0x7000\n", "feed: a leading zero");
+		bad(head + "function\tTest::MapOnly\t0x0\t128786\t0x22222222\t0x2000000\t99\tB0 01\t0\t-1\t-1\t0x7000\n", "feed: a kind out of range");
+		{
+			const std::string row = good.substr(head.size(), good.find("absent") - head.size());
+			bad(head + row + row, "feed: a duplicate function row");
+		}
+		bad(head + "field\tATest::Reflected\t128786\t0x30\t0x8\t0x0\t-\nfunction\tTest::MapOnly\t0x0\t128786\t0x22222222\t0x2000000\t1\tB0 01\t0\t-1\t-1\t0x7000\n",
+			"feed: a function line after a field line");
+		bad(head + "build\t128786\t0x22222222\t0x2000000\tx\n", "feed: two build lines for one CL");
+		bad(head + "nonsense\n", "feed: a line of no type");
+
+		// A map read from the feed replaces the baseline for every lookup, and SetActiveMap(nullptr) restores it.
+		Check(!VersionMap::ActiveMap().functions.empty() && VersionMap::ActiveMap().builds.size() == 2, "active map: the baseline to start");
+		Result q = Key("VmapProbe", Ask("Test::MapOnly", Kind::FunctionStart));
+		Check(At(q, 0x1000), "active map: the baseline's row");
+		VersionMap::SetActiveMap(std::make_shared<const VersionMap::MapData>(m));
+		q = Key("VmapProbe", Ask("Test::MapOnly", Kind::FunctionStart));
+		Check(At(q, 0x7000) && Logged(L"loader map, CL-128786 row"), "active map: a fed row is read");
+		Check(VersionMap::SupportedBuilds() == std::vector<uint32_t>{ 128786 }, "active map: builds come from the fed map");
+		VersionMap::SetActiveMap(std::make_shared<const VersionMap::MapData>());
+		q = Key("VmapProbe", Ask("Test::MapOnly", Kind::FunctionStart));
+		Check(!q.Succeeded() && !Logged(L"loader map, CL-128786 row"), "active map: an empty map holds no row");
+		VersionMap::SetActiveMap(nullptr);
+		Check(At(Key("VmapProbe", Ask("Test::MapOnly", Kind::FunctionStart)), 0x1000), "active map: the baseline again");
+	}
+
 	Check(Real::VersionMap::kFormatVersion == 2, "the real map is format 2");
 	Check(unmatched == 0, "every real map key is a registry row's");
 	Check(wrong == 0, "every real map row has its registry row's kind and fp");

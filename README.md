@@ -104,6 +104,7 @@ is available.
 
 <img src="images/plugins-tab.png" width="480" alt="Plugins tab listing plugins in each status">
 
+- Click a loaded plugin's row to open its page on the Config tab. The buttons on the row work as before. <sup>[✦](#msantoro12)</sup>
 - **Cannot Load** is a server plugin on a client, or the reverse.
 - **Needs Update** names the side that is behind: the plugin or the mod loader.
 - **WHY?** on a Hooks Failed row reopens the [report](#pop-up-windows).

@@ -234,6 +234,12 @@ namespace UI::ModLoaderWindow
             ImGuiTableFlags_Resizable |
             ImGuiTableFlags_SizingStretchProp;
 
+        // The Config tab lists only the plugins that finished initialising, by
+        // position in this list. A row opens that page only when its plugin is in it.
+        static const PluginInfo* configInfos[64];
+        const int configTotal = PluginManager::GetLoadedPluginInfos(configInfos, 64);
+        const int configCount = configTotal < 64 ? configTotal : 64;
+
         if (ImGui::BeginTable("##plugins", 5, tableFlags))
         {
             // All columns are stretch-weighted (not fixed) so dragging a
@@ -257,6 +263,24 @@ namespace UI::ModLoaderWindow
 
                 ImGui::TableSetColumnIndex(0);
                 ImGui::PushID(i);
+
+                // Clicking anywhere on the row opens the plugin's page on the Config
+                // tab. Submitted first with AllowOverlap so the dot and the action
+                // buttons, which come after it, still take their own clicks.
+                for (int c = 0; c < configCount; ++c)
+                {
+                    if (strcmp(configInfos[c]->name ? configInfos[c]->name : "", s.name) != 0)
+                        continue;
+                    if (ImGui::Selectable("##open_config", false,
+                            ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowOverlap))
+                    {
+                        s_selectedPlugin = c;
+                        s_activeTab = kTabConfig;
+                    }
+                    ImGui::SameLine(0.0f, 0.0f);
+                    break;
+                }
+
                 DrawAutoUpdateDot(s.hasUpdateManifest);
                 ImGui::PopID();
                 ImGui::TextUnformatted(s.name[0] ? s.name : "?");

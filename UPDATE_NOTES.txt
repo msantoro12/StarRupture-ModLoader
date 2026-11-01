@@ -1,2 +1,3 @@
 Plugins Updated window now lists what changed in each plugin
 Loader update prompt shows what is new
+Click a plugin's row to open its Config page

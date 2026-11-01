@@ -216,6 +216,13 @@ namespace
 	// Used by LoadFromUTexture2D to detect (and warn about) render-thread calls.
 	std::atomic<DWORD> g_presentOwnerThread{ 0 };
 
+	// The thread that is recording an overlay draw right now: UiPass::Record at
+	// Slate's present step, or HookedPresent's fallback draw. Only one of them
+	// draws a given frame. Unlike g_presentOwnerThread it is not held across the
+	// real Present, so a Present blocked in vsync does not cost the next frame
+	// its overlay.
+	std::atomic<DWORD> g_drawOwnerThread{ 0 };
+
 	// IDXGIFactory2::CreateSwapChainForHwnd vtable patch (slot 15).
 	// Typed as void* for parameters we don't inspect -- avoids dxgi1_2.h type
 	// availability issues at namespace scope; ABI is identical (all pointer-sized).
@@ -703,6 +710,8 @@ static bool CreateDeviceD3D(HWND hWnd)
 	return ok;
 }
 
+namespace UiPass { static void WaitForDraws(); }
+
 // ---------------------------------------------------------------------------
 // RebuildFontAtlas
 // Loads the font selected in GlobalSettings::GetFontFamily(), rebuilds the
@@ -727,6 +736,8 @@ static void RebuildFontAtlas(bool initialSetup)
 			g_fence->SetEventOnCompletion(signalVal, g_fenceEvent);
 			WaitForSingleObject(g_fenceEvent, 1000);
 		}
+		// Overlay draws submitted at Slate's present step run on their own queue.
+		UiPass::WaitForDraws();
 		ImGui_ImplDX12_InvalidateDeviceObjects();
 	}
 
@@ -1334,6 +1345,21 @@ namespace UiPass
 	static std::atomic<ULONGLONG> g_lastDrawMs{ 0 };
 	static std::atomic<UINT64>    g_lastDoneValue{ 0 };
 
+	// Before anything those draws read is destroyed (font texture, SRV heap):
+	// they run on g_queue, which the g_cmdQueue waits above do not cover.
+	static void WaitForDraws()
+	{
+		const UINT64 last = g_lastDoneValue.load();
+		if (!g_doneFence || g_doneFence->GetCompletedValue() >= last)
+			return;
+		HANDLE ev = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+		if (!ev)
+			return;
+		if (SUCCEEDED(g_doneFence->SetEventOnCompletion(last, ev)))
+			WaitForSingleObject(ev, 1000);
+		CloseHandle(ev);
+	}
+
 	// After the GPU flush at shutdown. The two fences are never released: a
 	// payload UE has not submitted yet can still name them.
 	static void ReleaseResources()
@@ -1420,10 +1446,9 @@ namespace UiPass
 			return -1;
 		}
 
-		// HookedPresent's single owner: a Present drawing right now on another
-		// thread keeps this frame.
+		// A Present drawing its own overlay right now keeps this frame.
 		DWORD expected = 0;
-		if (!g_presentOwnerThread.compare_exchange_strong(expected, GetCurrentThreadId()))
+		if (!g_drawOwnerThread.compare_exchange_strong(expected, GetCurrentThreadId()))
 			return -1;
 
 		const int index = static_cast<int>(g_next % kSlots);
@@ -1436,7 +1461,7 @@ namespace UiPass
 		}
 		if (!free)
 		{
-			g_presentOwnerThread.store(0, std::memory_order_release);
+			g_drawOwnerThread.store(0, std::memory_order_release);
 			return -1;
 		}
 
@@ -1466,7 +1491,7 @@ namespace UiPass
 		g_lastDoneValue = slot.fenceValue;
 		g_lastDrawMs = GetTickCount64();
 		++g_next;
-		g_presentOwnerThread.store(0, std::memory_order_release);
+		g_drawOwnerThread.store(0, std::memory_order_release);
 		return index;
 	}
 
@@ -1639,6 +1664,12 @@ static HRESULT STDMETHODCALLTYPE HookedPresent(IDXGISwapChain* swapChain, UINT s
 	if (UiPass::Active())
 		return PresentAndCheck(swapChain, syncInterval, flags, frameIdx);
 
+	// Released before the real Present on every path below. If the Slate-step
+	// draw is recording this frame right now, it keeps the frame.
+	DWORD drawExpected = 0;
+	if (!g_drawOwnerThread.compare_exchange_strong(drawExpected, tid))
+		return PresentAndCheck(swapChain, syncInterval, flags, frameIdx);
+
 	// Current back buffer index.
 	IDXGISwapChain3* sc3 = nullptr;
 	UINT bufferIdx = 0;
@@ -1667,6 +1698,7 @@ static HRESULT STDMETHODCALLTYPE HookedPresent(IDXGISwapChain* swapChain, UINT s
 	if (FAILED(swapChain->GetBuffer(bufferIdx, IID_PPV_ARGS(&backBuffer))))
 	{
 		IMGUI_LOG_ERROR("[ImGuiBackend] Frame %llu  GetBuffer(%u) failed", frameIdx, bufferIdx);
+		g_drawOwnerThread.store(0, std::memory_order_release);
 		g_presentOwnerThread.store(0, std::memory_order_release);
 		return g_originalPresent(swapChain, syncInterval, flags);
 	}
@@ -1741,6 +1773,7 @@ static HRESULT STDMETHODCALLTYPE HookedPresent(IDXGISwapChain* swapChain, UINT s
 
 	backBuffer->Release();
 
+	g_drawOwnerThread.store(0, std::memory_order_release);
 	return PresentAndCheck(swapChain, syncInterval, flags, frameIdx);
 }
 
@@ -2815,8 +2848,9 @@ static PluginTextureHandle TextureLoadFromUTexture2D(SDK::UTexture2D* uTexture2D
 	// This causes a 44ms+ GPU stall that crashes Streamline/DLSS.
 	// Load textures from OnExperienceLoadComplete or another game-thread callback instead.
 	{
-		DWORD presentTid = g_presentOwnerThread.load(std::memory_order_acquire);
-		if (presentTid != 0 && presentTid == GetCurrentThreadId())
+		const DWORD tid = GetCurrentThreadId();
+		if (g_presentOwnerThread.load(std::memory_order_acquire) == tid ||
+			g_drawOwnerThread.load(std::memory_order_acquire) == tid)
 			IMGUI_LOG_WARN("[ImGuiBackend] LoadFromUTexture2D '%s': called from the render thread -- "
 				"this will stall the GPU pipeline and may crash with DLSS. "
 				"Call from OnExperienceLoadComplete or another game-thread callback instead.",
@@ -3639,6 +3673,7 @@ extern "C" __declspec(dllexport) void ImGuiHost_Shutdown()
 				g_fence->SetEventOnCompletion(g_fenceValue, g_fenceEvent);
 				WaitForSingleObject(g_fenceEvent, 500);
 			}
+			UiPass::WaitForDraws();
 			UiPass::ReleaseResources();
 			CleanupD3D12Resources();
 			g_initialized = false;

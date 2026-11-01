@@ -442,6 +442,51 @@ namespace ModLoaderLogger
 			return true;
 		}
 
+		// v72. Read as far as the plugin's own structSize, as the requests are.
+		// A malformed description declares nothing, so the keys it listed stay
+		// core and a miss on one still refuses the plugin.
+		bool HookDeclareFeature(const IPluginSelf* self, const PluginFeatureDesc* desc)
+		{
+			if (!InSession(self))
+				return false;
+
+			constexpr size_t kMinSize = offsetof(PluginFeatureDesc, configKeys);
+			if (!desc || desc->structSize < kMinSize)
+				return false;
+
+			PluginFeatureDesc local = PLUGIN_FEATURE_DESC_INIT;
+			memcpy(&local, desc, desc->structSize < sizeof(local) ? desc->structSize : sizeof(local));
+
+			// A map holds a few dozen keys per feature; anything near this is not a feature.
+			constexpr uint32_t kMaxKeys = 256;
+			if (!local.id || !local.id[0] || !local.title || !local.title[0]
+				|| !local.keys || local.keyCount == 0 || local.keyCount > kMaxKeys
+				|| (local.configKeyCount && !local.configKeys) || local.configKeyCount > kMaxKeys)
+			{
+				ModLoaderLogger::LogWarn(L"[Map] %S: DeclareFeature(%S) refused: bad description",
+					self->name ? self->name : "?", local.id ? local.id : "(no id)");
+				return false;
+			}
+
+			std::vector<std::string> keys;
+			for (uint32_t i = 0; i < local.keyCount; ++i)
+			{
+				if (!local.keys[i] || !local.keys[i][0])
+				{
+					ModLoaderLogger::LogWarn(L"[Map] %S: DeclareFeature(%S) refused: an empty key",
+						self->name ? self->name : "?", local.id);
+					return false;
+				}
+				keys.push_back(local.keys[i]);
+			}
+			std::vector<std::string> configKeys;
+			for (uint32_t i = 0; i < local.configKeyCount; ++i)
+				if (local.configKeys[i] && local.configKeys[i][0])
+					configKeys.push_back(local.configKeys[i]);
+
+			return PluginHookReport::DeclareFeature(self, local.id, local.title, keys, configKeys, local.enabled);
+		}
+
 		IPluginHookScanner g_hookScanner = {
 			HookResolveRequired,
 			HookResolveOptional,
@@ -458,7 +503,8 @@ namespace ModLoaderLogger
 			HookReportWarning,
 			HookHasFailures,
 			HookResolve,
-			HookResolveField
+			HookResolveField,
+			HookDeclareFeature
 		};
 	}
 

@@ -36,6 +36,15 @@ struct PluginInfo;
 // component's. When the component's own row is for this very exe, the map's
 // pick must land on that row's RVA, or the result is AMBIGUOUS (no scan).
 //
+// With no map row for the running changelist, the map supplies the row of the
+// latest changelist it has one for (ResolveMapKey reads no older ones), and
+// rule 2 rescans it on this build: its pattern must resolve, uniquely and as
+// the request's kind, before it counts. A row that does not resolve here is
+// not used. Then the component's own pattern and rows; if none of them
+// resolves, the key is unresolved, which the caller turns into a feature
+// turned off or a plugin refused (plugins/plugin_hook_report.h). An address
+// that was not found on this build is never used.
+//
 // One "[Map]" line per key says which rule picked the address, and from
 // where: "loader map, CL-128786 row", "own CL-127004 row", "own pattern".
 // ---------------------------------------------------------------------------
@@ -252,11 +261,14 @@ namespace VersionMap
 	// Where a member of a game class sits on the running build (see
 	// PluginFieldRequest in plugins/plugin_interface.h for what a component
 	// asks). A reflected member's offset is read from the running game's own
-	// reflection data, and a row for the running changelist must agree with
-	// it; a native member (one reflection does not describe) is the running
-	// changelist's row, or the compiled offset on the build it was compiled
-	// for, and nothing else, and it must lie inside its class as the running
-	// game reflects the class.
+	// reflection data. A row (the running changelist's, else the latest one's,
+	// which can also give the member's new name) only cross-checks it: where
+	// the row and the game disagree the game wins and the disagreement is
+	// logged. A native member (one reflection does not describe) is the
+	// running changelist's row, or the compiled offset on the build it was
+	// compiled for, and nothing else: a row carried forward from an older
+	// changelist cannot be checked on this build, so it is not used. It must
+	// lie inside its class as the running game reflects the class.
 	//
 	// The rows are the loader's map's (kFields, under the request's key) and
 	// then the component's own. The map's are used only when its key names

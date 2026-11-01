@@ -66,7 +66,13 @@ request. The order for a function key is:
    AMBIGUOUS.
 3. **Agreement** over every remaining locator: other CLs' rows from the loader, the plugin's
    rows, and its pattern. They must all resolve to one address.
-4. Otherwise the request fails, and the plugin is refused with the reason in the failure window.
+4. Otherwise the request fails. What that costs the plugin depends on what it declared (below).
+
+With no row for the running CL, the loader uses the row of the latest CL it has one for, and
+rescans that row's pattern on this build: it counts only if the pattern resolves, uniquely and as
+the kind the request asked for. Older rows are not read. A row that does not resolve here is not
+used, and the plugin's own pattern and rows decide. An address that was not found on this build
+is never used.
 
 An `absent` row for the running CL ends the search for the requests it binds.
 
@@ -81,10 +87,24 @@ reads no site keys. When two loaded plugins share a name, neither reads site key
 A key that is not in the map at all (a third-party plugin, or a hook newer than the feed) falls
 back to the plugin's own row and pattern, logged as `not in the loader's map; own pattern`.
 
-Fields follow the same shape: the map's row for the running CL first, then the plugin's, then
-`builtOffset` on its `builtCL`. Two rows for one CL that disagree fail the request. A reflected
-field is still read live from reflection; its row is a cross-check. A native offset plus its
-size must lie inside the class's live size. See the SDK guide for the `[Map]` log lines.
+Fields follow the same shape: the map's row for the running CL first (else the latest CL's),
+then the plugin's, then `builtOffset` on its `builtCL`. Two rows for one CL that disagree fail
+the request. A reflected field is read live from reflection, and a row is only a cross-check:
+where a row and the game disagree the game wins, and the disagreement is logged. A native
+offset (reflection does not describe it) comes from the running CL's row or the compiled offset
+on the build it was compiled for; a row carried forward from an older CL cannot be checked on
+this build, so the field is unresolved. A native offset plus its size must lie inside the
+class's live size. See the SDK guide for the `[Map]` log lines.
+
+## Features
+
+A plugin can group the keys one part of it needs with `DeclareFeature` (or `DeclareFeatures`),
+during `OnPluginLoadHooks`. A key that fails and belongs to a declared feature turns that
+feature off, and the plugin still loads. A key that fails and belongs to no feature refuses the
+plugin, as before. The loader also refuses a plugin for an interface mismatch, for no built CL,
+and for missing core globals (`GetSdkGlobals`). A feature that is off is listed in the failure
+window and in the log (`[Map] <plugin>: feature "<title>" is off: <keys>`), and its config
+entries are reported as off so a settings page can grey them out.
 
 ## Admission
 
@@ -242,11 +262,11 @@ What a player sees, and what the log says (`ModLoader\Logs\ModLoader.log`).
 | The feed is older than the cache (`seq` not higher) | Ignored. The cache stays. |
 | A release build is handed a `k1` (TEST) feed | Rejected as a bad key. |
 | `[AutoUpdate] Enabled` off, or a server build | No fetch. The built-in map is used. A server stays exact on the build it was written for. |
-| The feed has the build, but a row is `absent` for something a plugin needs | That plugin's request fails, and the plugin is refused with the reason in the failure window. Other plugins and the game run. |
+| The feed has the build, but a row is `absent` for something a plugin needs | That plugin's request fails. If it belongs to a declared feature, that feature is off; otherwise the plugin is refused, with the reason in the failure window. Other plugins and the game run. |
 | The feed has the build but misses a required loader entry | That CL is dropped from the feed, and the build is refused as above. |
 | A plugin built for another build does not declare `PLUGIN_MAP_MIGRATED` | **Incompatible**: "Needs an update to run on CL-...". It loads on its own build. |
-| Two keys for one request disagree (AMBIGUOUS) | The request fails. The plugin is refused with the locators listed. |
-| A game class a plugin reads moved | That plugin's own field request, or its `SR_SIZE_CHECK`, fails and the plugin alone is refused, with the reason in the failure window. The loader's layout check covers the loader's own classes only. |
+| Two keys for one request disagree (AMBIGUOUS) | The request fails, with the locators listed: a declared feature turns off, any other key refuses the plugin. |
+| A game class a plugin reads moved | That plugin's own field request, or its `SR_SIZE_CHECK`, fails and the plugin alone is affected (a declared feature off, else refused), with the reason in the failure window. The loader's layout check covers the loader's own classes only. |
 
 A fetched map is read once at startup and never changes mid-session, so a RELOAD sees the same
 rows the loader's own hooks were installed from.

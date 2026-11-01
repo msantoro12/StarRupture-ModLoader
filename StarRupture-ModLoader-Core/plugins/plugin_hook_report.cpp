@@ -5,6 +5,7 @@
 #include "core/version_check.h"
 
 #include <windows.h>
+#include <algorithm>
 #include <mutex>
 
 #ifndef MODLOADER_BUILD_TAG
@@ -23,12 +24,26 @@ namespace PluginHookReport
 {
     namespace
     {
+        // A feature a plugin declared in this session (IPluginHookScanner::
+        // DeclareFeature). Its keys are matched by RecordFailure.
+        struct Declared
+        {
+            std::string              id;
+            std::string              title;
+            std::vector<std::string> keys;
+            std::vector<std::string> configKeys;
+            bool*                    enabled = nullptr;   // the plugin's flag; written only while the session is open
+        };
+
         struct Session
         {
-            const IPluginSelf* self;
-            PluginReport       report;
-            bool               nameShared = false;
+            const IPluginSelf*    self;
+            PluginReport          report;
+            bool                  nameShared = false;
+            std::vector<Declared> declared;
         };
+
+        const char* const kFeatureOffReason = "this game build changed something it needs";
 
         std::mutex                s_mutex;
         Session                   s_session{};      // self == nullptr when closed
@@ -67,6 +82,22 @@ namespace PluginHookReport
                     break;
                 start = end + 2;
             }
+        }
+
+        bool SameName(const std::string& a, const std::string& b)
+        {
+            return _stricmp(a.c_str(), b.c_str()) == 0;
+        }
+
+        // Whether `configKey` ("Section.Key", or "Section.*" for a whole
+        // section) names section.key.
+        bool ConfigKeyMatches(const std::string& configKey, const char* section, const char* key)
+        {
+            const std::string s = section ? section : "";
+            const std::string k = key ? key : "";
+            if (configKey.size() > 2 && configKey.compare(configKey.size() - 2, 2, ".*") == 0)
+                return SameName(configKey.substr(0, configKey.size() - 2), s);
+            return SameName(configKey, s + "." + k);
         }
 
         void RejectOutOfSession(const IPluginSelf* self, const char* what)
@@ -123,7 +154,7 @@ namespace PluginHookReport
         PluginReport report = std::move(session->report);
         s_session = Session{};
 
-        if (report.failures.empty())
+        if (report.failures.empty() && report.featuresOff.empty())
         {
             if (report.resolved > 0)
                 ModLoaderLogger::LogInfo(L"[HookScan] %S: %d pattern(s) resolved, no failures",
@@ -131,33 +162,47 @@ namespace PluginHookReport
             return;
         }
 
-        // One miss is enough. An optional resolve that came back empty still
-        // means the plugin is about to run against a game it was not built for,
-        // and the loader cannot tell which half of it that breaks.
-        report.refused = true;
+        // A miss on a key no feature lists is fatal, and one is enough. An
+        // optional resolve that came back empty still means the plugin is about
+        // to run against a game it was not built for, and the loader cannot
+        // tell which half of it that breaks. A feature turned off is the
+        // plugin saying which half.
+        report.refused = !report.failures.empty();
 
         if (refusedOut) *refusedOut = report.refused;
 
-        ModLoaderLogger::LogError(L"[HookScan] ==========================================================");
-        ModLoaderLogger::LogError(L"[HookScan] %S '%S' (%S): %d resolved, %zu failed",
-            report.preload ? "Preload plugin" : "Plugin",
-            report.plugin.c_str(), report.file.c_str(), report.resolved, report.failures.size());
-        for (const Failure& f : report.failures)
+        for (const FeatureOff& f : report.featuresOff)
         {
-            ModLoaderLogger::LogError(L"[HookScan]   [%S] %S", f.required ? "required" : "optional", f.hookName.c_str());
-            LogDetailLines(f.detail);
+            std::string keys;
+            for (const FeatureMiss& m : f.misses)
+                keys += (keys.empty() ? "" : ", ") + m.key;
+            ModLoaderLogger::LogWarn(L"[Map] %S: feature \"%S\" is off: %S (%S)",
+                report.plugin.c_str(), f.title.c_str(), keys.c_str(), f.reason.c_str());
         }
-        if (report.preload)
+
+        if (!report.failures.empty())
         {
-            ModLoaderLogger::LogError(L"[HookScan] '%S' will NOT run -- it is unloaded and the game boots unaffected.",
-                report.plugin.c_str());
+            ModLoaderLogger::LogError(L"[HookScan] ==========================================================");
+            ModLoaderLogger::LogError(L"[HookScan] %S '%S' (%S): %d resolved, %zu failed",
+                report.preload ? "Preload plugin" : "Plugin",
+                report.plugin.c_str(), report.file.c_str(), report.resolved, report.failures.size());
+            for (const Failure& f : report.failures)
+            {
+                ModLoaderLogger::LogError(L"[HookScan]   [%S] %S", f.required ? "required" : "optional", f.hookName.c_str());
+                LogDetailLines(f.detail);
+            }
+            if (report.preload)
+            {
+                ModLoaderLogger::LogError(L"[HookScan] '%S' will NOT run -- it is unloaded and the game boots unaffected.",
+                    report.plugin.c_str());
+            }
+            else
+            {
+                ModLoaderLogger::LogError(L"[HookScan] '%S' will NOT be loaded -- PluginInit will not be called.",
+                    report.plugin.c_str());
+            }
+            ModLoaderLogger::LogError(L"[HookScan] ==========================================================");
         }
-        else
-        {
-            ModLoaderLogger::LogError(L"[HookScan] '%S' will NOT be loaded -- PluginInit will not be called.",
-                report.plugin.c_str());
-        }
-        ModLoaderLogger::LogError(L"[HookScan] ==========================================================");
 
         s_reports.push_back(std::move(report));
         ++s_generation;
@@ -203,11 +248,71 @@ namespace PluginHookReport
             return;
         }
 
+        const std::string name = (hookName && hookName[0]) ? hookName : "(unnamed)";
+
+        // A key a declared feature lists turns that feature off instead of
+        // refusing the plugin. Every feature that lists it goes off.
+        bool covered = false;
+        for (Declared& d : session->declared)
+        {
+            if (std::find(d.keys.begin(), d.keys.end(), name) == d.keys.end())
+                continue;
+            covered = true;
+
+            auto off = std::find_if(session->report.featuresOff.begin(), session->report.featuresOff.end(),
+                [&](const FeatureOff& o) { return o.id == d.id; });
+            if (off == session->report.featuresOff.end())
+            {
+                FeatureOff o;
+                o.id         = d.id;
+                o.title      = d.title;
+                o.reason     = kFeatureOffReason;
+                o.configKeys = d.configKeys;
+                session->report.featuresOff.push_back(std::move(o));
+                off = session->report.featuresOff.end() - 1;
+            }
+            off->misses.push_back(FeatureMiss{ name, detail ? detail : "" });
+            if (d.enabled)
+                *d.enabled = false;
+        }
+        if (covered)
+            return;
+
         Failure f;
-        f.hookName = (hookName && hookName[0]) ? hookName : "(unnamed)";
+        f.hookName = name;
         f.detail   = detail ? detail : "";
         f.required = required;
         session->report.failures.push_back(std::move(f));
+    }
+
+    bool DeclareFeature(const IPluginSelf* self, const char* id, const char* title,
+                        const std::vector<std::string>& keys, const std::vector<std::string>& configKeys,
+                        bool* enabled)
+    {
+        std::lock_guard<std::mutex> lock(s_mutex);
+
+        Session* session = FindSession(self);
+        if (!session)
+        {
+            RejectOutOfSession(self, "DeclareFeature");
+            return false;
+        }
+        if (!id || !id[0] || !title || !title[0] || keys.empty())
+            return false;
+        for (const Declared& d : session->declared)
+            if (d.id == id)
+                return false;
+
+        Declared d;
+        d.id         = id;
+        d.title      = title;
+        d.keys       = keys;
+        d.configKeys = configKeys;
+        d.enabled    = enabled;
+        if (enabled)
+            *enabled = true;
+        session->declared.push_back(std::move(d));
+        return true;
     }
 
     bool SessionNameShared(const IPluginSelf* self)
@@ -271,6 +376,40 @@ namespace PluginHookReport
         return count;
     }
 
+    int GetFeaturesOffCount()
+    {
+        std::lock_guard<std::mutex> lock(s_mutex);
+        int count = 0;
+        for (const PluginReport& r : s_reports)
+            count += static_cast<int>(r.featuresOff.size());
+        return count;
+    }
+
+    int GetFeaturesOffCount(const char* plugin)
+    {
+        std::lock_guard<std::mutex> lock(s_mutex);
+        int count = 0;
+        for (const PluginReport& r : s_reports)
+            if (plugin && SameName(r.plugin, plugin))
+                count += static_cast<int>(r.featuresOff.size());
+        return count;
+    }
+
+    std::string ConfigOffReason(const char* plugin, const char* section, const char* key)
+    {
+        std::lock_guard<std::mutex> lock(s_mutex);
+        for (const PluginReport& r : s_reports)
+        {
+            if (!plugin || !SameName(r.plugin, plugin))
+                continue;
+            for (const FeatureOff& f : r.featuresOff)
+                for (const std::string& configKey : f.configKeys)
+                    if (ConfigKeyMatches(configKey, section, key))
+                        return f.title + " is off: " + f.reason;
+        }
+        return std::string();
+    }
+
     std::string BuildReportText()
     {
         // Written for pasting into a bug report, so it leads with the two things
@@ -311,6 +450,12 @@ namespace PluginHookReport
             text += r.file.empty() ? "?" : r.file;
             text += ") -- ";
             text += r.refused ? "NOT LOADED" : "loaded";
+            if (!r.featuresOff.empty())
+            {
+                text += ", ";
+                text += std::to_string(r.featuresOff.size());
+                text += " feature(s) off";
+            }
             text += "   [";
             text += std::to_string(r.resolved);
             text += " pattern(s) resolved]\r\n";
@@ -323,14 +468,33 @@ namespace PluginHookReport
                 text += f.detail;
                 text += "\r\n";
             }
+            for (const FeatureOff& f : r.featuresOff)
+            {
+                text += "    [feature off] ";
+                text += f.title;
+                text += " (";
+                text += f.id;
+                text += "): ";
+                text += f.reason;
+                text += "\r\n";
+                for (const FeatureMiss& m : f.misses)
+                {
+                    text += "        ";
+                    text += m.key;
+                    text += "\r\n            ";
+                    text += m.detail;
+                    text += "\r\n";
+                }
+            }
             text += "\r\n";
         }
 
         text += "A hook that no longer resolves usually means the game updated and the\r\n"
-                "plugin needs a new build. Any unresolved hook stops the plugin loading --\r\n"
-                "required or optional, and a pattern that matches MORE than once counts as\r\n"
-                "unresolved too, because an address picked from several candidates is a\r\n"
-                "guess. Send this to the plugin's author.\r\n";
+                "plugin needs a new build. A hook the plugin cannot do without stops the\r\n"
+                "plugin loading; a hook that only one feature needs turns that feature off\r\n"
+                "and the rest of the plugin runs. A pattern that matches MORE than once\r\n"
+                "counts as unresolved too, because an address picked from several\r\n"
+                "candidates is a guess. Send this to the plugin's author.\r\n";
         return text;
     }
 }

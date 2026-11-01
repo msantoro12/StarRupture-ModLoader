@@ -62,6 +62,11 @@ struct ImGuiRenderCallbacks
     // its own cursor then, so ImGui is fed the mouse and keeps only the
     // messages it wants; the keyboard stays with the game.
     bool    (*IsPauseMenuOpen)();
+
+    // The main DLL's inline hook utilities. Used to hook Streamline's tag
+    // and present functions so the overlay reaches frames DLSS Frame
+    // Generation generates.
+    const IPluginHookUtils* CodeHooks;
 };
 
 // ---------------------------------------------------------------------------

@@ -34,7 +34,7 @@ namespace VersionFeed
 		// sr-aobscan) trusts it; any other build skips the slot, so a release
 		// reads no feed until a real key is in a slot. The real public key goes
 		// in kK2Hex.
-		constexpr const char* kK1Hex = "18eb4c9f4b59b3711317574094f3e6efcf1403a12561a941bb771b2be7e8fd84";
+		constexpr const char* kK1Hex = "e1650a7bb99a2941c9c034f22f2a22fb16f482b67e7f2edc31489c43975020cf";
 		constexpr bool        kK1TestOnly = true;
 		constexpr const char* kK2Hex = "";
 		constexpr bool        kK2TestOnly = false;

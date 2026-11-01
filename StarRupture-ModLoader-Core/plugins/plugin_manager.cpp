@@ -1200,7 +1200,8 @@ namespace PluginManager
 		p.isWrongTarget        = false;
 		p.hookScanFailed       = false;
 
-		bool ok = LoadPluginIntoRecord(p, false);
+		LoadFailureInfo failure;
+		bool ok = LoadPluginIntoRecord(p, false, &failure);
 		++g_pluginGeneration;
 
 		if (ok)
@@ -1216,6 +1217,9 @@ namespace PluginManager
 		else
 		{
 			LeaveCriticalSection(&g_pluginLock);
+			// The pre-check read the settings of the build that was loaded. If
+			// the DLL on disk now declares a stricter load setting, say so.
+			if (refusal && failure.kind == LoadFailure::Refused) *refusal = failure.detail;
 			ModLoaderLogger::LogMessage(L"Plugin reload failed for index %d", index);
 		}
 

@@ -13,6 +13,7 @@
 #include <array>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 
 // The real map, beside the fixture one version_map.cpp reads (its includes are already in).
 
@@ -251,14 +252,18 @@ int main()
 				entry = &e;
 		if (!entry)
 		{
-			// A plugin's own function key: a global kind with no fingerprint, so any plugin may ask for it by name.
+			// A plugin's own function key: a global key (a global kind, no fingerprint), which any plugin may
+			// ask for by name; or a scoped key, "<Plugin>/<name>", whose rows each carry the fingerprint of
+			// the one request they were verified with.
+			const bool scoped = strchr(index.key, '/') != nullptr;
 			for (uint16_t i = index.first; i < index.first + index.count; ++i)
 			{
 				const Real::VersionMap::FunctionRow& row = Real::VersionMap::kFunctionRows[i];
-				if (row.kind != static_cast<int>(Kind::FunctionStart) || row.fp != 0)
+				const bool globalKind = row.kind == static_cast<int>(Kind::FunctionStart) || row.kind == static_cast<int>(Kind::Data);
+				if (scoped ? (globalKind || row.fp == 0) : (!globalKind || row.fp != 0))
 				{
 					++unmatched;
-					printf("  not a registry key, and not a global key: %s\n", index.key);
+					printf("  not a registry key, and not a plugin's global or scoped key: %s\n", index.key);
 					break;
 				}
 			}
@@ -735,8 +740,8 @@ int main()
 	}
 
 	Check(Real::VersionMap::kFormatVersion == 2, "the real map is format 2");
-	Check(unmatched == 0, "every real map key is a registry row's or a plugin's global key");
-	Check(pluginKeys == 10, "the real map holds the ten plugin function keys of the version-map build");
+	Check(unmatched == 0, "every real map key is a registry row's or a plugin's global or scoped key");
+	Check(pluginKeys == 105, "the real map holds the 105 plugin function keys: 10 of WAILA and ProductionViewer, 95 of MiniMap");
 	Check(wrong == 0, "every real map row has its registry row's kind and fp");
 
 	printf("%d checks, %d failed\n", g_checks, g_failed);

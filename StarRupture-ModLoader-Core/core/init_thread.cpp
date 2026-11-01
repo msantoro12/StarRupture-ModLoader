@@ -23,6 +23,7 @@
 #include "sdk_globals.h"
 #include "layout_check.h"
 #include "../memory_scanner/version_map.h"
+#include "../memory_scanner/version_feed.h"
 #include "../hooks/game/version_map.generated.h"
 #include "compat_report.h"
 #include "../plugins/plugin_manager.h"
@@ -163,6 +164,13 @@ DWORD WINAPI MainInitThreadProc(LPVOID)
     // (LogMessage, LogDebug, LogWarn, etc.) is silently dropped because
     // g_logInitialized is still false.
     ModLoaderLogger::InitializeLogger();
+
+#ifdef MODLOADER_CLIENT_BUILD
+    // The map every lookup reads is fixed here, once, before anything reads
+    // it: the one compiled into the loader, plus the signed feed cached by an
+    // earlier launch if it verifies. The server stays on its exact build.
+    VersionFeed::ActivateCached(GetModLoaderDirPath(L"version-map-client.v1.cache"));
+#endif
 
     // Version check before hook installation -- if the game build is wrong
     // we must not install hooks (the engine init hook would block the main

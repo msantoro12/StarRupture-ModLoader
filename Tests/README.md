@@ -276,3 +276,22 @@ build\tests\version_map_tests.exe
 ```
 
 It prints each failed check and a count, and exits 0 when every check passes.
+
+## VersionFeedTests
+
+The signed feed reader (`memory_scanner/version_feed.cpp`, with the vendored Monocypher) against the
+fixture map of VersionMapTests, with no network. It checks:
+
+- Verify, then parse: a valid file, a flipped byte, an unknown key ID, a truncated, oversize or
+  doubled file, another `format`, a bad `seq`, a scoped row with no `fp`.
+- A file signed by Node's crypto with the TEST key verifies against slot `k1`.
+- The merge: a clash on the running exe keeps the baseline, a feed locator fills a baseline `absent`,
+  an `absent` for one `fp` and a locator for another both survive, a rebuilt exe of a known CL.
+- The per-CL coverage gate, counting a `ModLoader/` entry only under the loader's own `fp`.
+- The cache: replaced only by a higher `seq`, through a temp file; a damaged or dropped-key cache is
+  ignored; one map generation per process.
+
+```
+msbuild Tests\VersionFeedTests\VersionFeedTests.vcxproj /p:Configuration="Client Release" /p:Platform=x64
+build	estsersion_feed_tests.exe
+```

@@ -501,6 +501,9 @@
     <ClInclude Include="memory_scanner\patch_overlay.h" />
     <ClInclude Include="memory_scanner\scan_validation.h" />
     <ClInclude Include="memory_scanner\version_map.h" />
+    <ClInclude Include="memory_scanner\version_feed.h" />
+    <ClInclude Include="third_party\monocypher\monocypher.h" />
+    <ClInclude Include="third_party\monocypher\monocypher-ed25519.h" />
     <ClInclude Include="preload\preload_interface.h" />
     <ClInclude Include="preload\preload_manager.h" />
     <ClInclude Include="preload\preload_patch.h" />
@@ -695,6 +698,15 @@
     <ClCompile Include="memory_scanner\patch_overlay.cpp" />
     <ClCompile Include="memory_scanner\scan_validation.cpp" />
     <ClCompile Include="memory_scanner\version_map.cpp" />
+    <ClCompile Include="memory_scanner\version_feed.cpp" />
+    <ClCompile Include="third_party\monocypher\monocypher.c">
+      <WarningLevel>TurnOffAllWarnings</WarningLevel>
+      <CompileAs>CompileAsC</CompileAs>
+    </ClCompile>
+    <ClCompile Include="third_party\monocypher\monocypher-ed25519.c">
+      <WarningLevel>TurnOffAllWarnings</WarningLevel>
+      <CompileAs>CompileAsC</CompileAs>
+    </ClCompile>
     <ClCompile Include="preload\preload_manager.cpp" />
     <ClCompile Include="preload\preload_patch.cpp" />
     <ClCompile Include="console\console_commands.cpp" />

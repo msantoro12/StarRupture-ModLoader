@@ -289,6 +289,8 @@ namespace VersionMap
 					if (f[7].empty() || !FeedDec(f[8], -0x7FFFFFFF, 0x7FFFFFFF, ro) || !FeedDec(f[9], -1, 0x7FFFFFFF, r32)
 						|| !FeedDec(f[10], -1, 0x7FFFFFFF, rip) || !FeedHex(f[11], rva))
 						return fail(lineNo, "a function line with a bad pattern, offset or RVA");
+					if (f[7] == "-" && !(stamp && size && rva))
+						return fail(lineNo, "an address-only row (pattern -) without the exe's stamp and size and an RVA");
 					row.pattern = f[7] == "-" ? "" : f[7];
 					row.resultOffset = static_cast<int32_t>(ro); row.followRel32At = static_cast<int32_t>(r32);
 					row.followRipDispAt = static_cast<int32_t>(rip); row.rva = rva;
@@ -301,6 +303,8 @@ namespace VersionMap
 				if (f[1].empty() || !FeedDec(f[2], 1, 0x7FFFFFFF, cl) || !FeedHex(f[3], offset) || offset > 0x7FFFFFFF
 					|| !FeedHex(f[4], fsize) || fsize == 0 || !FeedHex(f[5], mask) || mask > 0xFF || f[6].empty())
 					return fail(lineNo, "a field line with a bad key, CL, offset, size, mask or member");
+				if (std::none_of(m.builds.begin(), m.builds.end(), [&](const MapBuild& b) { return b.gameCL == cl; }))
+					return fail(lineNo, "CL-" + std::to_string(cl) + " has no build line");
 				if (!seenField.insert({ f[1], static_cast<uint32_t>(cl) }).second)
 					return fail(lineNo, "a second row for this key and CL");
 				m.fields.push_back({ f[1], static_cast<uint32_t>(cl), static_cast<int32_t>(offset), fsize,
@@ -422,9 +426,12 @@ namespace VersionMap
 		const std::string here = ClText(running.cl);
 
 		// An address-only row is honoured on its own exe only, so it needs all of
-		// the exe's stamp and size and the RVA.
+		// the exe's stamp and size and the RVA. A plugin's own bad row is its
+		// bug on every build; a map row only counts on the build it is for.
 		for (const Candidate& c : candidates)
 		{
+			if (c.fromMap && c.gameCL != running.cl)
+				continue;
 			if (c.pattern.empty() && !(c.imageStamp && c.imageSize && c.rva))
 			{
 				Result bad;
@@ -875,6 +882,12 @@ namespace VersionMap
 					+ ", so neither reads site keys (refused)");
 				return Failure(Outcome::BadRequest, request.name + ": another loaded plugin is also named "
 					+ who + ", and the map's " + who + "/ keys cannot tell the two apart, so neither reads them");
+			}
+			if (strchr(who, '/'))
+			{
+				LogPick(who, request.name, "a plugin name with a '/' reads no site keys (refused)");
+				return Failure(Outcome::BadRequest, request.name + ": the plugin name " + who
+					+ " has a '/', so its site keys would run into another plugin's");
 			}
 			fp = Fingerprint(kind, request.pattern, request.resultOffset, request.followRel32At, -1, 0);
 			if (!fp)

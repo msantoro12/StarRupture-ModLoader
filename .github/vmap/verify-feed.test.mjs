@@ -68,6 +68,14 @@ test('refuses an unknown slot, a seq a day ahead, bad shape and an oversize file
   assert.match(outcome(() => check(signed(k, BODY(NOW)).subarray(0, -10), { keys: keys(k), now: NOW })), /LF|sig line/);
 });
 
+test('refuses an address-only row without the stamp, size and RVA', () => {
+  const k = pair();
+  const row = (rva) => `function	Test::MapOnly	0x00000000	128786	0x22222222	0x02000000	1	-	0	-1	-1	${rva}
+`;
+  assert.match(outcome(() => check(signed(k, BODY(NOW).replace('field', `${row('0x00000000')}field`)), { keys: keys(k), now: NOW })), /^refused: an address-only row/);
+  assert.equal(outcome(() => check(signed(k, BODY(NOW).replace('field', `${row('0x00007000')}field`)), { keys: keys(k), now: NOW })), 'ok');
+});
+
 test('refuses a TEST-key feed when asked to', () => {
   const k = pair();
   const s = signed(k, BODY(NOW));

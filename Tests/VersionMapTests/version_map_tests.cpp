@@ -211,6 +211,11 @@ int main()
 	Check(At(r, 0x8000) && Logged(L"not in the loader's map; own pattern"), "a global key with a '/' reads no key");
 	r = Key("ModLoader", Ask("Test::MapOnly", Kind::FunctionStart));
 	Check(r.outcome == Outcome::BadRequest && Logged(L"(refused)"), "a plugin named ModLoader is refused");
+	r = Key("Vmap/Probe", Ask("Site", Kind::InFunction, "AD 01 ?? 02"));
+	Check(r.outcome == Outcome::BadRequest && Logged(L"a plugin name with a '/' reads no site keys (refused)"),
+		"a plugin name with a '/' reads no site keys");
+	r = Key("Vmap/Probe", Ask("Test::MapOnly", Kind::FunctionStart));
+	Check(At(r, 0x1000), "a plugin name with a '/' still reads global keys");
 
 	// Two loaded plugins with one name: neither reads site keys, with one line
 	// saying why; global keys are unaffected.
@@ -389,6 +394,28 @@ int main()
 		Check(!q.Succeeded() && !Logged(L"loader map, CL-128786 row"), "active map: an empty map holds no row");
 		VersionMap::SetActiveMap(nullptr);
 		Check(At(Key("VmapProbe", Ask("Test::MapOnly", Kind::FunctionStart)), 0x1000), "active map: the baseline again");
+
+		// An address-only row without an RVA is refused by the reader, and one
+		// that reaches the map anyway refuses its key on its own build only.
+		const std::string head2 = "format\t1\nbuild\t127004\t0x11111111\t0x1000000\tx\n"
+			"build\t128786\t0x22222222\t0x2000000\tpublic_test_branch 2\n";
+		bad(head2 + "function\tTest::MapOnly\t0x0\t127004\t0x11111111\t0x1000000\t1\t-\t0\t-1\t-1\t0x0\n"
+			"function\tTest::MapOnly\t0x0\t128786\t0x22222222\t0x2000000\t1\tB0 01\t0\t-1\t-1\t0x7000\n",
+			"feed: an address-only row with no RVA");
+		bad(head + "field\tATest::Reflected\t127004\t0x30\t0x8\t0x0\t-\n", "feed: a field for a CL with no build line");
+		VersionMap::MapData other = m;
+		other.builds.push_back({ 127004, 0x11111111, 0x1000000, "x" });
+		VersionMap::MapFunctionRow noRva = other.functions[0];
+		noRva.gameCL = 127004; noRva.imageStamp = 0x11111111; noRva.imageSize = 0x1000000;
+		noRva.pattern.clear(); noRva.rva = 0;
+		other.functions.push_back(noRva);
+		VersionMap::SetActiveMap(std::make_shared<const VersionMap::MapData>(other));
+		Check(At(Key("VmapProbe", Ask("Test::MapOnly", Kind::FunctionStart, "B0 01")), 0x7000),
+			"active map: an address-only row with no RVA for another build does not refuse the key here");
+		q = VersionMap::ResolveMapKey("VmapProbe", Ask("Test::MapOnly", Kind::FunctionStart, "B0 01"), {},
+			VersionMap::Exe{ 127004, 0x11111111, 0x1000000 }, false);
+		Check(q.outcome == Outcome::BadRequest, "active map: on its own build that row refuses the key");
+		VersionMap::SetActiveMap(nullptr);
 	}
 
 	Check(Real::VersionMap::kFormatVersion == 2, "the real map is format 2");

@@ -82,6 +82,12 @@ export function check(signed, { keys, lastSeq = null, now = Math.floor(Date.now(
   need(sm && Number.isSafeInteger(Number(sm[1])), 'the second line is not a seq line');
   const seq = Number(sm[1]);
   need(seq <= now + MAX_SEQ_AHEAD, `seq ${seq} is more than a day ahead of the clock (${now})`);
+  for (const line of lines) {
+    const f = line.split('	');
+    if (f[0] === 'function' && f[7] === '-')
+      need([f[4], f[5], f[11]].every((v) => /^0x[0-9A-F]+$/.test(v ?? '') && parseInt(v, 16) !== 0),
+        `an address-only row for ${f[1]} on CL-${f[3]} needs the exe's stamp and size and an RVA`);
+  }
   if (headerText !== null) {
     const have = readHeaderBuilds(headerText);
     for (const line of lines) {

@@ -58,6 +58,11 @@ namespace Hooks::Input
 	// Returns the current modifier bitmask by sampling GetAsyncKeyState.
 	EModKeyModifiers SampleCurrentModifiers();
 
+	// v72: true while `keyName` ("F5", "Shift+K", as RegisterKeybindByName takes
+	// it) is held and the game window has focus. A name with modifiers needs
+	// exactly those modifiers, as its callbacks do. Any thread.
+	bool IsKeyHeld(const char* keyName);
+
 	// Formats a combo string into outBuf (e.g. "Ctrl+F5"). Returns outBuf.
 	// mods == EModKeyMod_None produces just the key name.
 	const char* FormatComboString(EModKey key, EModKeyModifiers mods, char* outBuf, size_t outLen);

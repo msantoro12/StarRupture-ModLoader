@@ -1,4 +1,5 @@
 #include "sdk_globals.h"
+#include "../plugins/plugin_interface.h"
 
 #if defined(MODLOADER_CLIENT_BUILD)
 
@@ -7,6 +8,9 @@
 #include "../logging/logger.h"
 #include "../memory_scanner/pattern_preflight.h"
 #include "../memory_scanner/scan_validation.h"
+#include "../memory_scanner/version_map.h"
+#include "../hooks/game/version_map.generated.h"
+#include "Engine_classes.hpp"
 
 #include <algorithm>
 #include <cstring>
@@ -27,7 +31,12 @@ namespace SdkGlobals
         // installed, and by VerifyGObjects on the same thread; read-only
         // afterwards.
         bool                    g_gObjectsOverridden = false;
+        bool                    g_gObjectsVerified = false;  // VerifyGObjects kept the resolved one
+        bool                    g_appendStringApplied = false;
         std::vector<Resolution> g_resolutions;
+        uintptr_t               g_gNames = 0;
+        uintptr_t               g_appendString = 0;
+        uintptr_t               g_gWorld = 0;   // the engine's GWorld variable; 0 = not found
 
         // The registry row for a pattern, so the request is the one preflight
         // verified -- the same transform, the same kind check.
@@ -52,7 +61,7 @@ namespace SdkGlobals
                 return false;
             }
 
-            const ScanValidation::Result result = ScanValidation::Resolve(PatternPreflight::MakeRequest(*entry));
+            const ScanValidation::Result result = PatternPreflight::Resolve(*entry);
             if (!result.Succeeded())
             {
                 ModLoaderLogger::LogWarn(L"[SdkGlobals] %S: did not resolve (see \"%S\" in the preflight above)",
@@ -180,6 +189,8 @@ namespace SdkGlobals
         {
             LogApplied(appendString, base);
             SDK::FName::InitManually(reinterpret_cast<void*>(appendString.address));
+            g_appendStringApplied = true;
+            g_appendString = appendString.address;
         }
 
         // GNames and GWorld stop at the log line. The SDK never reads GNames
@@ -187,9 +198,15 @@ namespace SdkGlobals
         // Offsets::GWorld through an `if constexpr`, so there is nothing to
         // hand either of them to.
         if (Resolve(gNames))
+        {
             LogOnly(gNames, base);
+            g_gNames = gNames.address;
+        }
         if (Resolve(gWorld))
+        {
             LogOnly(gWorld, base);
+            g_gWorld = gWorld.address;
+        }
 
         for (const Global* global : { &gObjects, &gNames, &appendString, &gWorld })
         {
@@ -209,10 +226,16 @@ namespace SdkGlobals
 
         if (!g_gObjectsOverridden)
             return CheckObjectArray(L"built-in", builtIn);
+        // Kept once, kept for good: plugins may already hold it.
+        if (g_gObjectsVerified)
+            return true;
 
         const uintptr_t resolved = reinterpret_cast<uintptr_t>(SDK::UObject::GObjects.GetTypedPtr());
         if (CheckObjectArray(L"resolved", resolved))
+        {
+            g_gObjectsVerified = true;
             return true;
+        }
 
         // A unique match that found the wrong .data address. Go back to the
         // SDK's own value, the policy for every other kind of miss.
@@ -231,14 +254,188 @@ namespace SdkGlobals
     {
         return g_resolutions;
     }
+
+    bool SdkOnResolvedGlobals()
+    {
+        return g_gObjectsOverridden && g_appendStringApplied;
+    }
+
+    const PluginSdkGlobals* ForPlugins()
+    {
+        // Settled on the first call, which comes from a PluginInit: after the
+        // layout check has verified GObjects, so never changes afterwards.
+        static const PluginSdkGlobals* const globals = []() -> const PluginSdkGlobals*
+        {
+            static PluginSdkGlobals value{};
+            const uintptr_t gObjects = g_gObjectsVerified
+                ? reinterpret_cast<uintptr_t>(SDK::UObject::GObjects.GetTypedPtr()) : 0;
+            const std::string withheld = VersionMap::SdkGlobalsWithheld(VersionMap::RunningExe(),
+                gObjects, g_appendString, g_gWorld);
+            if (!withheld.empty())
+            {
+                ModLoaderLogger::LogWarn(L"[SdkGlobals] Not handed to plugins: %S (a GObjects the layout check did not verify counts as not found)",
+                    withheld.c_str());
+                return nullptr;
+            }
+            value = { static_cast<uint32_t>(sizeof(PluginSdkGlobals)), gObjects, g_gNames, g_appendString, g_gWorld };
+            const uintptr_t base = reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
+            const auto rva = [base](uintptr_t address) { return static_cast<unsigned long long>(address ? address - base : 0); };
+            ModLoaderLogger::LogInfo(L"[SdkGlobals] Handed to plugins on CL-%u: GObjects base+0x%llX, GNames base+0x%llX, AppendString base+0x%llX, GWorld base+0x%llX (0 = not found)",
+                VersionMap::RunningExe().cl, rva(gObjects), rva(g_gNames), rva(g_appendString), rva(g_gWorld));
+            return &value;
+        }();
+        return globals;
+    }
+
+    SDK::UWorld* GetWorld()
+    {
+        if (VersionMap::RunningExe().cl == VersionMap::kBuiltCL)
+            return SDK::UWorld::GetWorld();
+        return g_gWorld ? *reinterpret_cast<SDK::UWorld**>(g_gWorld) : nullptr;
+    }
 }
 
 #else
+
+#include "Engine_classes.hpp"
 
 namespace SdkGlobals
 {
     void ResolveAndApply() {}
     bool VerifyGObjects() { return true; }
+    bool SdkOnResolvedGlobals() { return false; }
+    const PluginSdkGlobals* ForPlugins() { return nullptr; }
+    SDK::UWorld* GetWorld() { return SDK::UWorld::GetWorld(); }
 }
 
 #endif
+
+// ---- Members the loader reads, resolved per build (both builds) -----------
+
+#include "Chimera_classes.hpp"
+#include "Engine_classes.hpp"
+#include "../hooks/game/version_map.generated.h"
+#include "../logging/logger.h"
+#include "../memory_scanner/version_map.h"
+
+#include <algorithm>
+#include <atomic>
+#include <cstddef>
+#include <cstring>
+#include <iterator>
+#include <type_traits>
+
+namespace SdkGlobals
+{
+    namespace
+    {
+        // One member, under its key in the loader's version map
+        // (VersionMap::kLoaderFieldKeys, in FieldId order).
+        struct FieldSpec
+        {
+            const char* key;
+            const char* className;
+            const char* member;
+            int32_t     compiled;   // offsetof in the SDK the loader is built against
+            uint32_t    size;
+        };
+
+        enum FieldId { kCraftComponent, kGameState, kLineBatchers, kNetDriver, kFieldCount };
+
+        static_assert(std::is_same_v<decltype(SDK::ACrCrafter::CraftComponent), SDK::UCrCraftingComponent*>);
+        static_assert(std::is_same_v<decltype(SDK::UWorld::GameState), SDK::AGameStateBase*>);
+        static_assert(std::is_same_v<std::remove_extent_t<decltype(SDK::UWorld::LineBatchers)>, SDK::ULineBatchComponent*>);
+        static_assert(std::is_same_v<decltype(SDK::UWorld::NetDriver), SDK::UNetDriver*>);
+
+        static_assert(std::size(VersionMap::kLoaderFieldKeys) == kFieldCount, "one key per loader field");
+
+        const FieldSpec kFieldSpecs[kFieldCount] = {
+            { VersionMap::kLoaderFieldKeys[kCraftComponent], "ACrCrafter", "CraftComponent",
+              offsetof(SDK::ACrCrafter, CraftComponent), sizeof(SDK::ACrCrafter::CraftComponent) },
+            { VersionMap::kLoaderFieldKeys[kGameState], "UWorld", "GameState",
+              offsetof(SDK::UWorld, GameState), sizeof(SDK::UWorld::GameState) },
+            { VersionMap::kLoaderFieldKeys[kLineBatchers], "UWorld", "LineBatchers",
+              offsetof(SDK::UWorld, LineBatchers), sizeof(SDK::UWorld::LineBatchers) },
+            { VersionMap::kLoaderFieldKeys[kNetDriver], "UWorld", "NetDriver",
+              offsetof(SDK::UWorld, NetDriver), sizeof(SDK::UWorld::NetDriver) },
+        };
+
+        // Written once by ResolveFields on the init thread, read from any.
+        // -1: not resolved (yet, or on this build).
+        std::atomic<int32_t> g_fieldOffsets[kFieldCount] = { -1, -1, -1, -1 };
+        std::atomic<bool>    g_unresolvedLogged[kFieldCount] = {};
+
+        // The pointer stored at the resolved offset of `id` in `object`, as
+        // element `index` of the member.
+        template <class T>
+        T* PointerAt(const void* object, FieldId id, int index = 0)
+        {
+            const int32_t offset = g_fieldOffsets[id].load(std::memory_order_acquire);
+            // After a layout safe-off ResolveFields never runs, so every
+            // feature of the loader's that reads this member stays off for
+            // the session. Said once, the first time one asks.
+            if (offset < 0 && object && !g_unresolvedLogged[id].exchange(true))
+                ModLoaderLogger::LogWarn(L"[Map] ModLoader: %S has no offset yet, and none for this session after a layout safe-off; what the loader reads through it gives nothing until it has one",
+                    kFieldSpecs[id].key);
+            if (!object || offset < 0 || index < 0 || static_cast<uint32_t>(index + 1) * sizeof(T*) > kFieldSpecs[id].size)
+                return nullptr;
+            return reinterpret_cast<T* const*>(static_cast<const uint8_t*>(object) + offset)[index];
+        }
+    }
+
+    std::vector<std::string> ResolveFields()
+    {
+        std::vector<std::string> unresolved;
+#if defined(MODLOADER_CLIENT_BUILD)
+        const VersionMap::Exe running = VersionMap::RunningExe();
+#endif
+        for (int id = 0; id < kFieldCount; ++id)
+        {
+            const FieldSpec& spec = kFieldSpecs[id];
+#if defined(MODLOADER_CLIENT_BUILD)
+            VersionMap::FieldValue value;
+            std::string error;
+            if (VersionMap::SelectField("ModLoader", VersionMap::LoaderFieldRequest(spec.key, spec.size, spec.compiled), running, value, error))
+            {
+                g_fieldOffsets[id].store(value.offset, std::memory_order_release);
+                continue;
+            }
+            if (running.cl != VersionMap::kBuiltCL)
+            {
+                unresolved.push_back(std::string(spec.key) + ": " + error);
+                continue;
+            }
+            ModLoaderLogger::LogWarn(L"[Map] ModLoader: %S: the SDK's compiled offset 0x%X, on the build it was made for",
+                spec.key, spec.compiled);
+#endif
+            g_fieldOffsets[id].store(spec.compiled, std::memory_order_release);
+        }
+        return unresolved;
+    }
+
+    bool IsPerBuildField(const char* className, const char* member)
+    {
+        return std::any_of(std::begin(kFieldSpecs), std::end(kFieldSpecs), [&](const FieldSpec& spec)
+            { return strcmp(spec.className, className) == 0 && strcmp(spec.member, member) == 0; });
+    }
+
+    SDK::AGameStateBase* WorldGameState(const SDK::UWorld* world)
+    {
+        return PointerAt<SDK::AGameStateBase>(world, kGameState);
+    }
+
+    SDK::UNetDriver* WorldNetDriver(const SDK::UWorld* world)
+    {
+        return PointerAt<SDK::UNetDriver>(world, kNetDriver);
+    }
+
+    SDK::ULineBatchComponent* WorldLineBatcher(const SDK::UWorld* world, int index)
+    {
+        return PointerAt<SDK::ULineBatchComponent>(world, kLineBatchers, index);
+    }
+
+    SDK::UCrCraftingComponent* CrafterCraftComponent(const SDK::ACrCrafter* crafter)
+    {
+        return PointerAt<SDK::UCrCraftingComponent>(crafter, kCraftComponent);
+    }
+}

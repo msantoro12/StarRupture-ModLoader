@@ -25,6 +25,7 @@
 #include "memory_scanner/scanner.h"
 #include "hooks/game/scan_patterns.h"
 #include "hooks/game/ufunction_resolve.h"
+#include "core/sdk_globals.h"
 #ifdef MODLOADER_SERVER_BUILD
 #include "hooks/http/http_server_hook.h"
 #endif
@@ -398,6 +399,21 @@ namespace ModLoaderLogger
 	static uintptr_t HooksGetLoadPackageAddress()                { return Hooks::ObjectLookup::GetLoadPackageAddress(); }
 	static uintptr_t HooksGetAssetDataFastGetAssetAddress()      { return Hooks::ObjectLookup::GetFAssetData_FastGetAssetAddress(); }
 
+	// v72. Only a call that gets the globals is counted: off the SDK's own
+	// build, a plugin that has not taken them reads its own offsets and is not
+	// admitted.
+	static thread_local unsigned t_sdkGlobalsCalls = 0;
+	static const PluginSdkGlobals* HooksGetSdkGlobals()
+	{
+		const PluginSdkGlobals* globals = SdkGlobals::ForPlugins();
+		if (globals)
+			++t_sdkGlobalsCalls;
+		return globals;
+	}
+	unsigned SdkGlobalsCallsOnThisThread()                        { return t_sdkGlobalsCalls; }
+
+	static bool HooksIsGameThread()                               { return GameThreadDispatch::IsGameThread(); }
+
 	// --- Text utilities ---
 
 	static uintptr_t TextAsLocalizableAdvanced()
@@ -753,7 +769,9 @@ namespace ModLoaderLogger
 		HooksGetFindPackageAddress,                // v36
 		HooksGetPackageFullyLoadAddress,           // v36
 		HooksGetLoadPackageAddress,                // v36
-		HooksGetAssetDataFastGetAssetAddress       // v36
+		HooksGetAssetDataFastGetAssetAddress,      // v36
+		HooksGetSdkGlobals,                        // v72
+		HooksIsGameThread                          // v72
 	};
 
 	static IPluginWorldEvents g_worldEvents = {
@@ -1146,7 +1164,8 @@ namespace ModLoaderLogger
 		HooksRegisterKeybindCombo,    // v28: advanced — enum + mods, callback receives mods
 		HooksUnregisterKeybindCombo,  // v28
 		Hooks::MouseWheel::Register,  // v70
-		Hooks::MouseWheel::Unregister // v70
+		Hooks::MouseWheel::Unregister, // v70
+		Hooks::Input::IsKeyHeld        // v72
 	};
 
 	// --- UI sub-interface wrappers (v15, client only) ---

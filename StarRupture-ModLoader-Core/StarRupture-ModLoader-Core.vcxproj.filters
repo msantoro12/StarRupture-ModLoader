@@ -243,6 +243,9 @@
     <ClInclude Include="memory_scanner\scan_validation.h">
       <Filter>Source Files\memory_scanner</Filter>
     </ClInclude>
+    <ClInclude Include="memory_scanner\version_map.h">
+      <Filter>Source Files\memory_scanner</Filter>
+    </ClInclude>
     <ClInclude Include="preload\preload_interface.h">
       <Filter>Source Files\preload</Filter>
     </ClInclude>
@@ -462,6 +465,9 @@
     <ClInclude Include="hooks\game\scan_patterns.h">
       <Filter>Source Files\hooks\game</Filter>
     </ClInclude>
+    <ClInclude Include="hooks\game\version_map.generated.h">
+      <Filter>Source Files\hooks\game</Filter>
+    </ClInclude>
     <ClInclude Include="UI\console_window.h">
       <Filter>Source Files\UI</Filter>
     </ClInclude>
@@ -648,6 +654,9 @@
       <Filter>Source Files\memory_scanner</Filter>
     </ClCompile>
     <ClCompile Include="memory_scanner\scan_validation.cpp">
+      <Filter>Source Files\memory_scanner</Filter>
+    </ClCompile>
+    <ClCompile Include="memory_scanner\version_map.cpp">
       <Filter>Source Files\memory_scanner</Filter>
     </ClCompile>
     <ClCompile Include="preload\preload_manager.cpp">

@@ -1,4 +1,5 @@
 #include "pch.h"
+#include "core/sdk_globals.h"
 #include "network_channel.h"
 #include "packet_fragmentation.h"
 #include "net_timeout.h"
@@ -453,9 +454,9 @@ namespace
     {
         __try
         {
-            SDK::UWorld* world = SDK::UWorld::GetWorld();
-            if (!world || !world->NetDriver) return nullptr;
-            return world->NetDriver->ServerConnection;
+            SDK::UNetDriver* driver = SdkGlobals::WorldNetDriver(SdkGlobals::GetWorld());
+            if (!driver) return nullptr;
+            return driver->ServerConnection;
         }
         __except (EXCEPTION_EXECUTE_HANDLER)
         {
@@ -548,10 +549,10 @@ namespace
         if (!conn) return false;
         __try
         {
-            SDK::UWorld* world = SDK::UWorld::GetWorld();
-            if (!world || !world->NetDriver) return false;
+            SDK::UNetDriver* driver = SdkGlobals::WorldNetDriver(SdkGlobals::GetWorld());
+            if (!driver) return false;
 
-            auto* conns = &world->NetDriver->ClientConnections;
+            auto* conns = &driver->ClientConnections;
             for (int32_t i = 0; i < conns->Num(); ++i)
                 if (static_cast<void*>((*conns)[i]) == conn) return true;
 
@@ -809,7 +810,7 @@ namespace
     //
     //  1. The channel must still point back at the connection we looked it up by.
     //     This is the check that does not rely on any bit-layout assumption: if the
-    //     UChannel was freed and its memory reused, Connection@0x28 almost
+    //     UChannel was freed and its memory reused, Connection almost
     //     certainly no longer matches.
     //  2. The Closing and Broken flags. Offsets come from IDA's type info for
     //     UChannel (the SDK pads this region out, so it is not in the headers):
@@ -824,7 +825,7 @@ namespace
         __try
         {
             auto* p = reinterpret_cast<uint8_t*>(cc);
-            if (*reinterpret_cast<void**>(p + 0x28) != conn) return false;
+            if (*reinterpret_cast<void**>(p + offsetof(SDK::UChannel, Connection)) != conn) return false;
 
             const uint8_t flags = *(p + kOff_ChannelFlags);
             if (flags & (kChannelClosing | kChannelBroken)) return false;
@@ -1187,7 +1188,7 @@ namespace
 #ifdef MODLOADER_CLIENT_BUILD
         if (!playerController) return false;
 
-        SDK::UWorld* world = SDK::UWorld::GetWorld();
+        SDK::UWorld* world = SdkGlobals::GetWorld();
         if (!world) return false;
 
         void* localPC = SDK::UGameplayStatics::GetPlayerController(world, 0);
@@ -1301,7 +1302,7 @@ namespace
 
         std::string env = BuildEnvelope(self->name, typeTag, data, size);
 
-        SDK::UWorld* world = SDK::UWorld::GetWorld();
+        SDK::UWorld* world = SdkGlobals::GetWorld();
         if (!world)
         {
             ModLoaderLogger::LogWarn(L"[NetworkChannel] SendPacketToAllClients: UWorld not available");
@@ -2607,7 +2608,7 @@ std::vector<NetworkChannel::ClientManifest> NetworkChannel::GetClientManifests()
     // Enumerate live controllers so a connected client that has NOT reported
     // still shows up -- "who is missing a manifest" is the question this is most
     // often asked to answer.
-    SDK::UWorld* world = SDK::UWorld::GetWorld();
+    SDK::UWorld* world = SdkGlobals::GetWorld();
     if (!world) return out;
 
     SDK::TArray<SDK::AActor*> actors;

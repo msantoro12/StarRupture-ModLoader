@@ -38,8 +38,9 @@ namespace PatternPreflight
     // Read by the compatibility report, after preflight has run.
     const std::vector<Miss>& Misses();
 
-    // The request preflight makes for one registry row. Anything that resolves
-    // a registry pattern after preflight builds its request here, so the
-    // address it gets is the one preflight verified, transforms included.
-    ScanValidation::Request MakeRequest(const ScanPatterns::PreflightEntry& entry);
+    // Resolves one registry row the way preflight does: its own request,
+    // transforms included, with the loader's version-map rows for it. Anything
+    // that resolves a registry pattern after preflight comes through here, so
+    // the address it gets is the one preflight verified.
+    ScanValidation::Result Resolve(const ScanPatterns::PreflightEntry& entry);
 }

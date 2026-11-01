@@ -95,6 +95,11 @@ namespace ScanValidation
 	// and the report is the only thing that will fix it.
 	Result Resolve(const Request& request);
 
+	// The kind check alone, for an address found without a pattern (a version
+	// map row that names the address on one exact exe). request.pattern and the
+	// transforms are not used; the address is final.
+	Result CheckAddress(const Request& request, uintptr_t address);
+
 	// "function start", "code", ... -- for log lines and report text.
 	const char* KindName(Kind kind);
 

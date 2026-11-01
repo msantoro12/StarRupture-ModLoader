@@ -144,6 +144,18 @@
   </ItemDefinitionGroup>
 
   <!-- ============================================================
+       VMAP_FEED_URL
+       Injected per build via /p:VmapFeedUrl="https://...": where the
+       signed version-map feed (version-map-client.v1.txt) is fetched.
+       Never read from modloader.ini. Empty -> the loader fetches no feed.
+       ============================================================ -->
+  <ItemDefinitionGroup Condition="'$(VmapFeedUrl)' != ''">
+    <ClCompile>
+      <PreprocessorDefinitions>VMAP_FEED_URL="$(VmapFeedUrl)";%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ClCompile>
+  </ItemDefinitionGroup>
+
+  <!-- ============================================================
        ModLoaderVersion
        Optional. Stamps version.rc's FILEVERSION/PRODUCTVERSION the
        same way .github/workflows/release.yml's "Patch version.rc

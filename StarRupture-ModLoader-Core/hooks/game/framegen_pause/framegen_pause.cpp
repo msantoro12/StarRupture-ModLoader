@@ -1,4 +1,5 @@
 #include "pch.h"
+#include "core/sdk_globals.h"
 #include "framegen_pause.h"
 
 #ifdef MODLOADER_CLIENT_BUILD
@@ -90,8 +91,8 @@ namespace Hooks::FrameGenPause
         if (!s_worldUp || s_steadySeconds < kSteadySecondsRequired)
             return false;
 
-        SDK::UWorld* world = SDK::UWorld::GetWorld();
-        return world && world->GameState && world->GameState->bReplicatedHasBegunPlay;
+        SDK::AGameStateBase* gameState = SdkGlobals::WorldGameState(SdkGlobals::GetWorld());
+        return gameState && gameState->bReplicatedHasBegunPlay;
     }
 
     static void RestoreRetain()

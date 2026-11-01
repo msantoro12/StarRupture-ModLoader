@@ -17,8 +17,10 @@
     in ci\LAYOUT-TABLE.md there.
 
     The classes come from the loader's own sources (every SDK type they name)
-    plus their reflected base classes. The built CL is read from
-    kRequiredVersionSuffix in core\version_check.cpp.
+    plus their reflected base classes. A UClass keeps only the members those
+    sources read (--granularity 1); script structs and function parameters
+    keep every member. The built CL is read from kBuiltCL in
+    hooks\game\version_map.generated.h.
 
 .PARAMETER Generator
     Path to layout-table.mjs.
@@ -42,14 +44,14 @@ if (-not (Test-Path (Join-Path $sdk 'Assertions.inl'))) {
     throw "No Client\Assertions.inl under '$sdk'. Run: git submodule update --init `"StarRupture SDK`""
 }
 
-$versionCheck = Get-Content -Raw (Join-Path $root 'StarRupture-ModLoader-Core\core\version_check.cpp')
-if ($versionCheck -notmatch 'kRequiredVersionSuffix\[\]\s*=\s*L"CL-(\d+)"') {
-    throw 'Could not read the CL from kRequiredVersionSuffix in core\version_check.cpp'
+$versionMap = Get-Content -Raw (Join-Path $root 'StarRupture-ModLoader-Core\hooks\game\version_map.generated.h')
+if ($versionMap -notmatch 'kBuiltCL\s*=\s*(\d+)\s*;') {
+    throw 'Could not read kBuiltCL from hooks\game\version_map.generated.h'
 }
 $cl = $Matches[1]
 
 & node $Generator gen (Join-Path $sdk 'Assertions.inl') --cl $cl `
-    --src $root --sdk (Join-Path $sdk 'SDK') --out $out
+    --src $root --sdk (Join-Path $sdk 'SDK') --granularity 1 --out $out
 if ($LASTEXITCODE -ne 0) { throw "layout-table.mjs failed (exit $LASTEXITCODE)" }
 
 Write-Host "Wrote $out for CL $cl"

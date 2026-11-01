@@ -11,6 +11,7 @@
 #include "memory_scanner/hook_scanner_interface.h"
 #include "plugins/plugin_hook_report.h"
 #include "hooks/hooks_interface.h"
+#include "memory_scanner/version_map.h"
 #include "console/plugin_console.h"
 #include "plugins/pak_registry.h"
 #include "preload/preload_manager.h"
@@ -243,6 +244,7 @@ namespace PluginManager
 	{
 		HMODULE hModule;
 		PluginInfo* info;
+		VersionMap::PluginGameBuild gameBuild;   // the PluginInfo tail, copied at load: info dies with the DLL
 		GetPluginInfoFunc getInfo;
 		PluginInitFunc init;
 		PluginShutdownFunc shutdown;
@@ -291,7 +293,7 @@ namespace PluginManager
 
 	// Why a DLL did not come up, so ScanForNewPlugins can say so. Most failures
 	// leave no record behind, so the reason has to travel out separately.
-	enum class LoadFailure { None, CouldNotLoad, Crashed, NotAPlugin, OutOfDate, WrongTarget };
+	enum class LoadFailure { None, CouldNotLoad, Crashed, NotAPlugin, OutOfDate, WrongTarget, OffBuild };
 
 	struct LoadFailureInfo
 	{
@@ -299,6 +301,7 @@ namespace PluginManager
 		DWORD       win32Error       = 0;   // CouldNotLoad: GetLastError() of LoadLibrary
 		int         interfaceVersion = 0;   // OutOfDate: what the plugin was built for
 		std::string name;                   // whatever name the DLL reported, if it got that far
+		std::string detail;                 // OffBuild: VersionMap::OffBuildRefusal's reason
 	};
 
 	// Inner load helper: performs LoadLibrary, GetProcAddress, GetPluginInfo,
@@ -423,9 +426,31 @@ namespace PluginManager
 			return false;
 		}
 
-		ModLoaderLogger::LogMessage(L"Plugin info - Name: %S, Version: %S, Author: %S, Interface: %d (modloader expects [%d, %d])",
+		// A plugin is judged against the build its own SDK came from. Off that
+		// build it reads the game where its build had things, unless it takes
+		// everything from the map. The globals are asked for after PluginInit.
+		rec.gameBuild = VersionMap::ReadPluginGameBuild(*info);
+		if (info->interfaceVersion >= 72 && !rec.gameBuild.declared)
+			ModLoaderLogger::LogWarn(L"Plugin '%S' declares no game build; judging it as built on CL-%u.",
+				info->name ? info->name : "(unknown)", rec.gameBuild.gameCL);
+		if (const std::string refusal = VersionMap::OffBuildRefusal(VersionMap::RunningExe(),
+				info->interfaceVersion, rec.gameBuild, true); !refusal.empty())
+		{
+			ModLoaderLogger::LogWarn(L"Plugin '%S' is not loaded: %S", info->name ? info->name : "(unknown)", refusal.c_str());
+			rec.cachedName           = info->name    ? info->name    : "";
+			rec.cachedVersion        = info->version ? info->version : "";
+			rec.cachedAuthor         = info->author  ? info->author  : "";
+			rec.isOutOfDate          = true;
+			rec.needsModLoaderUpdate = false;
+			if (why) { why->kind = LoadFailure::OffBuild; why->detail = refusal; }
+			FreeLibrary(hModule);
+			return false;
+		}
+
+		ModLoaderLogger::LogMessage(L"Plugin info - Name: %S, Version: %S, Author: %S, Interface: %d (modloader expects [%d, %d]), game build %S",
 			info->name, info->version, info->author,
-			info->interfaceVersion, PLUGIN_INTERFACE_VERSION_MIN, PLUGIN_INTERFACE_VERSION_MAX);
+			info->interfaceVersion, PLUGIN_INTERFACE_VERSION_MIN, PLUGIN_INTERFACE_VERSION_MAX,
+			VersionMap::DescribePluginGameBuild(rec.gameBuild).c_str());
 
 		rec.hModule        = hModule;
 		rec.info           = info;
@@ -620,6 +645,20 @@ namespace PluginManager
 		ModLoaderLogger::LogMessage(L"Loaded %d plugin DLL(s) from Plugins (PluginInit deferred)", loadedCount);
 	}
 
+	// Another record in the plugin list with rec's name (case-insensitive), or
+	// null. loadedOnly: only a record whose DLL is still loaded counts, else
+	// any record does, refused ones too. Caller must hold g_pluginLock.
+	static const LoadedPlugin* OtherPluginNamed(const LoadedPlugin& rec, bool loadedOnly)
+	{
+		for (const auto& other : g_loadedPlugins)
+		{
+			if (other.get() != &rec && (!loadedOnly || other->hModule)
+				&& _stricmp(other->cachedName.c_str(), rec.cachedName.c_str()) == 0)
+				return other.get();
+		}
+		return nullptr;
+	}
+
 	// Runs the plugin's OnPluginLoadHooks event, if it has one, and reports
 	// whether the plugin may proceed to PluginInit.
 	//
@@ -659,7 +698,11 @@ namespace PluginManager
 		WideCharToMultiByte(CP_ACP, 0, baseName, -1, fileNameA, static_cast<int>(sizeof(fileNameA)), "?", nullptr);
 		fileNameA[sizeof(fileNameA) - 1] = '\0';
 
-		PluginHookReport::BeginSession(&plugin.self, plugin.cachedName.c_str(), fileNameA);
+		// The version map keys a plugin's own sites by its name, so a name two
+		// loaded plugins share reads none (VersionMap::ResolveMapKey). A record
+		// whose DLL was refused reads nothing, so it does not count.
+		PluginHookReport::BeginSession(&plugin.self, plugin.cachedName.c_str(), fileNameA,
+			/*preload*/ false, OtherPluginNamed(plugin, true) != nullptr);
 
 		const bool survived = CallLoadHooksSEH(plugin.loadHooks, &plugin.self,
 			ModLoaderLogger::GetPluginHookScanner());
@@ -676,6 +719,23 @@ namespace PluginManager
 		return !refused;
 	}
 
+	// Every entry point of a record whose module is no longer mapped. Clearing
+	// them is what stops a later init pass from calling into it --
+	// LoadPluginIntoRecord repopulates them if the user reloads it. The cached
+	// name/version strings are ours and stay, so the plugin list can still say
+	// what happened.
+	static void ForgetEntryPoints(LoadedPlugin& plugin)
+	{
+		plugin.hModule   = nullptr;
+		plugin.info      = nullptr;
+		plugin.getInfo   = nullptr;
+		plugin.init      = nullptr;
+		plugin.shutdown  = nullptr;
+		plugin.loadHooks = nullptr;
+	}
+
+	static bool ShutDownAndFree(LoadedPlugin& p, const wchar_t* action);
+
 	// Calls PluginInit on a single record that has been loaded but not yet initialized.
 	// Caller must hold g_pluginLock. Returns true if the plugin is now initialized.
 	static bool InitPluginRecord(LoadedPlugin& plugin)
@@ -684,28 +744,17 @@ namespace PluginManager
 		plugin.self.config  = ModLoaderLogger::GetPluginConfig();
 		plugin.self.hooks   = nullptr;   // populated below, after the scan phase
 
-		if (!RunLoadHooksPhase(plugin))
+		const bool resolved = RunLoadHooksPhase(plugin);
+		const int interfaceVersion = plugin.info ? plugin.info->interfaceVersion : 0;
+		if (!resolved)
 		{
 			// Refused. Free the DLL so nothing of it is left mapped -- it never
 			// got as far as registering anything, and leaving a half-committed
 			// plugin resident is how a stale detour outlives its module.
 			plugin.hookScanFailed = true;
 			if (plugin.hModule)
-			{
 				FreeLibrary(plugin.hModule);
-				plugin.hModule = nullptr;
-				plugin.info    = nullptr;
-			}
-
-			// Every one of these points into the module just unmapped. Clearing
-			// them is what stops a later init pass from calling a refused
-			// plugin's entry points -- LoadPluginIntoRecord repopulates them if
-			// the user reloads it. The cached name/version strings are ours and
-			// stay, so the plugin list can still say what was refused.
-			plugin.getInfo   = nullptr;
-			plugin.init      = nullptr;
-			plugin.shutdown  = nullptr;
-			plugin.loadHooks = nullptr;
+			ForgetEntryPoints(plugin);
 			ModLoaderLogger::LogError(
 				L"Plugin '%S' was NOT loaded: one or more of its hooks could not be resolved.",
 				plugin.cachedName.c_str());
@@ -721,13 +770,27 @@ namespace PluginManager
 		UI::PluginPanelRegistry::SetCurrentRegistrationPlugin(plugin.cachedName.c_str());
 #endif
 
+		const unsigned globalsCallsBefore = ModLoaderLogger::SdkGlobalsCallsOnThisThread();
 		InitSEHResult initResult = CallInitSEH(plugin.init, &plugin.self);
+		const bool askedSdkGlobals = ModLoaderLogger::SdkGlobalsCallsOnThisThread() != globalsCallsBefore;
+		const std::string lateRefusal = VersionMap::OffBuildRefusal(VersionMap::RunningExe(), interfaceVersion,
+			plugin.gameBuild, askedSdkGlobals);
 		bool success = false;
 
 		if (initResult.crashed)
 		{
 			LogPluginCrash(plugin.cachedName.c_str(), plugin.hModule, L"PluginInit");
 			ModLoaderLogger::LogError(L"Plugin '%S' crashed during PluginInit -- it has been left unloaded", plugin.cachedName.c_str());
+		}
+		else if (initResult.retval && !lateRefusal.empty())
+		{
+			// It ran PluginInit on its SDK's own Offsets::. Take back whatever
+			// it registered there before anything of it runs in the game.
+			ModLoaderLogger::LogWarn(L"Plugin '%S' was NOT loaded: %S", plugin.cachedName.c_str(), lateRefusal.c_str());
+			plugin.isInitialized = true;
+			plugin.isOutOfDate   = true;
+			if (ShutDownAndFree(plugin, L"Unload"))
+				ForgetEntryPoints(plugin);
 		}
 		else if (initResult.retval)
 		{
@@ -956,23 +1019,15 @@ namespace PluginManager
 		return result;
 	}
 
-	bool UnloadPlugin(int index)
+	// PluginShutdown, then everything the plugin registered that lives in its
+	// module, then FreeLibrary. Caller holds g_pluginLock. False when one of
+	// its renders is still running: it is shut down, but stays mapped.
+	static bool ShutDownAndFree(LoadedPlugin& p, const wchar_t* action)
 	{
-		EnterCriticalSection(&g_pluginLock);
-
-		if (index < 0 || index >= static_cast<int>(g_loadedPlugins.size()) ||
-			!g_loadedPlugins[index]->isInitialized)
-		{
-			LeaveCriticalSection(&g_pluginLock);
-			return false;
-		}
-
-		LoadedPlugin& p = *g_loadedPlugins[index];
-		ModLoaderLogger::LogMessage(L"Unloading plugin: %S", p.cachedName.c_str());
 		if (!CallShutdownSEH(p.shutdown))
 			LogPluginCrash(p.cachedName.c_str(), p.hModule, L"PluginShutdown (unload)");
 		p.isInitialized = false;
-		const bool idle = WaitOutPluginRenders(p.hModule, p.cachedName.c_str(), L"Unload");
+		const bool idle = WaitOutPluginRenders(p.hModule, p.cachedName.c_str(), action);
 
 		// Before FreeLibrary, not after: the schema the config manager cached lives
 		// inside this module, so the moment it is unmapped that pointer is a read
@@ -1002,7 +1057,6 @@ namespace PluginManager
 		if (!idle)
 		{
 			++g_pluginGeneration;   // it is shut down now
-			LeaveCriticalSection(&g_pluginLock);
 			return false;
 		}
 
@@ -1010,10 +1064,27 @@ namespace PluginManager
 		p.hModule = nullptr;
 		p.info    = nullptr;
 		++g_pluginGeneration;
-
-		LeaveCriticalSection(&g_pluginLock);
-		ModLoaderLogger::LogMessage(L"Plugin unloaded: %S", p.cachedName.c_str());
 		return true;
+	}
+
+	bool UnloadPlugin(int index)
+	{
+		EnterCriticalSection(&g_pluginLock);
+
+		if (index < 0 || index >= static_cast<int>(g_loadedPlugins.size()) ||
+			!g_loadedPlugins[index]->isInitialized)
+		{
+			LeaveCriticalSection(&g_pluginLock);
+			return false;
+		}
+
+		LoadedPlugin& p = *g_loadedPlugins[index];
+		ModLoaderLogger::LogMessage(L"Unloading plugin: %S", p.cachedName.c_str());
+		const bool freed = ShutDownAndFree(p, L"Unload");
+		LeaveCriticalSection(&g_pluginLock);
+		if (freed)
+			ModLoaderLogger::LogMessage(L"Plugin unloaded: %S", p.cachedName.c_str());
+		return freed;
 	}
 
 	bool ReloadPlugin(int index)
@@ -1264,6 +1335,10 @@ namespace PluginManager
 					"Built for plugin interface v%d, older than this loader (%s accepts v%d to v%d). Ask its author for an update.",
 					why.interfaceVersion, MODLOADER_BUILD_TAG, PLUGIN_INTERFACE_VERSION_MIN, PLUGIN_INTERFACE_VERSION_MAX);
 			break;
+		case LoadFailure::OffBuild:
+			r.status = ScanStatus::Incompatible;
+			snprintf(text, sizeof(text), "%s", why.detail.c_str());
+			break;
 		case LoadFailure::WrongTarget:
 			r.status = ScanStatus::WrongTarget;
 			snprintf(text, sizeof(text), "Built for the other build target: a server plugin on the client, or the reverse.");
@@ -1359,17 +1434,7 @@ namespace PluginManager
 			// config-change dispatch) return the first match, which a refused row
 			// would otherwise keep.
 			LoadedPlugin& added = *g_loadedPlugins.back();
-			const LoadedPlugin* nameHolder = nullptr;
-			for (size_t i = 0; i + 1 < g_loadedPlugins.size(); ++i)
-			{
-				const LoadedPlugin& other = *g_loadedPlugins[i];
-				if (_stricmp(other.cachedName.c_str(), added.cachedName.c_str()) == 0)
-				{
-					nameHolder = &other;
-					break;
-				}
-			}
-			if (nameHolder)
+			if (const LoadedPlugin* nameHolder = OtherPluginNamed(added, false))
 			{
 				ModLoaderLogger::LogError(
 					L"ScanForNewPlugins: refusing %s -- a plugin named '%S' is already in the plugin list",

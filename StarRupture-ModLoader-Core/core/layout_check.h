@@ -6,14 +6,19 @@
 #include <string>
 #include <vector>
 
+namespace VersionMap { struct LiveField; }
+
 // Startup layout check.
 //
 // layout_table.generated.h lists the Game-SDK classes the loader uses, with
-// the size of each and the offset, size and bool mask of each member, as the
-// SDK the loader was built against has them (tools\Update-LayoutTable.ps1
-// regenerates it). Run() walks the running game's reflection data once and
-// logs every class whose layout no longer matches: after a game update that
-// is the list of SDK types that now read the wrong bytes.
+// the size of each and the offset, size and bool mask of the members it
+// reads, as the SDK the loader was built against has them
+// (tools\Update-LayoutTable.ps1 regenerates it). Run() walks the running
+// game's reflection data once and logs every class whose layout no longer
+// matches: after a game update that is the list of SDK types that now read
+// the wrong bytes. Members the loader resolves per build
+// (SdkGlobals::ResolveFields) are not compared here: the version map checks
+// those (VersionMap::SelectField).
 //
 // On a mismatch the init thread switches plugins off (RequiresSafeOff) and
 // writes the compatibility report (compat_report.h).
@@ -29,6 +34,14 @@ namespace LayoutCheck
     // exception while reading reflection data); out is then left as it was.
     struct Result;
     bool Run(Result& out);
+
+    // The reflected layout of one member of a native class or script struct
+    // (member empty: the struct's own size), for field requests
+    // (VersionMap::SetLiveFieldSource). The member is looked up in the struct
+    // and then in its supers. className is the short name, or
+    // /Script/<Module>.<Name>; a short name more than one module has is an
+    // error. Client builds only, and only once engine init has been seen.
+    VersionMap::LiveField LiveFieldOf(const std::string& className, const std::string& member);
 
     // ---- The comparison, kept apart from the game so it can be tested ------
 
@@ -113,6 +126,7 @@ namespace LayoutCheck
     struct Result
     {
         int classes    = 0;  // in the table
+        int perBuild   = 0;  // rows left to the per-build resolver, not compared
         int checked    = 0;  // found in the game and compared
         int mismatched = 0;  // found, but the layout differs
         int missing    = 0;  // not found in the game
@@ -130,7 +144,13 @@ namespace LayoutCheck
     }
 
     // Compares every table class with what `find` returns for it (nullptr:
-    // not in the game).
+    // not in the game). A size or alignment of 0 is not compared: in a
+    // granularity-1 table a class lists only the members the loader reads,
+    // and a UClass the loader reaches only through pointers has size 0 (one
+    // it allocates or copies, such as UFunction, keeps its size). Rows for
+    // which perBuild is true are skipped and counted in Result::perBuild.
+    using PerBuild = std::function<bool(const TableClass&, const TableRow&)>;
     Result Compare(const std::vector<TableClass>& table,
-        const std::function<const LiveStruct*(const TableClass&)>& find);
+        const std::function<const LiveStruct*(const TableClass&)>& find,
+        const PerBuild& perBuild = {});
 }

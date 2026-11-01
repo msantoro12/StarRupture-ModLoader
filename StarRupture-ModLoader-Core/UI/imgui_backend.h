@@ -47,6 +47,10 @@ namespace UI::ImGuiBackend
     // True when ImGui currently wants text input (an InputText-style widget
     // is focused). Returns false if the host DLL isn't loaded/initialised.
     bool IsTextInputActive();
+
+    // The game window the overlay draws on: null before the first Present, or
+    // when the host DLL is not loaded. Safe to call from any thread.
+    HWND GetGameWindow();
 }
 
 #endif // MODLOADER_CLIENT_BUILD

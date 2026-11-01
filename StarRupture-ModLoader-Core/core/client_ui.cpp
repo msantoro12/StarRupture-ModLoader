@@ -1,6 +1,7 @@
 #ifdef MODLOADER_CLIENT_BUILD
 
 #include "client_ui.h"
+#include "core/sdk_globals.h"
 #include "startup_utils.h"
 #include "Engine_classes.hpp"
 #include "../hooks/game/text_input_focus/text_input_focus.h"
@@ -245,7 +246,7 @@ void InitClientUI()
         // Look up the current world fresh every tick -- a cached pointer can
         // outlive the world it points to between EndPlay and the next
         // world's BeginPlay.
-        SDK::UWorld* currentWorld = SDK::UWorld::GetWorld();
+        SDK::UWorld* currentWorld = SdkGlobals::GetWorld();
         if (!currentWorld)
         {
             UI::GlobalSettings::SetPlayerPosition(0, 0, 0, false);

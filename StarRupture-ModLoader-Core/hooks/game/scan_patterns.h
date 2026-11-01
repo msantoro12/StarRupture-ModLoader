@@ -659,6 +659,15 @@ namespace ScanPatterns
 		// and the displacement names it exactly. Set at most one of this and
 		// followRel32At. `kind` is checked against the decoded address.
 		int32_t followRipDispAt = -1;
+
+		// The hook site adds a fixed offset to where this pattern matched (a
+		// call's length, a jump inside the match). That arithmetic is true for
+		// this pattern's shape only, so a version-map row for it is used only
+		// when it carries this same pattern, never a new one. 0 = none; else
+		// the revision of that arithmetic, from 1, raised with each change to
+		// it: it is part of the site's fingerprint in the map (see
+		// VersionMap::Fingerprint).
+		uint32_t siteArithmetic = 0;
 	};
 
 	inline constexpr PreflightEntry PreflightRegistry[] =
@@ -686,7 +695,8 @@ namespace ScanPatterns
 		{ "AActor::BeginPlay",                         AActor_BeginPlay,                         true },
 		{ "UWorld::BeginPlay",                         UWorld_BeginPlay,                         true },
 		{ "UWorld::EndPlay",                           UWorld_EndPlay,                           true },
-		{ "AAbstractMassEnemySpawner::ActivateSpawner",   AAbstractMassEnemySpawner_ActivateSpawner,   true },
+		{ "AAbstractMassEnemySpawner::ActivateSpawner",   AAbstractMassEnemySpawner_ActivateSpawner,   true,
+		                                                  PatternKind::FunctionStart, -1, -1, 1 },
 		{ "AAbstractMassEnemySpawner::DeactivateSpawner", AAbstractMassEnemySpawner_DeactivateSpawner, true },
 		{ "AMassSpawner::DoSpawning",                  AMassSpawner_DoSpawning,                  true },
 		{ "ACrCrafter::NativeOnItemCraftingComplete",  ACrCrafter_NativeOnItemCraftingComplete,  true },
@@ -725,11 +735,11 @@ namespace ScanPatterns
 		// A call site inside FCrashReportingThread::HandleCrashInternal, not a
 		// function entry -- the hook patches this CALL, it does not detour a function.
 		{ "HandleCrashInternal_FatalReportCallSite",   HandleCrashInternal_FatalReportCallSite,  true,
-		                                               PatternKind::InFunction },
+		                                               PatternKind::InFunction, -1, -1, 1 },
 		{ "APlayerController::ConsoleCommand",         APlayerController_ConsoleCommand,         true },
 		{ "FLogSuppressionImplementation::ApplyGlobalChanges",           FLogSuppression_ApplyGlobalChanges,           true },
 		{ "FLogSuppressionInterface::Get",                               FLogSuppression_Get_CallSite,                 true,
-																	       PatternKind::FunctionStart, 0 },
+																	       PatternKind::FunctionStart, 0, -1, 1 },
 		{ "FLogSuppressionImplementation::ProcessConfigAndCommandLine",  FLogSuppression_ProcessConfigAndCommandLine,  true },
 		// Optional -- only in-world debug drawing (hooks->HUD->DebugDraw) is lost
 		// if these ever stop resolving, so they must not disable the modloader.
@@ -742,8 +752,11 @@ namespace ScanPatterns
 		{ "UCrUW_PauseMenu::NativeConstruct",          UCrUW_PauseMenu_NativeConstruct,          false },
 		// Optional: the Game-SDK globals (core/sdk_globals.h). A miss leaves the
 		// SDK on its built-in Offsets:: values, which is what it used before.
+		// GObjects is ObjObjects, 0x10 into GUObjectArray: an address inside a
+		// global, not the start of one, so it is a site of kind Any (unique,
+		// no section check), not a Data global.
 		{ "GObjects (GUObjectArray.ObjObjects)",       GObjects_PreAllocate,                     false,
-		                                               PatternKind::Data, -1, 7 },
+		                                               PatternKind::Any, -1, 7 },
 		{ "GNames (NamePoolData)",                     GNames_NamePoolData,                      false,
 		                                               PatternKind::Data, -1, 0 },
 		{ "FName::AppendString",                       FName_AppendString,                       false },
@@ -761,7 +774,8 @@ namespace ScanPatterns
 
 		// Optional: losing any of these only makes runtime pak mounting
 		// (hooks->Pak) unavailable to plugins. Nothing the loader itself needs.
-		{ "FPakFileModule::ShutdownModule",            FPakFileModule_ShutdownModule,            false },
+		{ "FPakFileModule::ShutdownModule",            FPakFileModule_ShutdownModule,            false,
+		                                               PatternKind::FunctionStart, -1, -1, 1 },
 		{ "FPakPlatformFile::HandleMountPakDelegate",  FPakPlatformFile_HandleMountPakDelegate,  false },
 		{ "FPakPlatformFile::HandleUnmountPakDelegate", FPakPlatformFile_HandleUnmountPakDelegate, false },
 

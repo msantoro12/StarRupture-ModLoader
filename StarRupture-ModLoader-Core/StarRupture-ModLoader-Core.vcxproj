@@ -412,6 +412,8 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClInclude Include="auto_update\auto_updater.h" />
+    <ClInclude Include="auto_update\feed_fetch.h" />
+    <ClInclude Include="auto_update\http_get.h" />
     <ClInclude Include="config\config_manager.h" />
     <ClInclude Include="config\config_edit.h" />
     <ClInclude Include="hooks\game\actor_begin_play\actor_begin_play.h" />
@@ -450,6 +452,7 @@
     <ClInclude Include="hooks\game\text_localization\text_localization.h" />
     <ClInclude Include="hooks\game\text_localization\text_key.h" />
     <ClInclude Include="hooks\game\scan_patterns.h" />
+    <ClInclude Include="hooks\game\version_map.generated.h" />
     <ClInclude Include="hooks\game\world_begin_play\world_begin_play.h" />
     <ClInclude Include="hooks\game\world_end_play\world_end_play.h" />
     <ClInclude Include="hooks\hooks_common.h" />
@@ -499,6 +502,10 @@
     <ClInclude Include="memory_scanner\image_info.h" />
     <ClInclude Include="memory_scanner\patch_overlay.h" />
     <ClInclude Include="memory_scanner\scan_validation.h" />
+    <ClInclude Include="memory_scanner\version_map.h" />
+    <ClInclude Include="memory_scanner\version_feed.h" />
+    <ClInclude Include="third_party\monocypher\monocypher.h" />
+    <ClInclude Include="third_party\monocypher\monocypher-ed25519.h" />
     <ClInclude Include="preload\preload_interface.h" />
     <ClInclude Include="preload\preload_manager.h" />
     <ClInclude Include="preload\preload_patch.h" />
@@ -548,6 +555,8 @@
       <ExcludedFromBuild Condition="'$(Configuration)' != 'Client Debug' And '$(Configuration)' != 'Client Release' And '$(Configuration)' != 'Local SDK Client Debug' And '$(Configuration)' != 'Local SDK Client Release'">true</ExcludedFromBuild>
     </ClCompile>
     <ClCompile Include="auto_update\auto_updater.cpp" />
+    <ClCompile Include="auto_update\feed_fetch.cpp" />
+    <ClCompile Include="auto_update\http_get.cpp" />
     <ClCompile Include="config\config_manager.cpp" />
     <ClCompile Include="config\config_edit.cpp" />
     <ClCompile Include="core\globals.cpp" />
@@ -692,6 +701,16 @@
     <ClCompile Include="memory_scanner\image_info.cpp" />
     <ClCompile Include="memory_scanner\patch_overlay.cpp" />
     <ClCompile Include="memory_scanner\scan_validation.cpp" />
+    <ClCompile Include="memory_scanner\version_map.cpp" />
+    <ClCompile Include="memory_scanner\version_feed.cpp" />
+    <ClCompile Include="third_party\monocypher\monocypher.c">
+      <WarningLevel>TurnOffAllWarnings</WarningLevel>
+      <CompileAs>CompileAsC</CompileAs>
+    </ClCompile>
+    <ClCompile Include="third_party\monocypher\monocypher-ed25519.c">
+      <WarningLevel>TurnOffAllWarnings</WarningLevel>
+      <CompileAs>CompileAsC</CompileAs>
+    </ClCompile>
     <ClCompile Include="preload\preload_manager.cpp" />
     <ClCompile Include="preload\preload_patch.cpp" />
     <ClCompile Include="console\console_commands.cpp" />

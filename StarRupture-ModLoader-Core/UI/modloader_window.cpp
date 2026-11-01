@@ -321,6 +321,17 @@ namespace UI::ModLoaderWindow
             ImGuiTableFlags_Resizable |
             ImGuiTableFlags_SizingStretchProp;
 
+        // Padding of the action buttons. The row-click selectable is as tall as
+        // those buttons, so it covers the whole row without making it taller.
+        const ImVec2 actionPadding(10.0f, 4.0f);
+        const float  rowHeight = ImGui::GetTextLineHeight() + actionPadding.y * 2.0f;
+
+        // The Config tab lists only the plugins that finished initialising, by
+        // position in this list. A row opens that page only when its plugin is in it.
+        static const PluginInfo* configInfos[64];
+        const int configTotal = PluginManager::GetLoadedPluginInfos(configInfos, 64);
+        const int configCount = configTotal < 64 ? configTotal : 64;
+
         if (ImGui::BeginTable("##plugins", 5, tableFlags))
         {
             // All columns are stretch-weighted (not fixed) so dragging a
@@ -344,6 +355,25 @@ namespace UI::ModLoaderWindow
 
                 ImGui::TableSetColumnIndex(0);
                 ImGui::PushID(i);
+
+                // Clicking anywhere on the row opens the plugin's page on the Config
+                // tab. Submitted first with AllowOverlap so the dot and the action
+                // buttons, which come after it, still take their own clicks.
+                for (int c = 0; c < configCount; ++c)
+                {
+                    if (strcmp(configInfos[c]->name ? configInfos[c]->name : "", s.name) != 0)
+                        continue;
+                    if (ImGui::Selectable("##open_config", false,
+                            ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowOverlap,
+                            ImVec2(0.0f, rowHeight)))
+                    {
+                        s_selectedPlugin = c;
+                        s_activeTab = kTabConfig;
+                    }
+                    ImGui::SameLine(0.0f, 0.0f);
+                    break;
+                }
+
                 DrawAutoUpdateDot(s.hasUpdateManifest);
                 ImGui::PopID();
                 ImGui::TextUnformatted(s.name[0] ? s.name : "?");
@@ -391,7 +421,7 @@ namespace UI::ModLoaderWindow
                 }
                 else
                 {
-                    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(10.0f, 4.0f));
+                    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, actionPadding);
 
                     const bool busy = s_pluginActionPending[i];
 

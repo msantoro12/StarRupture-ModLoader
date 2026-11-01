@@ -118,6 +118,7 @@ is available.
   - **Retry** is a DLL Windows could not open yet, usually still being copied or locked.
   - **Duplicate** is a plugin whose name is already in the list.
   - The `rescan` console command prints the same lines.
+- Click a loaded plugin's row to open its page on the Config tab. The buttons on the row work as before. <sup>[✦](#msantoro12)</sup>
 - **Cannot Load** is a server plugin on a client, or the reverse.
 - **Needs Update** names the side that is behind: the plugin or the mod loader.
 - **WHY?** on a Hooks Failed row reopens the [report](#pop-up-windows).

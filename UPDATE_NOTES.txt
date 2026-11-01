@@ -10,3 +10,4 @@ The mod loader runs on every game build its version map lists, with no rebuild
 Plugin authors can look up functions and game-class members in the loader's version map by key
 Plugins built for another game build load only if they take their game data from the version map; otherwise they show Incompatible with the build they need
 The version map can be refreshed from a signed online file, so a new game build can be supported without a loader update
+Click a plugin's row to open its Config page

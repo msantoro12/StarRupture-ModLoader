@@ -805,6 +805,25 @@ bool AutoUpdateEnabled()
 #  define VMAP_FEED_URL ""
 #endif
 
+namespace
+{
+	constexpr bool EndsWith(const char* s, const char* tail)
+	{
+		size_t n = 0, t = 0;
+		while (s[n]) ++n;
+		while (tail[t]) ++t;
+		for (size_t i = 0; i < t; ++i)
+			if (n < t || s[n - t + i] != tail[i])
+				return false;
+		return true;
+	}
+}
+
+// The asset name carries the feed format, so a later format gets a new name
+// and never strands a loader that reads this one.
+static_assert(VersionMap::kFeedFormat == 1 && (VMAP_FEED_URL[0] == 0 || EndsWith(VMAP_FEED_URL, "/version-map-client.v1.txt")),
+	"VMAP_FEED_URL must name version-map-client.v<kFeedFormat>.txt");
+
 FeedFetch::Config FeedFetch::LoaderConfig()
 {
 	Config cfg;

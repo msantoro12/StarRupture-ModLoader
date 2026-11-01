@@ -12,7 +12,7 @@
 // ---------------------------------------------------------------------------
 // VersionFeed -- the signed map data a loader reads between releases.
 //
-// The feed is version-map-feed.txt (see VersionMap::ParseFeed for the
+// The feed is version-map-client.v1.txt (see VersionMap::ParseFeed for the
 // lines) plus two lines of its own:
 //
 //   format<TAB>1

@@ -1,8 +1,8 @@
 #include <windows.h>
 
 VS_VERSION_INFO VERSIONINFO
- FILEVERSION     1,0,0,0
- PRODUCTVERSION  1,0,0,0
+ FILEVERSION     1,21,4,99
+ PRODUCTVERSION  1,21,4,99
  FILEFLAGSMASK   0x3fL
  FILEFLAGS       0x0L
  FILEOS          VOS_NT_WINDOWS32
@@ -15,12 +15,12 @@ BEGIN
         BEGIN
             VALUE "CompanyName",      "AGNGaming"
             VALUE "FileDescription",  "StarRupture ModLoader"
-            VALUE "FileVersion",      "1.0.0.0"
+            VALUE "FileVersion",      "1.21.4.99"
             VALUE "InternalName",     "StarRupture-ModLoader"
             VALUE "LegalCopyright",   "Copyright AGNGaming"
             VALUE "OriginalFilename", "dwmapi.dll"
             VALUE "ProductName",      "StarRupture ModLoader"
-            VALUE "ProductVersion",   "1.0.0.0"
+            VALUE "ProductVersion",   "1.21.4-gss.99"
         END
     END
     BLOCK "VarFileInfo"

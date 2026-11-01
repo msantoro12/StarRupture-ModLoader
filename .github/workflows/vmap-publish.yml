@@ -11,10 +11,13 @@ name: Publish the version-map feed
 # (.github/vmap/verify-feed.mjs), because a release made with GITHUB_TOKEN
 # starts no `release: published` workflow.
 #
-# TODO(release gate, R10 decision 1): the keys in version_feed.cpp are a TEST
-# key until the owner settles the signing key. The scheduled run refuses a
-# TEST-key feed; only a manual run with allow_test_key set accepts one, for
-# tests on a fork.
+# The seq to beat is that of the newest release that carries a feed, read only
+# after that file verifies. With no feed on any release, only a manual run with
+# first_publish set uploads one, so an older signed feed cannot be the first.
+#
+# Until the owner's signing key is in version_feed.cpp, slot k1 holds a TEST
+# key. The scheduled run refuses a TEST-key feed; only a manual run with
+# allow_test_key set accepts one, for tests on a fork.
 
 on:
   schedule:
@@ -33,6 +36,10 @@ on:
         description: 'Accept a feed signed with a TEST key (fork tests only)'
         type: boolean
         default: false
+      first_publish:
+        description: 'No release carries a feed yet; publish the first one'
+        type: boolean
+        default: false
 
 concurrency:
   group: vmap-publish
@@ -49,8 +56,9 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       FEED_REPO: ${{ inputs.feed_repo || 'msantoro12/starrupture-ci' }}
       FEED_RELEASE: ${{ inputs.feed_release || 'vmap-feed' }}
-      FEED_ASSET: version-map-feed.txt
+      FEED_ASSET: version-map-client.v1.txt
       ALLOW_TEST_KEY: ${{ inputs.allow_test_key && 'true' || 'false' }}
+      FIRST_PUBLISH: ${{ inputs.first_publish && 'true' || 'false' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -65,12 +73,20 @@ jobs:
             echo "tag=" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          last=0
-          if gh release download "$tag" --repo "$GITHUB_REPOSITORY" --pattern "$FEED_ASSET" --dir "$RUNNER_TEMP/cur" 2>/dev/null; then
-            line=$(sed -n 2p "$RUNNER_TEMP/cur/$FEED_ASSET" | tr -d '\r')
-            if [[ "$line" =~ ^seq$'\t'([1-9][0-9]*)$ ]]; then last="${BASH_REMATCH[1]}"; fi
+          last=
+          for t in $(gh release list --repo "$GITHUB_REPOSITORY" --limit 50 --json tagName --jq '.[].tagName'); do
+            gh release download "$t" --repo "$GITHUB_REPOSITORY" --pattern "$FEED_ASSET" --dir "$RUNNER_TEMP/cur" --clobber 2>/dev/null || continue
+            args=(--source StarRupture-ModLoader-Core/memory_scanner/version_feed.cpp)
+            [ "$ALLOW_TEST_KEY" = "true" ] || args+=(--refuse-test-key)
+            last=$(node .github/vmap/verify-feed.mjs "$RUNNER_TEMP/cur/$FEED_ASSET" "${args[@]}") || { echo "::error::The feed on release $t does not verify."; exit 1; }
+            echo "The newest feed is on release $t, seq $last."
+            break
+          done
+          if [ -z "$last" ]; then
+            [ "$FIRST_PUBLISH" = "true" ] || { echo "::error::No release carries a feed. Run this workflow with first_publish set to publish the first one."; exit 1; }
+            last=0
           fi
-          echo "Latest is $tag, its feed seq is $last."
+          echo "Latest is $tag, the seq to beat is $last."
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "last=$last" >> "$GITHUB_OUTPUT"
 

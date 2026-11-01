@@ -359,15 +359,14 @@ run on any listed build. A plugin that does not declare it loads only on the bui
 against, and shows **Incompatible** on the others.
 
 On a client build with `[AutoUpdate] Enabled` on, the loader can also fetch a newer map as a signed
-file (`version-map-feed.txt`, attached to the loader's Latest release). It checks the Ed25519
+file (`version-map-client.v1.txt`, attached to the loader's Latest release). It checks the Ed25519
 signature before it reads anything else in the file, rejects a file over 1 MiB, and keeps the last
 good copy in `ModLoader\version-map-client.v1.cache`. A fetched map never changes where the loader
 looks for something it already shipped with for your game build; it adds builds and keys. The
 request is made when the running game is in neither the built-in map nor the cache, after a refusal
 for the next launch, and at most once a day otherwise. The map is read once at startup and does
-not change during a session. The public key compiled into this build is a test key, so treat the
-feed as not yet in service until the project's own key replaces it. A server build never makes the
-request.
+not change during a session. Until the project's own signing key is compiled in, a release build
+trusts no key and reads no feed. A server build never makes the request.
 
 ## Net timeouts
 

@@ -25,7 +25,6 @@
 
 #include <wincodec.h>
 #include <mutex>
-#include <unordered_map>
 
 // ---------------------------------------------------------------------------
 // Callback table (set by ImGuiHost_Initialize)
@@ -1078,7 +1077,7 @@ static bool InitD3D12Resources(IDXGISwapChain* swapChain)
 	ImGui_ImplDX12_InitInfo dx12info = {};
 	dx12info.Device = g_device;
 	dx12info.CommandQueue = g_cmdQueue;
-	dx12info.NumFramesInFlight = static_cast<int>(g_frameCount);
+	dx12info.NumFramesInFlight = MAX_FRAMES;  // UiPass keeps up to this many draws in flight
 	dx12info.RTVFormat = g_rtvFormat;
 	dx12info.SrvDescriptorHeap = g_srvHeap;
 	dx12info.SrvDescriptorAllocFn = SrvAllocFn;
@@ -1283,250 +1282,221 @@ static void BuildImGuiFrame()
 }
 
 // ---------------------------------------------------------------------------
-// Frame generation: drawing where the game draws its UI
+// Drawing at Slate's present step (hooks/game/slate_present in the main DLL)
 //
-// DLSS Frame Generation presents the frames it generates from inside
-// Streamline, so they never pass through HookedPresent. The game's UI
-// survives them because UE's Streamline plugin, at Slate's
-// OnBackBufferReadyToPresent, runs a compute pass over the back buffer Slate
-// has just drawn every widget into (HUD, menus, the pause menu's background
-// blur) and copies each pixel with alpha above
-// r.Streamline.TagUIColorAlphaThreshold into the UI buffer it tags for
-// DLSS-G. ImGui drawn at Present comes after that pass, so it is on the real
-// frames only and flickers.
+// Frame generation takes the game's UI from the back buffer at Slate's
+// present step, after every widget is drawn: UE's Streamline plugin copies
+// it into DLSS-G's UI buffer at OnBackBufferReadyToPresent, and FSR 3 frame
+// interpolation has Slate draw the UI again over each interpolated frame.
+// ImGui drawn at Present comes after both, so it is on real frames only.
 //
-// So the overlay is drawn into the back buffer on UE's own command list, at
-// the barrier that hands the back buffer from Slate's draw to that pass:
-// after all of the game's UI, before the pass reads it. The real frame and
-// the UI buffer both get it from that one draw, exactly as they get the HUD,
-// and HookedPresent draws nothing for that frame. While no such barrier
-// comes (frame generation off, no Streamline), HookedPresent builds and draws
-// as before.
-//
-// The draw changes graphics state and the descriptor heaps on UE's list; the
-// heaps are put back (the pass after it is compute and uses them), graphics
-// state is UE's to set again when it next draws.
+// So the overlay is drawn there instead. It is recorded here, on the render
+// thread, on our own command list, and submitted from an RHI command on our
+// own queue, between a fence UE's queue signals after Slate's draw and one
+// UE's queue waits on before anything reads the back buffer. Nothing is
+// recorded on UE's command lists, so UE's state cache never sees state it
+// did not set. While these draws come, HookedPresent draws nothing; once they
+// stop (the hook did not resolve, or no window is drawn into the game's back
+// buffer), it draws as before.
 // ---------------------------------------------------------------------------
-namespace HudPath
+namespace UiPass
 {
-	using ResetFn              = HRESULT (STDMETHODCALLTYPE*)(ID3D12GraphicsCommandList*, ID3D12CommandAllocator*, ID3D12PipelineState*);
-	using ResourceBarrierFn    = void (STDMETHODCALLTYPE*)(ID3D12GraphicsCommandList*, UINT, const D3D12_RESOURCE_BARRIER*);
-	using SetDescriptorHeapsFn = void (STDMETHODCALLTYPE*)(ID3D12GraphicsCommandList*, UINT, ID3D12DescriptorHeap* const*);
+	// One per ImGui frame in flight (ImGui_ImplDX12 NumFramesInFlight), so the
+	// vertex buffers a slot's draw reads are not rewritten under the GPU.
+	constexpr UINT kSlots = MAX_FRAMES;
+	// HookedPresent draws again once this long has passed without a draw here.
+	constexpr ULONGLONG kActiveMs = 250;
+	constexpr DWORD kSlotWaitMs = 100;
 
-	// ID3D12GraphicsCommandList vtable slots.
-	constexpr int kResetSlot = 10;
-	constexpr int kResourceBarrierSlot = 26;
-	constexpr int kSetDescriptorHeapsSlot = 28;
-	constexpr ULONGLONG kStatsIntervalMs = 10000;
-
-	static void**               g_vtable = nullptr;
-	static ResetFn              g_originalReset = nullptr;
-	static ResourceBarrierFn    g_originalBarrier = nullptr;
-	static SetDescriptorHeapsFn g_originalHeaps = nullptr;
-
-	// The heaps each command list has bound since its last Reset, so a list's
-	// own heaps can be put back after the overlay is drawn on it.
-	struct BoundHeaps { ID3D12DescriptorHeap* heaps[2]; UINT count; };
-	static std::mutex g_heapsMutex;
-	static std::unordered_map<ID3D12GraphicsCommandList*, BoundHeaps> g_boundHeaps;
-
-	static ID3D12DescriptorHeap* g_uiRtvHeap = nullptr;  // one RTV, for the back buffer UE hands over
-	// The back buffer's size, from HookedPresent's own draws, so a resolution
-	// change is picked up on the first frame drawn at Present.
-	static std::atomic<UINT64> g_width{ 0 };
-	static std::atomic<UINT>   g_height{ 0 };
-
-	// Presents on our swap chain so far, and the present count + 1 of the
-	// frame the overlay was last drawn into with the UI (0 = never). One draw
-	// per frame; HookedPresent skips its own when the frame has one.
-	static std::atomic<UINT64> g_presents{ 0 };
-	static std::atomic<UINT64> g_drawnFor{ 0 };
-	static thread_local bool   t_inside = false;
-
-	struct Stats
+	struct Slot
 	{
-		std::atomic<uint32_t> withUi{ 0 };
-		std::atomic<uint32_t> atPresent{ 0 };
-		std::atomic<uint32_t> noHeaps{ 0 };
+		ID3D12CommandAllocator*    allocator = nullptr;
+		ID3D12GraphicsCommandList* list = nullptr;
+		UINT64                     fenceValue = 0;      // g_fence value this slot's draw signals
+		std::atomic<bool>          pending{ false };    // recorded, not yet submitted
 	};
-	static Stats g_stats;
-	static std::atomic<bool> g_loggedFirst{ false };
 
-	// The transition out of Slate's draw into the UI extraction pass: the
-	// swap-chain-sized back buffer leaving RENDER_TARGET for a compute read.
-	static bool IsUiHandoff(const D3D12_RESOURCE_BARRIER& b)
+	static std::mutex            g_submitMutex;         // the queue and slots vs. the RHI thread
+	static ID3D12CommandQueue*   g_queue = nullptr;
+	static ID3D12Fence*          g_readyFence = nullptr;
+	static ID3D12Fence*          g_doneFence = nullptr; // g_fence, with a reference of our own
+	static UINT64                g_readyValue = 0;      // RHI thread only
+	static ID3D12DescriptorHeap* g_uiRtvHeap = nullptr; // one RTV, for the back buffer Slate drew into
+	static HANDLE                g_slotEvent = nullptr;
+	static Slot                  g_slots[kSlots];
+	static UINT                  g_next = 0;            // render thread only
+	static bool                  g_failed = false;
+
+	// The swap chain's buffer size, from HookedPresent: a window whose back
+	// buffer is another size is not the game's and gets nothing.
+	static std::atomic<UINT64>    g_width{ 0 };
+	static std::atomic<UINT>      g_height{ 0 };
+	static std::atomic<ULONGLONG> g_lastDrawMs{ 0 };
+	static std::atomic<UINT64>    g_lastDoneValue{ 0 };
+
+	// After the GPU flush at shutdown. The two fences are never released: a
+	// payload UE has not submitted yet can still name them.
+	static void ReleaseResources()
 	{
-		if (b.Type != D3D12_RESOURCE_BARRIER_TYPE_TRANSITION || (b.Flags & D3D12_RESOURCE_BARRIER_FLAG_END_ONLY))
-			return false;
-		const D3D12_RESOURCE_TRANSITION_BARRIER& t = b.Transition;
-		if (!t.pResource || t.StateBefore != D3D12_RESOURCE_STATE_RENDER_TARGET ||
-			!(t.StateAfter & D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE))
-			return false;
-		const D3D12_RESOURCE_DESC d = t.pResource->GetDesc();
-		return d.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D && d.Width == g_width && d.Height == g_height &&
-			d.SampleDesc.Count == 1 && NormalizeForImGui(d.Format) == g_rtvFormat;
+		std::lock_guard<std::mutex> lock(g_submitMutex);
+		if (g_doneFence && g_doneFence->GetCompletedValue() < g_lastDoneValue.load())
+		{
+			g_queue = nullptr;  // still running: left to process exit
+			return;
+		}
+		for (Slot& slot : g_slots)
+		{
+			if (slot.list) { slot.list->Release(); slot.list = nullptr; }
+			if (slot.allocator) { slot.allocator->Release(); slot.allocator = nullptr; }
+			slot.pending = false;
+		}
+		if (g_uiRtvHeap) { g_uiRtvHeap->Release(); g_uiRtvHeap = nullptr; }
+		if (g_queue) { g_queue->Release(); g_queue = nullptr; }
+		if (g_slotEvent) { CloseHandle(g_slotEvent); g_slotEvent = nullptr; }
 	}
 
-	// UE's render thread, inside its ResourceBarrier call, before it is recorded.
-	static void DrawWithUi(ID3D12GraphicsCommandList* list, const D3D12_RESOURCE_BARRIER& handoff)
+	static bool CreateResources()
 	{
-		const UINT64 frame = g_presents.load() + 1;
-		if (g_drawnFor.load() == frame)
-			return;
-
-		BoundHeaps bound = {};
+		std::lock_guard<std::mutex> lock(g_submitMutex);
+		D3D12_COMMAND_QUEUE_DESC queueDesc = {};
+		queueDesc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
+		D3D12_DESCRIPTOR_HEAP_DESC heapDesc = {};
+		heapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
+		heapDesc.NumDescriptors = 1;
+		bool ok = SUCCEEDED(g_device->CreateCommandQueue(&queueDesc, IID_PPV_ARGS(&g_queue))) &&
+			SUCCEEDED(g_device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&g_readyFence))) &&
+			SUCCEEDED(g_device->CreateDescriptorHeap(&heapDesc, IID_PPV_ARGS(&g_uiRtvHeap)));
+		for (UINT i = 0; ok && i < kSlots; ++i)
 		{
-			std::lock_guard<std::mutex> lock(g_heapsMutex);
-			auto it = g_boundHeaps.find(list);
-			if (it != g_boundHeaps.end())
-				bound = it->second;
+			Slot& slot = g_slots[i];
+			ok = SUCCEEDED(g_device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&slot.allocator))) &&
+				SUCCEEDED(g_device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, slot.allocator, nullptr, IID_PPV_ARGS(&slot.list))) &&
+				SUCCEEDED(slot.list->Close());
 		}
-		if (bound.count == 0)
+		if (ok)
 		{
-			++g_stats.noHeaps;
-			return;
+			g_slotEvent = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+			ok = g_slotEvent != nullptr;
+		}
+		if (ok)
+		{
+			g_doneFence = g_fence;
+			g_doneFence->AddRef();
+		}
+		return ok;
+	}
+
+	// HookedPresent, every frame on our swap chain.
+	static void NoteSwapChainSize(UINT64 width, UINT height)
+	{
+		g_width = width;
+		g_height = height;
+	}
+
+	// HookedPresent: true while the overlay is drawn at Slate's present step,
+	// so it must not draw its own.
+	static bool Active()
+	{
+		return GetTickCount64() - g_lastDrawMs.load() < kActiveMs ||
+			(g_doneFence && g_doneFence->GetCompletedValue() < g_lastDoneValue.load());
+	}
+
+	// Render thread, at Slate's present step.
+	static int Record(ID3D12Resource* backBuffer)
+	{
+		if (!g_initialized || g_shutdown || g_failed || !backBuffer)
+			return -1;
+
+		const D3D12_RESOURCE_DESC desc = backBuffer->GetDesc();
+		if (desc.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D || desc.Width != g_width.load() ||
+			desc.Height != g_height.load() || desc.SampleDesc.Count != 1 || NormalizeForImGui(desc.Format) != g_rtvFormat)
+			return -1;
+
+		if (!g_queue && !CreateResources())
+		{
+			IMGUI_LOG_WARN("[ImGuiBackend] Overlay at Slate's present step unavailable (D3D12 resources); drawing at Present");
+			ReleaseResources();
+			g_failed = true;
+			return -1;
 		}
 
-		// Same single owner as HookedPresent: a Present running right now on
-		// another thread keeps the frame, and draws it itself.
-		const DWORD tid = GetCurrentThreadId();
+		// HookedPresent's single owner: a Present drawing right now on another
+		// thread keeps this frame.
 		DWORD expected = 0;
-		if (!g_presentOwnerThread.compare_exchange_strong(expected, tid))
-			return;
+		if (!g_presentOwnerThread.compare_exchange_strong(expected, GetCurrentThreadId()))
+			return -1;
+
+		const int index = static_cast<int>(g_next % kSlots);
+		Slot& slot = g_slots[index];
+		bool free = !slot.pending.load(std::memory_order_acquire);
+		if (free && g_fence->GetCompletedValue() < slot.fenceValue)
+		{
+			g_fence->SetEventOnCompletion(slot.fenceValue, g_slotEvent);
+			free = WaitForSingleObject(g_slotEvent, kSlotWaitMs) == WAIT_OBJECT_0;
+		}
+		if (!free)
+		{
+			g_presentOwnerThread.store(0, std::memory_order_release);
+			return -1;
+		}
 
 		{
 			std::lock_guard<std::recursive_mutex> imguiLock(g_imguiMutex);
+			// Before RenderFrame, as in HookedPresent.
 			ReclaimRetiredTextures();
 			BuildImGuiFrame();
+
+			slot.allocator->Reset();
+			slot.list->Reset(slot.allocator, nullptr);
 
 			D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle = g_uiRtvHeap->GetCPUDescriptorHandleForHeapStart();
 			D3D12_RENDER_TARGET_VIEW_DESC rtvDesc = {};
 			rtvDesc.Format = g_rtvFormat;
 			rtvDesc.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2D;
-			g_device->CreateRenderTargetView(handoff.Transition.pResource, &rtvDesc, rtvHandle);
+			g_device->CreateRenderTargetView(backBuffer, &rtvDesc, rtvHandle);
 
-			list->OMSetRenderTargets(1, &rtvHandle, FALSE, nullptr);
-			g_originalHeaps(list, 1, &g_srvHeap);
-			ImGui_ImplDX12_RenderDrawData(ImGui::GetDrawData(), list);
-			g_originalHeaps(list, bound.count, bound.heaps);
+			// UE has put the back buffer in RENDER_TARGET for this list.
+			slot.list->OMSetRenderTargets(1, &rtvHandle, FALSE, nullptr);
+			slot.list->SetDescriptorHeaps(1, &g_srvHeap);
+			ImGui_ImplDX12_RenderDrawData(ImGui::GetDrawData(), slot.list);
+			slot.list->Close();
+			slot.fenceValue = ++g_fenceValue;
 		}
-		g_drawnFor = frame;
-		++g_stats.withUi;
+		slot.pending.store(true, std::memory_order_release);
+		g_lastDoneValue = slot.fenceValue;
+		g_lastDrawMs = GetTickCount64();
+		++g_next;
 		g_presentOwnerThread.store(0, std::memory_order_release);
-
-		if (!g_loggedFirst.exchange(true))
-			IMGUI_LOG_INFO("[ImGuiBackend] FG overlay: first draw with the game's UI: back buffer %p, state 0x%X -> 0x%X, thread %lu",
-				static_cast<void*>(handoff.Transition.pResource), static_cast<unsigned>(handoff.Transition.StateBefore),
-				static_cast<unsigned>(handoff.Transition.StateAfter), static_cast<unsigned long>(tid));
+		return index;
 	}
 
-	static HRESULT STDMETHODCALLTYPE HookedReset(ID3D12GraphicsCommandList* list, ID3D12CommandAllocator* allocator, ID3D12PipelineState* pso)
+	// RHI thread, in command order, so slots arrive in the order recorded and
+	// g_fence values rise.
+	static bool Submit(int index, ImGuiUiOverlaySync* sync)
 	{
-		{
-			std::lock_guard<std::mutex> lock(g_heapsMutex);
-			g_boundHeaps.erase(list);
-		}
-		return g_originalReset(list, allocator, pso);
-	}
+		std::lock_guard<std::mutex> lock(g_submitMutex);
+		if (!g_queue || !sync || index < 0 || index >= static_cast<int>(kSlots))
+			return false;
+		Slot& slot = g_slots[index];
+		if (!slot.pending.load(std::memory_order_acquire))
+			return false;
 
-	static void STDMETHODCALLTYPE HookedSetDescriptorHeaps(ID3D12GraphicsCommandList* list, UINT count, ID3D12DescriptorHeap* const* heaps)
-	{
-		{
-			BoundHeaps bound = {};
-			bound.count = count <= 2 ? count : 0;
-			for (UINT i = 0; i < bound.count; ++i)
-				bound.heaps[i] = heaps[i];
-			std::lock_guard<std::mutex> lock(g_heapsMutex);
-			g_boundHeaps[list] = bound;
-		}
-		g_originalHeaps(list, count, heaps);
-	}
+		const UINT64 readyValue = ++g_readyValue;
+		g_queue->Wait(g_readyFence, readyValue);
+		// The unhooked ECL: HookedECL would take our queue for the game's.
+		ID3D12CommandList* lists[] = { slot.list };
+		if (g_originalECL)
+			g_originalECL(g_queue, 1, lists);
+		else
+			g_queue->ExecuteCommandLists(1, lists);
+		g_queue->Signal(g_doneFence, slot.fenceValue);
+		slot.pending.store(false, std::memory_order_release);
 
-	static void STDMETHODCALLTYPE HookedResourceBarrier(ID3D12GraphicsCommandList* list, UINT count, const D3D12_RESOURCE_BARRIER* barriers)
-	{
-		if (!t_inside && g_initialized && !g_shutdown && list != g_cmdList)
-		{
-			for (UINT i = 0; i < count; ++i)
-				if (IsUiHandoff(barriers[i]))
-				{
-					t_inside = true;
-					DrawWithUi(list, barriers[i]);
-					t_inside = false;
-					break;
-				}
-		}
-		g_originalBarrier(list, count, barriers);
-	}
-
-	static void PatchSlot(int slot, void* hook, void** original)
-	{
-		DWORD oldProtect = 0;
-		if (!VirtualProtect(&g_vtable[slot], sizeof(void*), PAGE_READWRITE, &oldProtect))
-			return;
-		if (original)
-			*original = g_vtable[slot];
-		g_vtable[slot] = hook;
-		VirtualProtect(&g_vtable[slot], sizeof(void*), oldProtect, &oldProtect);
-	}
-
-	// Present thread, right after D3D12 init. UE's command lists are the same
-	// D3D12 class as ours, so they share this vtable.
-	static void Install(UINT64 width, UINT height)
-	{
-		if (!g_streamlineActive || g_vtable || !g_cmdList)
-			return;
-		D3D12_DESCRIPTOR_HEAP_DESC desc = {};
-		desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
-		desc.NumDescriptors = 1;
-		if (FAILED(g_device->CreateDescriptorHeap(&desc, IID_PPV_ARGS(&g_uiRtvHeap))))
-		{
-			IMGUI_LOG_WARN("[ImGuiBackend] FG overlay: RTV heap failed, overlay stays on real frames");
-			return;
-		}
-		g_width = width;
-		g_height = height;
-		g_vtable = *reinterpret_cast<void***>(g_cmdList);
-		// Heap tracking first, so the barrier hook never sees a list it has
-		// no heaps for that it could have known.
-		PatchSlot(kResetSlot, reinterpret_cast<void*>(&HookedReset), reinterpret_cast<void**>(&g_originalReset));
-		PatchSlot(kSetDescriptorHeapsSlot, reinterpret_cast<void*>(&HookedSetDescriptorHeaps), reinterpret_cast<void**>(&g_originalHeaps));
-		if (g_originalReset && g_originalHeaps)
-			PatchSlot(kResourceBarrierSlot, reinterpret_cast<void*>(&HookedResourceBarrier), reinterpret_cast<void**>(&g_originalBarrier));
-		IMGUI_LOG_INFO("[ImGuiBackend] FG overlay: command list hooks %s (Reset, SetDescriptorHeaps, ResourceBarrier), back buffer %llux%u",
-			g_originalBarrier ? "in" : "FAILED", static_cast<unsigned long long>(width), height);
-	}
-
-	static void Remove()
-	{
-		if (!g_vtable)
-			return;
-		if (g_originalBarrier) PatchSlot(kResourceBarrierSlot, reinterpret_cast<void*>(g_originalBarrier), nullptr);
-		if (g_originalHeaps)   PatchSlot(kSetDescriptorHeapsSlot, reinterpret_cast<void*>(g_originalHeaps), nullptr);
-		if (g_originalReset)   PatchSlot(kResetSlot, reinterpret_cast<void*>(g_originalReset), nullptr);
-		g_vtable = nullptr;
-	}
-
-	// After the GPU flush at shutdown.
-	static void ReleaseResources()
-	{
-		if (g_uiRtvHeap) { g_uiRtvHeap->Release(); g_uiRtvHeap = nullptr; }
-		std::lock_guard<std::mutex> lock(g_heapsMutex);
-		g_boundHeaps.clear();
-	}
-
-	// One line every ten seconds while the hooks are in, for the in-game test.
-	static void LogStats()
-	{
-		if (!g_originalBarrier)
-			return;
-		static ULONGLONG s_nextLog = 0;
-		const ULONGLONG now = GetTickCount64();
-		if (now < s_nextLog)
-			return;
-		if (s_nextLog != 0)
-			IMGUI_LOG_INFO("[ImGuiBackend] FG overlay: drawn with the game's UI %u, at Present %u, skipped (list had no heaps) %u",
-				g_stats.withUi.exchange(0), g_stats.atPresent.exchange(0), g_stats.noHeaps.exchange(0));
-		s_nextLog = now + kStatsIntervalMs;
+		sync->readyFence = g_readyFence;
+		sync->readyValue = readyValue;
+		sync->doneFence = g_doneFence;
+		sync->doneValue = slot.fenceValue;
+		return true;
 	}
 }
 
@@ -1638,12 +1608,6 @@ static HRESULT STDMETHODCALLTYPE HookedPresent(IDXGISwapChain* swapChain, UINT s
 			}
 			// else: size filter rejected this swap chain, try again next frame.
 		}
-		else
-		{
-			DXGI_SWAP_CHAIN_DESC scDesc = {};
-			if (SUCCEEDED(swapChain->GetDesc(&scDesc)))
-				HudPath::Install(scDesc.BufferDesc.Width, scDesc.BufferDesc.Height);
-		}
 		g_presentOwnerThread.store(0, std::memory_order_release);
 		return g_originalPresent(swapChain, syncInterval, flags);
 	}
@@ -1666,6 +1630,15 @@ static HRESULT STDMETHODCALLTYPE HookedPresent(IDXGISwapChain* swapChain, UINT s
 			static_cast<void*>(g_capturedQueue),
 			g_frameCount, static_cast<unsigned>(g_rtvFormat));
 
+	// The overlay is already in this frame, drawn at Slate's present step.
+	{
+		DXGI_SWAP_CHAIN_DESC scDesc = {};
+		if (SUCCEEDED(swapChain->GetDesc(&scDesc)))
+			UiPass::NoteSwapChainSize(scDesc.BufferDesc.Width, scDesc.BufferDesc.Height);
+	}
+	if (UiPass::Active())
+		return PresentAndCheck(swapChain, syncInterval, flags, frameIdx);
+
 	// Current back buffer index.
 	IDXGISwapChain3* sc3 = nullptr;
 	UINT bufferIdx = 0;
@@ -1683,23 +1656,6 @@ static HRESULT STDMETHODCALLTYPE HookedPresent(IDXGISwapChain* swapChain, UINT s
 		WaitForSingleObject(g_fenceEvent, 1000);
 	}
 
-	// A frame drawn with the game's UI already has the overlay, on UE's own
-	// command list: nothing to build or draw here, only the wait below.
-	const UINT64 hudFrame = HudPath::g_presents.fetch_add(1) + 1;
-	if (HudPath::g_drawnFor.load() == hudFrame)
-	{
-		UINT64 signalVal = ++g_fenceValue;
-		g_cmdQueue->Signal(g_fence, signalVal);
-		fc.fenceValue = signalVal;
-		if (g_fence->GetCompletedValue() < signalVal)
-		{
-			g_fence->SetEventOnCompletion(signalVal, g_fenceEvent);
-			WaitForSingleObject(g_fenceEvent, 500);
-		}
-		HudPath::LogStats();
-		return PresentAndCheck(swapChain, syncInterval, flags, frameIdx);
-	}
-
 	// Release plugin textures freed since the GPU last caught up. Before
 	// RenderFrame, so a slot freed here can be reused by a Load* without this
 	// frame ever having seen the old SRV.
@@ -1713,11 +1669,6 @@ static HRESULT STDMETHODCALLTYPE HookedPresent(IDXGISwapChain* swapChain, UINT s
 		IMGUI_LOG_ERROR("[ImGuiBackend] Frame %llu  GetBuffer(%u) failed", frameIdx, bufferIdx);
 		g_presentOwnerThread.store(0, std::memory_order_release);
 		return g_originalPresent(swapChain, syncInterval, flags);
-	}
-	{
-		const D3D12_RESOURCE_DESC bbDesc = backBuffer->GetDesc();
-		HudPath::g_width = bbDesc.Width;
-		HudPath::g_height = bbDesc.Height;
 	}
 
 	// RTV for this buffer slot.
@@ -1753,7 +1704,6 @@ static HRESULT STDMETHODCALLTYPE HookedPresent(IDXGISwapChain* swapChain, UINT s
 	{
 		std::lock_guard<std::recursive_mutex> imguiLock(g_imguiMutex);
 		BuildImGuiFrame();
-		++HudPath::g_stats.atPresent;
 
 		g_cmdList->OMSetRenderTargets(1, &rtvHandle, FALSE, nullptr);
 		g_cmdList->SetDescriptorHeaps(1, &g_srvHeap);
@@ -1788,8 +1738,6 @@ static HRESULT STDMETHODCALLTYPE HookedPresent(IDXGISwapChain* swapChain, UINT s
 		g_fence->SetEventOnCompletion(signalVal, g_fenceEvent);
 		WaitForSingleObject(g_fenceEvent, 500);
 	}
-
-	HudPath::LogStats();
 
 	backBuffer->Release();
 
@@ -3648,7 +3596,6 @@ extern "C" __declspec(dllexport) void ImGuiHost_Shutdown()
 {
 	g_shutdown = true;
 	if (g_callbacks.RemoveInputHook) g_callbacks.RemoveInputHook();
-	HudPath::Remove();
 
 		// Restore the original vtable entry.
 		if (g_vtableSlot && g_originalPresent)
@@ -3692,7 +3639,7 @@ extern "C" __declspec(dllexport) void ImGuiHost_Shutdown()
 				g_fence->SetEventOnCompletion(g_fenceValue, g_fenceEvent);
 				WaitForSingleObject(g_fenceEvent, 500);
 			}
-			HudPath::ReleaseResources();
+			UiPass::ReleaseResources();
 			CleanupD3D12Resources();
 			g_initialized = false;
 		}
@@ -3731,4 +3678,22 @@ extern "C" __declspec(dllexport) void ImGuiHost_RequestFontRebuild()
 {
 	if (g_initialized)
 		g_pendingFontRebuild.store(true, std::memory_order_release);
+}
+
+// Slate's present step: see UiPass and hooks/game/slate_present.
+extern "C" __declspec(dllexport) int ImGuiHost_RecordUiOverlay(void* rhiBackBuffer)
+{
+	if (!rhiBackBuffer || !g_initialized || g_shutdown)
+		return -1;
+	// FRHITexture::GetNativeResource: the window's back buffer, UE's own texture.
+	using GetNativeResourceFn = void* (*)(void*);
+	void** vtable = *static_cast<void***>(rhiBackBuffer);
+	auto* resource = static_cast<ID3D12Resource*>(
+		reinterpret_cast<GetNativeResourceFn>(vtable[kFRHITexture_GetNativeResource_Slot])(rhiBackBuffer));
+	return UiPass::Record(resource);
+}
+
+extern "C" __declspec(dllexport) bool ImGuiHost_SubmitUiOverlay(int slot, ImGuiUiOverlaySync* sync)
+{
+	return UiPass::Submit(slot, sync);
 }

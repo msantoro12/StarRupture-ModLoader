@@ -4,6 +4,8 @@
 #include <windows.h>
 #include "../plugins/plugin_interface.h"
 
+struct ID3D12Fence;
+
 // ---------------------------------------------------------------------------
 // ImGui host DLL interface
 //
@@ -64,6 +66,18 @@ struct ImGuiRenderCallbacks
     bool    (*IsPauseMenuOpen)();
 };
 
+// The two fences that order one overlay draw, recorded at Slate's present
+// step, with UE's queue: UE's queue signals readyFence/readyValue once
+// Slate's draw is done (the host's queue waits for it), and waits for
+// doneFence/doneValue, which the host's queue signals after the overlay.
+struct ImGuiUiOverlaySync
+{
+    ID3D12Fence* readyFence;
+    UINT64       readyValue;
+    ID3D12Fence* doneFence;
+    UINT64       doneValue;
+};
+
 // ---------------------------------------------------------------------------
 // Exported by StarRupture-ImGui.dll
 // ---------------------------------------------------------------------------
@@ -92,3 +106,16 @@ IMGUI_HOST_API bool                   ImGuiHost_IsTextInputActive();
 // The game window the overlay draws on, or null before the first Present.
 // Any thread.
 IMGUI_HOST_API HWND                   ImGuiHost_GetGameWindow();
+
+// Slate's present step (hooks/game/slate_present). Render thread: builds the
+// ImGui frame and records it for rhiBackBuffer (an FRHITexture*) on the
+// host's own command list. Returns the slot to submit, or -1 when nothing was
+// recorded (not initialised, not the game's back buffer, a Present-time draw
+// in progress). Every slot returned must be submitted.
+IMGUI_HOST_API int                    ImGuiHost_RecordUiOverlay(void* rhiBackBuffer);
+
+// RHI thread, in command order: submits a recorded slot on the host's queue
+// behind the ready fence. True fills *sync; the caller must then signal the
+// ready fence and wait on the done fence on UE's queue. False: nothing was
+// queued and there is nothing to signal or wait on.
+IMGUI_HOST_API bool                   ImGuiHost_SubmitUiOverlay(int slot, ImGuiUiOverlaySync* sync);

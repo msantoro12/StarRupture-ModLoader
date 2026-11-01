@@ -288,6 +288,21 @@ static void Test_UnloadPathsPurgePanels()
     // UNLOAD frees through ShutDownAndFree, checked above.
     CHECK(FunctionBody(src, "bool UnloadPlugin(int index, std::string* refusal)").find("ShutDownAndFree(") != std::string::npos);
 
+    // A refused UNLOAD or RELOAD is decided before anything of the plugin is
+    // touched: the refusal check comes ahead of the shutdown and the free.
+    for (const char* signature : { "bool UnloadPlugin(int index, std::string* refusal)", "bool ReloadPlugin(int index, std::string* refusal)" })
+    {
+        const std::string body = FunctionBody(src, signature);
+        const size_t refuse = body.find("ReloadPolicy::");
+        CHECK(refuse != std::string::npos);
+        for (const char* teardown : { "ShutDownAndFree(", "CallShutdownSEH(", "WaitOutPluginRenders(", "FreeLibrary(" })
+        {
+            const size_t at = body.find(teardown);
+            if (at != std::string::npos)
+                CHECK(refuse < at);
+        }
+    }
+
     // ...and that wait must come from both registries, with its answer used.
     const std::string wait = FunctionBody(src, "static bool WaitOutPluginRenders(");
     CHECK(wait.find("= UI::PluginPanelRegistry::ForgetModule(module)") != std::string::npos);

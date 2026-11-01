@@ -499,8 +499,8 @@ static void Test_UnloadPathsPurgeCallbacks()
     const char* const kPaths[] =
     {
         "void UnloadAllPlugins()",
-        "bool UnloadPlugin(int index)",
-        "bool ReloadPlugin(int index)",
+        "bool UnloadPlugin(int index, std::string* refusal)",
+        "bool ReloadPlugin(int index, std::string* refusal)",
     };
     for (const char* signature : kPaths)
     {

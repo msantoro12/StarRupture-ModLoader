@@ -336,6 +336,16 @@ namespace VersionMap
 		return cl != 0 && std::find(builds.begin(), builds.end(), cl) != builds.end();
 	}
 
+	namespace
+	{
+		// "CL-127004", or for gameCL 0 the builds before kLegacyPluginCL.
+		std::string DescribeBuiltFor(uint32_t gameCL)
+		{
+			return gameCL != 0 ? "CL-" + std::to_string(gameCL)
+				: "a build before CL-" + std::to_string(kLegacyPluginCL);
+		}
+	}
+
 	std::string OffBuildRefusal(const Exe& running, int interfaceVersion, const PluginGameBuild& built, bool askedSdkGlobals)
 	{
 		constexpr int kFirstMapInterface = 72;   // ResolveField, candidates, GetSdkGlobals
@@ -343,7 +353,7 @@ namespace VersionMap
 		if (migrated && !built.declared)
 			return "It declares that it takes its game data from the version map, but its PluginInfo names no game build"
 				" (gameBuiltCL is 0), so the loader cannot tell which build its SDK came from.";
-		if (running.cl == built.gameCL)
+		if (built.gameCL != 0 && running.cl == built.gameCL)
 			return {};
 		std::string why;
 		if (interfaceVersion < kFirstMapInterface)
@@ -354,14 +364,17 @@ namespace VersionMap
 			why = "it does not take the Game-SDK globals from the loader (GetSdkGlobals)";
 		else
 			return {};
-		const std::string was = "CL-" + std::to_string(built.gameCL);
+		const std::string was = DescribeBuiltFor(built.gameCL);
 		return "Needs an update to run on CL-" + std::to_string(running.cl) + ": " + why
-			+ ", so it would read this game's data where " + was + " had it. It loads on " + was + ".";
+			+ ", so it would read this game's data where " + was + " had it."
+			+ (built.gameCL != 0 ? " It loads on " + was + "." : std::string());
 	}
 
 	PluginGameBuild ReadPluginGameBuild(const PluginInfo& info)
 	{
 		PluginGameBuild build;
+		if (info.interfaceVersion < kLegacyPluginInterface)
+			build.gameCL = 0;
 		if (info.interfaceVersion < 72)   // the struct ends before the tail
 			return build;
 		build.mapFlags = info.mapFlags;
@@ -375,6 +388,8 @@ namespace VersionMap
 
 	std::string DescribePluginGameBuild(const PluginGameBuild& build)
 	{
+		if (build.gameCL == 0)
+			return DescribeBuiltFor(0);
 		return "CL-" + std::to_string(build.gameCL) + (build.declared ? "" : " (none declared)");
 	}
 

@@ -151,15 +151,17 @@ namespace VersionMap
 	// True when the ProductVersion ends in the CL of one of SupportedBuilds().
 	bool IsSupported(const std::wstring& productVersion);
 
-	// The game build every plugin before interface 72 was compiled against:
-	// the one the last loader without a version map required.
+	// The game build every v70 and v71 plugin was compiled against: the one
+	// the last loader without a version map required. A plugin before v70 was
+	// compiled against an older build, and gets gameCL 0, which matches none.
 	constexpr uint32_t kLegacyPluginCL = 127004;
+	constexpr int      kLegacyPluginInterface = 70;
 
 	// The game build a plugin says its Game-SDK came from (the v72 PluginInfo
-	// tail), and what it declares about itself. A plugin before interface 72
-	// has no tail and gets kLegacyPluginCL; so does a v72 plugin whose tail is
-	// 0, with declared false. The plugin manager copies this into the plugin's
-	// record at load.
+	// tail), and what it declares about itself. A v70 or v71 plugin has no
+	// tail and gets kLegacyPluginCL; so does a v72 plugin whose tail is 0,
+	// with declared false. One before v70 gets 0. The plugin manager copies
+	// this into the plugin's record at load.
 	struct PluginGameBuild
 	{
 		uint32_t gameCL   = kLegacyPluginCL;
@@ -168,7 +170,7 @@ namespace VersionMap
 	};
 	PluginGameBuild ReadPluginGameBuild(const PluginInfo& info);
 
-	// "CL-127004", or "CL-127004 (none declared)", for log lines.
+	// "CL-127004", "CL-127004 (none declared)", or "a build before CL-127004".
 	std::string DescribePluginGameBuild(const PluginGameBuild& build);
 
 	// Whether a plugin may run on `running`, judged against the build it was
@@ -177,7 +179,8 @@ namespace VersionMap
 	// Offsets:: point where its own build had things, so it runs only when it
 	// takes all of them from this build: interface 72 or later, PLUGIN_MAP_MIGRATED
 	// in the tail, and GetSdkGlobals in PluginInit. A tail that sets
-	// PLUGIN_MAP_MIGRATED and names no build is refused on every build. The
+	// PLUGIN_MAP_MIGRATED and names no build is refused on every build, and so
+	// is a plugin built for gameCL 0 (before v70), whatever runs. The
 	// loader asks at DLL load, passing true for the globals it cannot know yet,
 	// and again after PluginInit. Empty = admitted; else the reason, for the
 	// log and the plugin list.

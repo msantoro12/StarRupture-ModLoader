@@ -70,9 +70,13 @@ request. The order for a function key is:
 
 With no row for the running CL, the loader uses the row of the latest CL it has one for, and
 rescans that row's pattern on this build: it counts only if the pattern resolves, uniquely and as
-the kind the request asked for. Older rows are not read. A row that does not resolve here is not
-used, and the plugin's own pattern and rows decide. An address that was not found on this build
-is never used.
+the kind the request asked for, and then it joins step 3 as one more locator, so it and the
+plugin's own pattern and rows must agree. Older rows are not read. A row that does not resolve
+here is not used. An address that was not found on this build is never used.
+
+There is no by-name step for functions. For a native function the plugin's own pattern stands in
+for it. A UFUNCTION's name leads to its exec thunk, a different function with a different calling
+convention from the native one a hook or call needs, so using it would be a wrong address.
 
 An `absent` row for the running CL ends the search for the requests it binds.
 
@@ -112,8 +116,10 @@ What the loader does with it:
 - Its config entries are reported as off (`PluginHookReport::ConfigOffReason`) so the config page
   can grey them out. Stored values are kept.
 
-A plugin is still refused, whatever it declared, for an interface mismatch, for no built CL, and
-for missing core globals (`GetSdkGlobals`); see [Admission](#admission).
+A plugin is still refused, whatever it declared, for an interface newer than the loader's, for no
+built CL, and for missing core globals (`GetSdkGlobals`); see [Admission](#admission). The Plugins
+tab shows a plugin with features off as `Loaded (N off)`; the README has the
+tab's states.
 
 ## Admission
 
@@ -127,10 +133,16 @@ in a tail from interface v72: `gameBuiltCL` (the build its Game-SDK came from,
   counts; a build where the loader cannot find GObjects, `FName::AppendString` or `GWorld` hands
   the plugin none, with a log line saying which). Otherwise the Plugins tab shows it as **Incompatible**, with "Needs an update to
   run on CL-...", and it still loads on its own build.
-- A plugin before v72 has no tail and counts as built for `kLegacyPluginCL` (127004), the build
-  the last loader without a map required. So does a v72 plugin whose `gameBuiltCL` is 0, with the
-  warning "declares no game build". A tail that sets `PLUGIN_MAP_MIGRATED` and names no build is
-  refused on every build.
+- A v70 or v71 plugin has no tail and counts as built for `kLegacyPluginCL` (127004), the build
+  the last loader without a map required. So does a v72 or later plugin whose `gameBuiltCL` is 0,
+  with the warning "declares no game build". A tail that sets `PLUGIN_MAP_MIGRATED` and names no
+  build is refused on every build.
+- An older interface is never refused for its age: the tables only grow, so a plugin gets the
+  slots it was built with. Only an interface newer than the loader's is refused, as needing a
+  newer mod loader. A plugin before v70 (StarRuptureTimer 1.3.0 is v46) counts as built for a
+  build before CL-127004, which no supported build is, so it shows "Needs an update to run on
+  CL-...: ... where a build before CL-127004 had it" and is never called. That also keeps a plugin
+  from before the v62 break away from tables it cannot read.
 
 `PLUGIN_MAP_MIGRATED` is the plugin's promise that it reads no game data from compiled-in
 offsets or addresses (the checklist is in the SDK guide). The loader does not check that

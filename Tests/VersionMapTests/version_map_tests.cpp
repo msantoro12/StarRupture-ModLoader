@@ -567,6 +567,20 @@ int main()
 		Check(refusal(128786, 70, 0, 0, true).find("before the version map") != std::string::npos
 			&& refusal(128786, 71, 0, 0, true).find("It loads on CL-127004") != std::string::npos, "admission: v70 and v71 need an update on 128786");
 
+		// An older interface is never refused for its age, only judged by its build. Before v70
+		// (StarRuptureTimer 1.3.0 is v46, ConfirmHotkey v67) that is a build before 127004, which no
+		// supported build is, so it is never called; the reason names the build, not an interface range.
+		const VersionMap::PluginGameBuild old46 = VersionMap::ReadPluginGameBuild(info(46, 128786, kM));
+		Check(old46.gameCL == 0 && !old46.declared && old46.mapFlags == 0, "tail: v46 gets build 0 and no flags");
+		for (const uint32_t running : { 127004u, 128786u, 0u })
+			for (const int version : { 46, 62, 67, 69 })
+			{
+				const std::string r = refusal(running, version, 0, 0, true);
+				Check(r.find("Needs an update") == 0 && r.find("a build before CL-127004 had it") != std::string::npos
+					&& r.find("It loads on") == std::string::npos, "admission: before v70 is judged as built before 127004, on every build");
+			}
+		Check(VersionMap::DescribePluginGameBuild(old46) == "a build before CL-127004", "describe: build 0");
+
 		// v72 built on 127004: loads there; off it, only when migrated and it took the globals.
 		Check(refusal(127004, 72, 127004, 0, false).empty(), "admission: v72 on its built CL, no flag");
 		Check(refusal(128786, 72, 127004, kM, true).empty(), "admission: v72 MIGRATED admitted off its build");

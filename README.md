@@ -111,9 +111,10 @@ is available.
     already fired; load a save to catch it up (the any-world start also re-fires on returning to
     the main menu), unless the plugin checks the current world itself.
   - **Needs restart** is a new DLL in the Preload folder, which only loads at game start.
-  - **Incompatible** names the plugin interface the DLL was built for and the range this loader accepts,
-    or, on a game build other than the one the plugin was built for, says the plugin needs an update (see
-    [Game updates](#game-updates)).
+  - **Incompatible** is a plugin built for a newer plugin interface than this loader's (update the mod
+    loader), or, on a game build other than the one the plugin was built for, says the plugin needs an
+    update (see [Game updates](#game-updates)). A plugin is never refused for an older interface; one from
+    before interface v70 counts as built for a game build before CL-127004.
   - **Hooks failed** has a **WHY?** button for the [report](#pop-up-windows).
   - **Retry** is a DLL Windows could not open yet, usually still being copied or locked.
   - **Duplicate** is a plugin whose name is already in the list.

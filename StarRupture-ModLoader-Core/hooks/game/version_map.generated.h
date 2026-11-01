@@ -205,7 +205,7 @@ inline constexpr std::array<FunctionRow, 122> kFunctionRows = {{
 	{ 128786, 0xCF8579A6, 0x0F47D000, 1, 0x00000000, false, "40 55 41 56 48 81 EC ?? ?? ?? ?? 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 84 24 ?? ?? ?? ?? F6 81", 0, -1, -1, 0x05385D40, nullptr },
 }};
 
-inline constexpr std::array<FieldRow, 28> kFieldRows = {{
+inline constexpr std::array<FieldRow, 30> kFieldRows = {{
 	// AAuPlayerCameraManager::AdditionalFOVOffset
 	{ 127004, 0x299C, 0x4, 0x00, nullptr },
 	// AAuPlayerCameraManager::FOV
@@ -224,6 +224,10 @@ inline constexpr std::array<FieldRow, 28> kFieldRows = {{
 	{ 127004, 0x3A8, 0x1, 0xFF, nullptr },
 	// APlayerController::bPlayerIsWaiting
 	{ 127004, 0x4D0, 0x1, 0x10, nullptr },
+	// FMassEnemyHealthFragment::HP
+	{ 127004, 0x0, 0x4, 0x00, nullptr },
+	// FTransform::Translation
+	{ 127004, 0x20, 0x18, 0x00, nullptr },
 	// UCrEnviroWaveTimerSubsystem::NextWaveTimer
 	{ 127004, 0x7C, 0x4, 0x00, nullptr },
 	// UCrEnviroWaveTimerSubsystem::TimerActor
@@ -323,7 +327,7 @@ inline constexpr std::array<Index, 61> kFunctions = {{
 	{ "UWorld::EndPlay", 120, 2 },
 }};
 
-inline constexpr std::array<Index, 23> kFields = {{
+inline constexpr std::array<Index, 25> kFields = {{
 	{ "AAuPlayerCameraManager::AdditionalFOVOffset", 0, 1 },
 	{ "AAuPlayerCameraManager::FOV", 1, 1 },
 	{ "ACrCrafter::CraftComponent", 2, 2 },
@@ -332,20 +336,22 @@ inline constexpr std::array<Index, 23> kFields = {{
 	{ "ACrPlayerControllerBase::bMapMenuOpen", 7, 1 },
 	{ "ACrTechnologyKeeper::bUnlockAllBuildings", 8, 1 },
 	{ "APlayerController::bPlayerIsWaiting", 9, 1 },
-	{ "UCrEnviroWaveTimerSubsystem::NextWaveTimer", 10, 1 },
-	{ "UCrEnviroWaveTimerSubsystem::TimerActor", 11, 1 },
-	{ "UCrEnviroWaveTimerSubsystem::WaitingDuration", 12, 1 },
-	{ "UCrEnviroWaveTimerSubsystem::bPause", 13, 1 },
-	{ "UCrEnviroWaveTimerSubsystem::bStopWaves", 14, 1 },
-	{ "UCrEnviroWaveTimerSubsystem::bWaitingForNextWave", 15, 1 },
-	{ "UCrGameInstance::ServerSessionName", 16, 1 },
-	{ "UCrUW_InventoryContainer::InventoryComponent", 17, 1 },
-	{ "ULocalPlayer::Origin", 18, 1 },
-	{ "ULocalPlayer::Size", 19, 1 },
-	{ "UMassActorSubsystem::ActorManager", 20, 1 },
-	{ "UMassEntitySubsystem::EntityManager", 21, 1 },
-	{ "UWorld::GameState", 22, 2 },
-	{ "UWorld::LineBatchers", 24, 2 },
-	{ "UWorld::NetDriver", 26, 2 },
+	{ "FMassEnemyHealthFragment::HP", 10, 1 },
+	{ "FTransform::Translation", 11, 1 },
+	{ "UCrEnviroWaveTimerSubsystem::NextWaveTimer", 12, 1 },
+	{ "UCrEnviroWaveTimerSubsystem::TimerActor", 13, 1 },
+	{ "UCrEnviroWaveTimerSubsystem::WaitingDuration", 14, 1 },
+	{ "UCrEnviroWaveTimerSubsystem::bPause", 15, 1 },
+	{ "UCrEnviroWaveTimerSubsystem::bStopWaves", 16, 1 },
+	{ "UCrEnviroWaveTimerSubsystem::bWaitingForNextWave", 17, 1 },
+	{ "UCrGameInstance::ServerSessionName", 18, 1 },
+	{ "UCrUW_InventoryContainer::InventoryComponent", 19, 1 },
+	{ "ULocalPlayer::Origin", 20, 1 },
+	{ "ULocalPlayer::Size", 21, 1 },
+	{ "UMassActorSubsystem::ActorManager", 22, 1 },
+	{ "UMassEntitySubsystem::EntityManager", 23, 1 },
+	{ "UWorld::GameState", 24, 2 },
+	{ "UWorld::LineBatchers", 26, 2 },
+	{ "UWorld::NetDriver", 28, 2 },
 }};
 }

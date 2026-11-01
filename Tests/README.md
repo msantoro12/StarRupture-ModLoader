@@ -295,3 +295,32 @@ fixture map of VersionMapTests, with no network. It checks:
 msbuild Tests\VersionFeedTests\VersionFeedTests.vcxproj /p:Configuration="Client Release" /p:Platform=x64
 build\tests\version_feed_tests.exe
 ```
+
+## FeedFetchTests
+
+The feed fetch (`auto_update/feed_fetch.cpp`) and the `HttpGet` under it (`auto_update/http_get.cpp`),
+against a server on 127.0.0.1 that the test starts. The test switch `allowPlainHttp` lets it use
+`http://`; every real request is HTTPS. It checks:
+
+- Stage 1's trigger (`Stage1Wanted`): an exe in neither map, an exe only the cache holds, an `absent`
+  row with a cache under and over a day old, an `absent` row the cache fills, a `ModLoader/` row under
+  the loader's own `fp` and under another.
+- No request (`WhyNot`): the server build, `[AutoUpdate] Enabled` off, no URL, no key. The server's hit
+  count stays 0 through Refresh, Stage 1, Stage 3 and the refusal path.
+- The stages: Stage 3 asks only of a cache over a day old, and the check restarts the clock; a refusal
+  after Stage 1 asked does not ask again; Stage 1 asks only with the main thread parked.
+- The answers: a verified feed is stored verbatim; the same `seq` is unchanged; a 404, a server that never
+  answers, a body that never arrives, a body over 1 MiB and a bad signature each fail and leave the cache
+  as it was; a body that trickles in is cut off at the wall-clock deadline; `maxBytes` stops a longer
+  body and passes one exactly at the limit; an HTTP-to-HTTP redirect is followed.
+- An unroutable host (192.0.2.1) fails inside the deadline plus one timeout.
+
+Not covered here: a request to a real release, and the HTTPS-to-HTTP redirect refusal (that needs a TLS
+server).
+
+```
+msbuild Tests\FeedFetchTests\FeedFetchTests.vcxproj /p:Configuration="Client Release" /p:Platform=x64
+build\tests\feed_fetch_tests.exe
+```
+
+It takes about 25 seconds, most of it the three cases that wait out a timeout.

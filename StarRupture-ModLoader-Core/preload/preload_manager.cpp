@@ -445,7 +445,7 @@ namespace PreloadManager
 		// Returns true when the plugin is running. On any failure the module is
 		// freed, every hook it managed to install is taken back out, and the
 		// caller carries on with the next one.
-		bool Activate(Loaded& entry)
+		bool Activate(Loaded& entry, bool nameShared)
 		{
 			Record record;
 			record.fileName = entry.fileName;
@@ -464,7 +464,7 @@ namespace PreloadManager
 			if (entry.scan)
 			{
 				PluginHookReport::BeginSession(&entry.self, entry.name.c_str(),
-					entry.fileName.c_str(), /*preload*/ true);
+					entry.fileName.c_str(), /*preload*/ true, nameShared);
 
 				const bool survived = CallScanSEH(entry.scan, &entry.self,
 					ModLoaderLogger::GetPluginHookScanner());
@@ -647,11 +647,17 @@ namespace PreloadManager
 				return _stricmp(a->fileName.c_str(), b->fileName.c_str()) < 0;
 			});
 
-		// Pass 2: scan and install, in that order.
+		// Pass 2: scan and install, in that order. The version map keys a
+		// plugin's own sites by its name, so a name two preload plugins share
+		// reads none (VersionMap::ResolveMapKey).
 		int index = 0;
 		for (auto& entry : vetted)
 		{
 			++index;
+			const bool nameShared = std::any_of(vetted.begin(), vetted.end(), [&](const std::unique_ptr<Loaded>& other)
+				{ return other && other != entry && other->module && _stricmp(other->name.c_str(), entry->name.c_str()) == 0; })
+				|| std::any_of(g_running.begin(), g_running.end(), [&](const std::unique_ptr<Loaded>& other)
+				{ return _stricmp(other->name.c_str(), entry->name.c_str()) == 0; });
 #ifdef MODLOADER_CLIENT_BUILD
 			{
 				wchar_t message[192]{};
@@ -660,7 +666,7 @@ namespace PreloadManager
 				Splash::SetSubProgress(static_cast<float>(index) / static_cast<float>(vetted.size()));
 			}
 #endif
-			if (Activate(*entry))
+			if (Activate(*entry, nameShared))
 				g_running.push_back(std::move(entry));
 		}
 

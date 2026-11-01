@@ -234,6 +234,11 @@ namespace UI::ModLoaderWindow
             ImGuiTableFlags_Resizable |
             ImGuiTableFlags_SizingStretchProp;
 
+        // Padding of the action buttons. The row-click selectable is as tall as
+        // those buttons, so it covers the whole row without making it taller.
+        const ImVec2 actionPadding(10.0f, 4.0f);
+        const float  rowHeight = ImGui::GetTextLineHeight() + actionPadding.y * 2.0f;
+
         // The Config tab lists only the plugins that finished initialising, by
         // position in this list. A row opens that page only when its plugin is in it.
         static const PluginInfo* configInfos[64];
@@ -272,7 +277,8 @@ namespace UI::ModLoaderWindow
                     if (strcmp(configInfos[c]->name ? configInfos[c]->name : "", s.name) != 0)
                         continue;
                     if (ImGui::Selectable("##open_config", false,
-                            ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowOverlap))
+                            ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowOverlap,
+                            ImVec2(0.0f, rowHeight)))
                     {
                         s_selectedPlugin = c;
                         s_activeTab = kTabConfig;
@@ -328,7 +334,7 @@ namespace UI::ModLoaderWindow
                 }
                 else
                 {
-                    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(10.0f, 4.0f));
+                    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, actionPadding);
 
                     const bool busy = s_pluginActionPending[i];
 

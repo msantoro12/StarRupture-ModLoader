@@ -221,9 +221,12 @@ static std::string StripLineComments(const std::string& src)
 
 // Text of the function whose definition starts with signature, up to its
 // closing brace (a tab-indented "}" line; the functions sit in a namespace).
+// A forward declaration (the signature then ';') is not the definition.
 static std::string FunctionBody(const std::string& src, const char* signature)
 {
-    const size_t start = src.find(signature);
+    size_t start = src.find(signature);
+    while (start != std::string::npos && src.compare(start + strlen(signature), 1, ";") == 0)
+        start = src.find(signature, start + 1);
     if (start == std::string::npos) return "";
     const size_t end = src.find("\n\t}", start);
     return end == std::string::npos ? "" : src.substr(start, end - start);
@@ -247,7 +250,7 @@ static void Test_UnloadPathsPurgePanels()
     const char* const kPaths[] =
     {
         "void UnloadAllPlugins()",
-        "bool UnloadPlugin(int index)",
+        "static bool ShutDownAndFree(LoadedPlugin& p, const wchar_t* action)",
         "bool ReloadPlugin(int index)",
     };
     for (const char* signature : kPaths)
@@ -281,6 +284,9 @@ static void Test_UnloadPathsPurgePanels()
         CHECK(refuse != std::string::npos);
         CHECK(refuse < free);
     }
+
+    // UNLOAD frees through ShutDownAndFree, checked above.
+    CHECK(FunctionBody(src, "bool UnloadPlugin(int index)").find("ShutDownAndFree(") != std::string::npos);
 
     // ...and that wait must come from both registries, with its answer used.
     const std::string wait = FunctionBody(src, "static bool WaitOutPluginRenders(");

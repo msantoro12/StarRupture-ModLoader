@@ -477,10 +477,13 @@ This is a modding tool for educational purposes. Use at your own risk. The autho
 
 Original mod by [@AlienXAXS](https://github.com/AlienXAXS) ([AGNGaming](https://www.agngaming.com)).
 
+Maintained by [@msantoro12](https://github.com/msantoro12).
+
 Contributors:
 
 - [@Mralexandresys](https://github.com/Mralexandresys)
 - [@Wilhelm-af](https://github.com/Wilhelm-af)
+- [@Kian369](https://github.com/Kian369)
 - <a id="msantoro12"></a><sup>✦</sup> [@msantoro12](https://github.com/msantoro12), creator of [StarRupture Planner](https://starrupture.goodstuff.software)
 
 Third-party:

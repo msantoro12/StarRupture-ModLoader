@@ -64,7 +64,7 @@ namespace PluginHookReport
     {
         std::string              id;          // the plugin's id for it
         std::string              title;       // what a player reads
-        std::string              reason;      // one line, plain English
+        std::string              reason;      // one line, plain English, from the first miss's Cause
         std::vector<FeatureMiss> misses;      // the keys that did not resolve, in order
         std::vector<std::string> configKeys;  // "Section.Key" or "Section.*" entries it drives
     };
@@ -102,7 +102,9 @@ namespace PluginHookReport
     // the report list (nothing is committed when the plugin resolved everything
     // cleanly). refusedOut, when non-null, receives true if the plugin must not
     // be loaded -- which is any time it recorded a core failure. A feature
-    // turned off does not refuse it.
+    // turned off does not refuse it. A key a declared feature lists that no
+    // request in the session asked for is logged as a warning: it can only be a
+    // typo, and a typo'd key is one whose miss would refuse the plugin instead.
     void EndSession(const IPluginSelf* self, bool* refusedOut);
 
     // Record a crash inside OnPluginLoadHooks against the open session. Fatal.
@@ -114,12 +116,24 @@ namespace PluginHookReport
     // stops a plugin from stashing the scanner table and using it later.
     bool HasSession(const IPluginSelf* self);
 
-    void RecordResolved(const IPluginSelf* self);
+    // A pattern that resolved. `name` is the key the plugin gave it.
+    void RecordResolved(const IPluginSelf* self, const char* name);
+
+    // A field or size row that resolved. Not a pattern, so it is not counted
+    // in the report's "resolved", but EndSession knows the key was asked for.
+    void RecordFieldResolved(const IPluginSelf* self, const char* key);
+
+    // Why a miss happened, which decides what a feature it turns off says:
+    // Game is a locator or a map row that no longer fits this game build;
+    // Plugin is a failure the plugin reported itself; Request is a request the
+    // loader turned down as malformed, which is a fault in the plugin.
+    enum class Cause { Game, Plugin, Request };
 
     // A miss on hookName. When a feature declared in this session lists the
     // name, every such feature is turned off and the plugin is not refused;
     // otherwise it is a core failure.
-    void RecordFailure(const IPluginSelf* self, const char* hookName, const char* detail, bool required);
+    void RecordFailure(const IPluginSelf* self, const char* hookName, const char* detail, bool required,
+                       Cause cause = Cause::Game);
 
     // v72. Declare a feature for the open session. keys are the names later
     // passed to RecordFailure; configKeys are "Section.Key" or "Section.*".
@@ -151,10 +165,11 @@ namespace PluginHookReport
     int GetReportedPluginCount();
     int GetRefusedPluginCount();
 
-    // Features turned off across all plugins, and for one plugin (by name, as
-    // PluginInfo gives it). Cheap enough to call per UI frame.
-    int GetFeaturesOffCount();
-    int GetFeaturesOffCount(const char* plugin);
+    // Features turned off in one plugin (by name, as PluginInfo gives it). A
+    // Stage 1 preload plugin and a Plugins-folder one can share a name; `preload`
+    // picks which of the two records is counted. Takes the lock, so cache by
+    // GetGeneration() if calling it every frame.
+    int GetFeaturesOffCount(const char* plugin, bool preload = false);
 
     // Why a config entry of `plugin` is switched off: "<feature title> is off:
     // <reason>" when a feature that is off drives "section.key" (or the whole

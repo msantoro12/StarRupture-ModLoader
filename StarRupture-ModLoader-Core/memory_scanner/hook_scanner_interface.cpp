@@ -45,7 +45,7 @@ namespace ModLoaderLogger
 		{
 			if (result.Succeeded())
 			{
-				PluginHookReport::RecordResolved(self);
+				PluginHookReport::RecordResolved(self, request.name.c_str());
 				return result.address;
 			}
 
@@ -95,7 +95,8 @@ namespace ModLoaderLogger
 			if (!hookName || !hookName[0] || !pattern || !pattern[0])
 			{
 				PluginHookReport::RecordFailure(self, hookName ? hookName : "(unnamed)",
-					"ResolveRequired/ResolveOptional called with an empty name or pattern", required);
+					"ResolveRequired/ResolveOptional called with an empty name or pattern", required,
+					PluginHookReport::Cause::Request);
 				return 0;
 			}
 
@@ -117,7 +118,8 @@ namespace ModLoaderLogger
 			if (!hookName || !hookName[0] || !patterns || patternCount <= 0)
 			{
 				PluginHookReport::RecordFailure(self, hookName ? hookName : "(unnamed)",
-					"ResolveUnique called with an empty name or no patterns", required);
+					"ResolveUnique called with an empty name or no patterns", required,
+					PluginHookReport::Cause::Request);
 				return 0;
 			}
 
@@ -141,7 +143,7 @@ namespace ModLoaderLogger
 				{
 					if (outPatternIndex)
 						*outPatternIndex = i;
-					PluginHookReport::RecordResolved(self);
+					PluginHookReport::RecordResolved(self, hookName);
 					return result.address;
 				}
 
@@ -224,7 +226,7 @@ namespace ModLoaderLogger
 			if (!request)
 			{
 				PluginHookReport::RecordFailure(self, "(unnamed)",
-					"Resolve called with a null request", true);
+					"Resolve called with a null request", true, PluginHookReport::Cause::Request);
 				return 0;
 			}
 
@@ -238,7 +240,7 @@ namespace ModLoaderLogger
 			{
 				PluginHookReport::RecordFailure(self, "(unnamed)",
 					"Resolve called with an uninitialised PluginScanRequest (structSize too small). "
-					"Initialise it with PLUGIN_SCAN_REQUEST_INIT.", true);
+					"Initialise it with PLUGIN_SCAN_REQUEST_INIT.", true, PluginHookReport::Cause::Request);
 				return 0;
 			}
 
@@ -254,7 +256,8 @@ namespace ModLoaderLogger
 			if (!local.hookName || !local.hookName[0] || (!hasPattern && !mapKey))
 			{
 				PluginHookReport::RecordFailure(self, local.hookName ? local.hookName : "(unnamed)",
-					"Resolve called with an empty hookName or pattern", required);
+					"Resolve called with an empty hookName or pattern", required,
+					PluginHookReport::Cause::Request);
 				return 0;
 			}
 
@@ -280,14 +283,15 @@ namespace ModLoaderLogger
 				PluginHookReport::RecordFailure(self, local.hookName, mapKey
 					? "Resolve called with a map key for a module other than the game exe; the map is for the game exe only"
 					: "Resolve called with candidates for a module other than the game exe; "
-					  "locators are for the game exe only", required);
+					  "locators are for the game exe only", required, PluginHookReport::Cause::Request);
 				return 0;
 			}
 			if (rowCount > kMaxCandidates)
 			{
 				PluginHookReport::RecordFailure(self, local.hookName,
 					("Resolve called with " + std::to_string(local.candidateCount) + " candidates; at most "
-					 + std::to_string(kMaxCandidates) + " are read").c_str(), required);
+					 + std::to_string(kMaxCandidates) + " are read").c_str(), required,
+					PluginHookReport::Cause::Request);
 				return 0;
 			}
 
@@ -378,7 +382,7 @@ namespace ModLoaderLogger
 
 		void HookReportFailure(const IPluginSelf* self, const char* hookName, const char* detail)
 		{
-			PluginHookReport::RecordFailure(self, hookName, detail, true);
+			PluginHookReport::RecordFailure(self, hookName, detail, true, PluginHookReport::Cause::Plugin);
 		}
 
 		// Same verdict as ReportFailure -- the only difference is the label the
@@ -386,7 +390,7 @@ namespace ModLoaderLogger
 		// tell the loader about does not get to also keep loading.
 		void HookReportWarning(const IPluginSelf* self, const char* hookName, const char* detail)
 		{
-			PluginHookReport::RecordFailure(self, hookName, detail, false);
+			PluginHookReport::RecordFailure(self, hookName, detail, false, PluginHookReport::Cause::Plugin);
 		}
 
 		bool HookHasFailures(const IPluginSelf* self)
@@ -410,7 +414,7 @@ namespace ModLoaderLogger
 				|| !local.className || !local.className[0] || (local.candidateCount && !local.candidates)
 				|| local.candidateCount > kMaxCandidates)
 			{
-				PluginHookReport::RecordFailure(self, key, "bad field request", true);
+				PluginHookReport::RecordFailure(self, key, "bad field request", true, PluginHookReport::Cause::Request);
 				return false;
 			}
 
@@ -436,6 +440,7 @@ namespace ModLoaderLogger
 				PluginHookReport::RecordFailure(self, key, error.c_str(), true);
 				return false;
 			}
+			PluginHookReport::RecordFieldResolved(self, key);
 			result->offset   = value.offset;
 			result->size     = value.size;
 			result->boolMask = value.boolMask;

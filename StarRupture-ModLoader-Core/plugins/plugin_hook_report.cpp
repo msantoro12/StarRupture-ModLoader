@@ -7,6 +7,7 @@
 #include <windows.h>
 #include <algorithm>
 #include <mutex>
+#include <set>
 
 #ifndef MODLOADER_BUILD_TAG
 #define MODLOADER_BUILD_TAG "dev"
@@ -41,9 +42,20 @@ namespace PluginHookReport
             PluginReport          report;
             bool                  nameShared = false;
             std::vector<Declared> declared;
+            std::set<std::string> asked;      // every key a request named, resolved or not
         };
 
-        const char* const kFeatureOffReason = "this game build changed something it needs";
+        // What a feature that is off says, by why it went off. The log line, the
+        // config page and the failure window all read it from FeatureOff::reason.
+        const char* FeatureOffReason(Cause cause)
+        {
+            switch (cause)
+            {
+            case Cause::Plugin:  return "the plugin reported a problem with something it needs";
+            case Cause::Request: return "the plugin asked for something it needs in a way the loader could not use";
+            default:             return "this game build changed something it needs";
+            }
+        }
 
         std::mutex                s_mutex;
         Session                   s_session{};      // self == nullptr when closed
@@ -151,6 +163,12 @@ namespace PluginHookReport
         if (!session)
             return;
 
+        for (const Declared& d : session->declared)
+            for (const std::string& key : d.keys)
+                if (!session->asked.count(key))
+                    ModLoaderLogger::LogWarn(L"[Map] %S: feature \"%S\" lists \"%S\", which no request asked for",
+                        session->report.plugin.c_str(), d.title.c_str(), key.c_str());
+
         PluginReport report = std::move(session->report);
         s_session = Session{};
 
@@ -230,14 +248,25 @@ namespace PluginHookReport
         return FindSession(self) != nullptr;
     }
 
-    void RecordResolved(const IPluginSelf* self)
+    void RecordResolved(const IPluginSelf* self, const char* name)
     {
         std::lock_guard<std::mutex> lock(s_mutex);
         if (Session* session = FindSession(self))
+        {
             session->report.resolved++;
+            session->asked.insert(name ? name : "");
+        }
     }
 
-    void RecordFailure(const IPluginSelf* self, const char* hookName, const char* detail, bool required)
+    void RecordFieldResolved(const IPluginSelf* self, const char* key)
+    {
+        std::lock_guard<std::mutex> lock(s_mutex);
+        if (Session* session = FindSession(self))
+            session->asked.insert(key ? key : "");
+    }
+
+    void RecordFailure(const IPluginSelf* self, const char* hookName, const char* detail, bool required,
+                       Cause cause)
     {
         std::lock_guard<std::mutex> lock(s_mutex);
 
@@ -249,6 +278,7 @@ namespace PluginHookReport
         }
 
         const std::string name = (hookName && hookName[0]) ? hookName : "(unnamed)";
+        session->asked.insert(name);
 
         // A key a declared feature lists turns that feature off instead of
         // refusing the plugin. Every feature that lists it goes off.
@@ -266,7 +296,7 @@ namespace PluginHookReport
                 FeatureOff o;
                 o.id         = d.id;
                 o.title      = d.title;
-                o.reason     = kFeatureOffReason;
+                o.reason     = FeatureOffReason(cause);
                 o.configKeys = d.configKeys;
                 session->report.featuresOff.push_back(std::move(o));
                 off = session->report.featuresOff.end() - 1;
@@ -376,21 +406,12 @@ namespace PluginHookReport
         return count;
     }
 
-    int GetFeaturesOffCount()
+    int GetFeaturesOffCount(const char* plugin, bool preload)
     {
         std::lock_guard<std::mutex> lock(s_mutex);
         int count = 0;
         for (const PluginReport& r : s_reports)
-            count += static_cast<int>(r.featuresOff.size());
-        return count;
-    }
-
-    int GetFeaturesOffCount(const char* plugin)
-    {
-        std::lock_guard<std::mutex> lock(s_mutex);
-        int count = 0;
-        for (const PluginReport& r : s_reports)
-            if (plugin && SameName(r.plugin, plugin))
+            if (plugin && r.preload == preload && SameName(r.plugin, plugin))
                 count += static_cast<int>(r.featuresOff.size());
         return count;
     }

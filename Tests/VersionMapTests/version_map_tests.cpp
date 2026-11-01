@@ -407,7 +407,7 @@ int main()
 			&& report->featuresOff[0].misses[0].key == "Test::Gone" && report->featuresOff[1].id == "hud"
 			&& report->featuresOff[1].misses.size() == 1, "feature: the report lists both, with their misses");
 		Check(PluginHookReport::GetCommitSerial() == serial + 1 && PluginHookReport::GetRefusedPluginCount() == 0
-			&& PluginHookReport::GetFeaturesOffCount() == 2 && PluginHookReport::GetFeaturesOffCount("featplug") == 2
+			&& PluginHookReport::GetFeaturesOffCount("featplug") == 2
 			&& PluginHookReport::GetFeaturesOffCount("Other") == 0, "feature: counted, and the popup is told");
 		Check(PluginHookReport::ConfigOffReason("FeatPlug", "Laser", "Scale") == "Mining laser is off: this game build changed something it needs"
 			&& !PluginHookReport::ConfigOffReason("featplug", "LASER", "scale").empty()
@@ -469,6 +469,54 @@ int main()
 		scan->ReportFailure(&reported, "Own::Check", "vtable slot held something unexpected");
 		PluginHookReport::EndSession(&reported, &refusedFlag);
 		Check(!refusedFlag && !viaReport, "feature: ReportFailure on a feature's key turns it off");
+		report = find("ReportPlug");
+		Check(report && report->featuresOff.size() == 1
+			&& report->featuresOff[0].reason == "the plugin reported a problem with something it needs",
+			"feature: a plugin's own report does not blame the game update");
+
+		// A bad request on a feature's key says so, and a game miss says the build changed.
+		IPluginSelf asked{ "AskPlug", "1", nullptr, nullptr, nullptr };
+		bool badKey = true, goneKey = true;
+		PluginHookReport::BeginSession(&asked, "AskPlug", "AskPlug.dll");
+		declare(&asked, "bad", "Bad request", { "Bad::Key" }, {}, &badKey);
+		declare(&asked, "gone", "Gone key", { "Test::Gone" }, {}, &goneKey);
+		{
+			PluginFieldRequest request = PLUGIN_FIELD_REQUEST_INIT;
+			request.key = "Bad::Key";   // no className
+			PluginFieldResult result{};
+			scan->ResolveField(&asked, &request, &result);
+		}
+		resolve(&asked, "Test::Gone", "ZZ 99");
+		PluginHookReport::EndSession(&asked, &refusedFlag);
+		report = find("AskPlug");
+		Check(!badKey && !goneKey && report && report->featuresOff.size() == 2
+			&& report->featuresOff[0].reason.find("asked for something it needs") != std::string::npos
+			&& report->featuresOff[1].reason == "this game build changed something it needs",
+			"feature: a bad request is the plugin's fault, a missed locator the game's");
+
+		// A feature key no request named is logged at the end of the session, even when everything resolved.
+		IPluginSelf typo{ "TypoPlug", "1", nullptr, nullptr, nullptr };
+		PluginHookReport::BeginSession(&typo, "TypoPlug", "TypoPlug.dll");
+		declare(&typo, "t", "Typed", { "Test::Kept", "Test::Kpet" }, {}, nullptr);
+		resolve(&typo, "Test::Kept", "AE 09");
+		TestDoubles::g_log.clear();
+		PluginHookReport::EndSession(&typo, &refusedFlag);
+		Check(!refusedFlag && Logged(L"[Map] TypoPlug: feature \"Typed\" lists \"Test::Kpet\", which no request asked for")
+			&& !Logged(L"lists \"Test::Kept\""), "feature: a key that no request named is logged");
+
+		// A preload record and a normal one with one name are counted apart.
+		IPluginSelf pre{ "PreDup", "1", nullptr, nullptr, nullptr };
+		IPluginSelf normal{ "PreDup", "1", nullptr, nullptr, nullptr };
+		PluginHookReport::BeginSession(&pre, "PreDup", "PreDup.dll", true);
+		declare(&pre, "p", "Early", { "Test::Gone" }, {}, nullptr);
+		resolve(&pre, "Test::Gone", "ZZ 99");
+		PluginHookReport::EndSession(&pre, &refusedFlag);
+		PluginHookReport::BeginSession(&normal, "PreDup", "PreDup.dll", false);
+		declare(&normal, "n", "Late", { "Test::Gone" }, {}, nullptr);
+		resolve(&normal, "Test::Gone", "ZZ 99");
+		PluginHookReport::EndSession(&normal, &refusedFlag);
+		Check(PluginHookReport::GetFeaturesOffCount("PreDup") == 1 && PluginHookReport::GetFeaturesOffCount("PreDup", true) == 1,
+			"feature: the count follows the preload flag");
 
 		// A reload that now resolves cleanly drops the old entry.
 		bool again = false;

@@ -9,11 +9,15 @@
 #include "memory_scanner/version_map.h"
 #include "plugins/plugin_hook_report.h"
 #include "plugins/plugin_interface.h"
+#include "plugins/reload_policy.h"
 
 #include <array>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <atomic>
+#include <string>
+#include <thread>
 
 // The real map, beside the fixture one version_map.cpp reads (its includes are already in).
 
@@ -664,6 +668,127 @@ int main()
 		Check(zero.find("Needs an update") == 0 && zero.find("names no game build") != std::string::npos && zero.find("It loads on CL-127004") != std::string::npos,
 			"admission: zero tail is refused on 128786");
 		Check(!refusal(127004, 72, 0, kM, true).empty() && !refusal(128786, 72, 0, kM, true).empty(), "admission: zero tail with MIGRATED is refused");
+	}
+
+	// The load and unload settings (v73): PluginInfo::mapFlags bits, the busy reason, the world flag.
+	{
+		using ReloadPolicy::Settings;
+		constexpr PluginReload A = PluginReload::ANYTIME, M = PluginReload::MENU, R = PluginReload::RESTART;
+		const std::string menu = ReloadPolicy::kMenuReason, restart = ReloadPolicy::kRestartReason;
+		const auto flags = [](PluginReload load, PluginReload unload) { return PluginLoadSetting(load) | PluginUnloadSetting(unload); };
+		const auto settings = [](PluginReload load, PluginReload unload) { Settings s; s.load = load; s.unload = unload; return s; };
+
+		// What a plugin fills in reads back, and the layout stayed put.
+		static_assert(offsetof(PluginInfo, mapFlags) == 44 && sizeof(PluginInfo) == 48, "no layout change");
+		static_assert(PluginLoadSetting(PluginReload::ANYTIME) == 0 && PluginUnloadSetting(PluginReload::ANYTIME) == 0, "ANYTIME is 0");
+		static_assert((PluginLoadSetting(PluginReload::RESTART) | PluginUnloadSetting(PluginReload::RESTART)) != PLUGIN_MAP_MIGRATED, "clear of the map flag");
+		for (const PluginReload load : { A, M, R })
+			for (const PluginReload unload : { A, M, R })
+			{
+				const Settings s = ReloadPolicy::Read(73, PLUGIN_MAP_MIGRATED | flags(load, unload));
+				Check(s.load == load && s.unload == unload, "settings: load and unload read back, beside PLUGIN_MAP_MIGRATED");
+			}
+
+		// An old plugin reads as ANYTIME for both: no bits, or no tail, or an older interface whatever mapFlags holds.
+		Check(ReloadPolicy::Read(73, 0).load == A && ReloadPolicy::Read(73, 0).unload == A, "settings: v73 with the field unset is ANYTIME");
+		Check(ReloadPolicy::Read(72, PLUGIN_MAP_MIGRATED).load == A && ReloadPolicy::Read(72, PLUGIN_MAP_MIGRATED).unload == A,
+			"settings: a v72 plugin with only the map flag is ANYTIME");
+		Check(ReloadPolicy::Read(72, flags(R, R)).load == A && ReloadPolicy::Read(70, 0xFFFFFFFFu).unload == A, "settings: before v73 the bits are not read");
+		PluginInfo unset = { "T", "1", "t", "t", 73, PLUGIN_TARGET_CLIENT };
+		Check(ReloadPolicy::Read(unset.interfaceVersion, unset.mapFlags).load == A, "settings: a six-member PluginInfo is ANYTIME");
+		Check(ReloadPolicy::Read(73, 3u << PLUGIN_RELOAD_LOAD_SHIFT).load == R, "settings: a value no setting uses reads as RESTART");
+
+		// ANYTIME is unchanged: allowed in every state.
+		for (const bool world : { false, true })
+		{
+			Check(ReloadPolicy::LoadRefusal(A, true, world).empty() && ReloadPolicy::LoadRefusal(A, false, world).empty(), "ANYTIME: load allowed");
+			Check(ReloadPolicy::UnloadRefusal(A, "", world).empty(), "ANYTIME: unload allowed");
+			Check(ReloadPolicy::ReloadRefusal(settings(A, A), "", true, world).empty() && ReloadPolicy::ReloadRefusal(settings(A, A), "", false, world).empty(),
+				"ANYTIME: reload and load allowed");
+		}
+
+		// MENU: refused in a world, with its reason; allowed at the menu.
+		Check(ReloadPolicy::LoadRefusal(M, false, true) == menu, "MENU: load refused in a world, with its reason");
+		Check(ReloadPolicy::LoadRefusal(M, false, false).empty() && ReloadPolicy::LoadRefusal(M, true, false).empty(), "MENU: load allowed at the menu");
+		Check(ReloadPolicy::UnloadRefusal(M, "", true) == menu, "MENU: unload refused in a world, with its reason");
+		Check(ReloadPolicy::UnloadRefusal(M, "", false).empty(), "MENU: unload allowed at the menu");
+		Check(ReloadPolicy::ReloadRefusal(settings(M, M), "", true, true) == menu && ReloadPolicy::ReloadRefusal(settings(M, M), "", false, true) == menu,
+			"MENU: reload and load refused in a world");
+		Check(ReloadPolicy::ReloadRefusal(settings(M, M), "", true, false).empty(), "MENU: reload allowed at the menu");
+
+		// RESTART: load only at startup; never unloaded at run time.
+		Check(ReloadPolicy::LoadRefusal(R, true, false).empty() && ReloadPolicy::LoadRefusal(R, true, true).empty(), "RESTART: load allowed at startup");
+		Check(ReloadPolicy::LoadRefusal(R, false, false) == restart && ReloadPolicy::LoadRefusal(R, false, true) == restart,
+			"RESTART: load refused at run time, in a world or not, with its reason");
+		for (const bool world : { false, true })
+		{
+			const std::string why = ReloadPolicy::UnloadRefusal(R, "", world);
+			Check(why.find("Unload not supported") == 0 && why.find("requires a game restart") != std::string::npos, "RESTART: unload refused, with its reason");
+			Check(!ReloadPolicy::ReloadRefusal(settings(R, R), "", true, world).empty(), "RESTART: reload refused");
+		}
+
+		// Each combination of the two settings: a reload needs both, checked in full before it starts.
+		for (const PluginReload load : { A, M, R })
+			for (const PluginReload unload : { A, M, R })
+				for (const bool world : { false, true })
+				{
+					const Settings s = settings(load, unload);
+					const bool unloadOk = ReloadPolicy::UnloadRefusal(unload, "", world).empty();
+					const bool loadOk   = ReloadPolicy::LoadRefusal(load, false, world).empty();
+					Check(ReloadPolicy::ReloadRefusal(s, "", true, world).empty() == (unloadOk && loadOk), "combination: a reload needs the unload and the load");
+					Check(ReloadPolicy::ReloadRefusal(s, "", false, world).empty() == loadOk, "combination: loading an unloaded plugin needs only the load");
+					Check(unloadOk == (unload == A || (unload == M && !world)), "combination: the unload setting decides UNLOAD");
+				}
+		Check(ReloadPolicy::ReloadRefusal(settings(R, A), "", true, false) == restart, "combination: unload ANYTIME with load RESTART still refuses the reload");
+
+		// The busy reason: set, refused with it, cleared, and independent per plugin.
+		const IPluginSelf a = {}, b = {};
+		Check(ReloadPolicy::BusyReason(&a).empty(), "busy: none to start with");
+		ReloadPolicy::SetBusyReason(&a, "GPU work in flight");
+		Check(ReloadPolicy::BusyReason(&a) == "GPU work in flight" && ReloadPolicy::BusyReason(&b).empty(), "busy: set for that plugin only");
+		Check(ReloadPolicy::UnloadRefusal(A, ReloadPolicy::BusyReason(&a), false) == "Unload blocked: GPU work in flight", "busy: unload refused with the reason");
+		Check(ReloadPolicy::ReloadRefusal(settings(A, A), ReloadPolicy::BusyReason(&a), true, false) == "Unload blocked: GPU work in flight", "busy: reload refused with the reason");
+		Check(ReloadPolicy::ReloadRefusal(settings(A, A), ReloadPolicy::BusyReason(&a), false, false).empty(), "busy: loading an unloaded plugin is not blocked by it");
+		Check(ReloadPolicy::UnloadRefusal(M, ReloadPolicy::BusyReason(&a), true) == menu, "busy: a MENU refusal is said first");
+		ReloadPolicy::SetBusyReason(&a, nullptr);
+		Check(ReloadPolicy::BusyReason(&a).empty() && ReloadPolicy::UnloadRefusal(A, ReloadPolicy::BusyReason(&a), false).empty(), "busy: cleared by null");
+		ReloadPolicy::SetBusyReason(&a, "x");
+		ReloadPolicy::SetBusyReason(&a, "");
+		Check(ReloadPolicy::BusyReason(&a).empty(), "busy: cleared by an empty string");
+		ReloadPolicy::SetBusyReason(&a, "line\none\ttab");
+		Check(ReloadPolicy::BusyReason(&a) == "line one tab", "busy: control characters become spaces");
+		ReloadPolicy::SetBusyReason(&a, std::string(200, 'x').c_str());
+		Check(ReloadPolicy::BusyReason(&a).size() == ReloadPolicy::kBusyReasonMax, "busy: cut at the limit");
+		ReloadPolicy::SetBusyReason(&a, nullptr);
+		ReloadPolicy::SetBusyReason(nullptr, "ignored");
+
+		// Any thread may set it while another reads.
+		{
+			std::atomic<bool> stop{ false };
+			std::thread setter([&] { for (int i = 0; i < 20000; ++i) ReloadPolicy::SetBusyReason(&b, i % 2 ? "busy" : nullptr); stop = true; });
+			bool sane = true;
+			while (!stop) { const std::string r = ReloadPolicy::BusyReason(&b); sane = sane && (r.empty() || r == "busy"); }
+			setter.join();
+			Check(sane, "busy: set from another thread while it is read");
+			ReloadPolicy::SetBusyReason(&b, nullptr);
+		}
+
+		// The world flag follows the begin and end events.
+		Check(!ReloadPolicy::GameplayWorldRunning(), "world: none before any world began");
+		ReloadPolicy::NoteWorldBegan("Map_MainMenu");
+		Check(!ReloadPolicy::GameplayWorldRunning(), "world: the main menu is not a gameplay world");
+		ReloadPolicy::NoteWorldBegan("ChimeraMain");
+		Check(ReloadPolicy::GameplayWorldRunning(), "world: ChimeraMain began");
+		ReloadPolicy::NoteWorldEnded("SomeOtherWorld");
+		Check(ReloadPolicy::GameplayWorldRunning(), "world: another world ending does not end it");
+		ReloadPolicy::NoteWorldEnded("ChimeraMain");
+		Check(!ReloadPolicy::GameplayWorldRunning(), "world: ChimeraMain ended");
+		ReloadPolicy::NoteWorldBegan("ChimeraMain");
+		ReloadPolicy::NoteWorldBegan("Map_MainMenu");
+		Check(!ReloadPolicy::GameplayWorldRunning(), "world: the menu world beginning means no session, even if the end was missed");
+		ReloadPolicy::NoteWorldBegan(nullptr);
+		ReloadPolicy::NoteWorldEnded(nullptr);
+		Check(!ReloadPolicy::GameplayWorldRunning(), "world: a null name changes nothing");
 	}
 
 	// The feed reader and the active map.

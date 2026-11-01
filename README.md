@@ -124,11 +124,41 @@ is available.
 - **WHY?** on a Hooks Failed row reopens the [report](#pop-up-windows).
 - **Loaded (2 off)** is a plugin that runs with two of its features turned off because a game
   update moved something they need. Hover the name or the count to see which. <sup>[✦](#msantoro12)</sup>
+- **Return to the main menu to reload this plugin**, **This plugin requires a game restart**, **Unload
+  not supported** and **Unload blocked: ...** take the place of the buttons the loader would refuse.
+  They come from the plugin's own [load and unload settings](#load-and-unload-settings).
+  <sup>[✦](#msantoro12)</sup>
 - Unload removes the panels, widgets and callbacks the plugin registered, even ones it left
   behind.
 - If the overlay is still drawing its panel after about a second, the unload is skipped and the log
   says so. The plugin is shut down and shows **Unloaded**, but its DLL stays mapped. **LOAD** or
   **RELOAD** retries.
+
+### Load and unload settings
+
+A plugin can say when it may be loaded and unloaded while the game runs. It declares one setting for
+loading and one for unloading, each **ANYTIME**, **MENU** or **RESTART**; a reload is an unload and a
+load, so it needs both. <sup>[✦](#msantoro12)</sup>
+
+| Setting | Load | Unload (and reload) |
+|---|---|---|
+| ANYTIME | Any time. The default, and what every plugin built before this reads as | Any time |
+| MENU | Only while no game world is running (the splash or the main menu) | Only while no game world is running |
+| RESTART | Only when the loader loads plugins at startup | Never at run time: **Unload not supported** |
+
+The loader refuses before it touches the plugin, from every path: the buttons, **LOAD NEW**, the
+`reload`, `unload`, `load` and `rescan` commands (including `all`) and a command run through RCON or
+Server Utility. The reason is on the plugin's row and in the command's output:
+
+- MENU in a world: "Return to the main menu to reload this plugin".
+- RESTART: "This plugin requires a game restart".
+
+A plugin can also mark itself busy for a while, such as MiniMap with GPU work in flight. The loader
+then refuses an unload or a reload with **Unload blocked: &lt;reason&gt;**, and the plugin keeps running.
+It never calls the plugin to ask. Game shutdown ignores all of it.
+
+A world is running from the moment ChimeraMain begins play until it ends; the main menu and the
+splash have none. How a plugin declares these is in the SDK's `PluginDevelopment.md`.
 
 ### Config tab
 
@@ -238,6 +268,9 @@ in `help` ([Console.md](Console.md)).
 | `clients [n]` | `who` | List connected clients and the plugins they reported |
 | `nettest [bytes]` | | Round-trip a payload through the server to test fragmentation |
 | `stop [force]` | `shutdown` | Shut the server down cleanly, or at once with `force`. Server builds only |
+
+`reload`, `unload` and `load` print why when the plugin's [load and unload settings](#load-and-unload-settings)
+or busy reason refuse it, and `plugins` lists the reason under that plugin.
 
 ---
 

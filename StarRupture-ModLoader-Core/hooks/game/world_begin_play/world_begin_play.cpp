@@ -9,6 +9,7 @@
 #include "Engine_classes.hpp"
 #include "CoreUObject_classes.hpp"
 #include "plugins/plugin_manager.h"
+#include "plugins/reload_policy.h"
 #include "hooks/game/engine_init/engine_init.h"
 #include <vector>
 #include <algorithm>
@@ -75,6 +76,9 @@ namespace Hooks::WorldBeginPlay
 		{
 			ModLoaderLogger::LogWarn(L"[WorldBeginPlay]   GetWorld() returned null after original ran");
 		}
+
+		// Whether a gameplay world is running, for the plugins' load and unload settings.
+		ReloadPolicy::NoteWorldBegan(worldName.c_str());
 
 		// Record any-world fired state for late-registration replay.
 		g_anyWorldHasFired = true;

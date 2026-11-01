@@ -36,6 +36,15 @@ namespace PluginManager
         // see auto_update/auto_updater.h. Checked on disk at snapshot time, not
         // cached, so dropping a sidecar in shows up without a restart.
         bool hasUpdateManifest;
+
+        // Why UNLOAD, or RELOAD/LOAD, would be refused right now, or empty when
+        // it would go ahead: the plugin's own load and unload settings, whether a
+        // game world is running, and any busy reason it set (plugins/reload_policy.h).
+        // Worked out when the snapshot is taken, so it follows the world.
+        // unloadBlock covers a loaded plugin's UNLOAD (and with it RELOAD);
+        // reloadBlock covers RELOAD of a loaded plugin and LOAD of an unloaded one.
+        char unloadBlock[112];
+        char reloadBlock[112];
     };
 
     // Initialize the plugin manager
@@ -77,12 +86,21 @@ namespace PluginManager
     // Unload the plugin at index: calls PluginShutdown + FreeLibrary.
     // The record is kept so it can be reloaded later.
     // Returns false if index is out of range or the plugin is already unloaded.
-    bool UnloadPlugin(int index);
+    //
+    // Also returns false, before anything is shut down, when the plugin's
+    // settings or busy reason refuse it right now; *refusal (if given) then holds
+    // the reason, and it is empty for every other failure.
+    bool UnloadPlugin(int index, std::string* refusal = nullptr);
 
     // Reload the plugin at index: unloads it (if currently loaded) then
     // loads it again from the same file path.
     // Returns false if index is out of range or the DLL fails to load/init.
-    bool ReloadPlugin(int index);
+    //
+    // A reload of a loaded plugin needs both its unload and its load setting to
+    // allow it, and is refused before anything is shut down if either does not;
+    // loading an unloaded one needs its load setting. *refusal is filled as for
+    // UnloadPlugin.
+    bool ReloadPlugin(int index, std::string* refusal = nullptr);
 
     // Index of the plugin record matching nameOrFile, or -1 if there is none.
     // Matches (case-insensitively) the PluginInfo name first, then the DLL file
@@ -106,6 +124,7 @@ namespace PluginManager
         NotAPlugin,    // loads, but has no plugin exports
         Failed,        // crashed or returned an error while loading or in PluginInit
         Duplicate,     // a plugin with that name is already in the plugin list
+        Refused,       // its load setting does not allow loading it now (MENU in a world, RESTART)
     };
 
     // One-time events that are replayed to a plugin registering late only while
@@ -143,7 +162,10 @@ namespace PluginManager
     // A DLL whose plugin name is already in use by another plugin is refused.
     // A DLL that cannot be loaded right now (locked, still being copied) leaves
     // no record, so the next scan tries it again. New DLLs in ModLoader\Preload
-    // are not loaded, only reported: they run at game start.
+    // are not loaded, only reported: they run at game start. A DLL whose load
+    // setting does not allow it now (MENU while a game world runs, RESTART) is
+    // loaded just far enough to read it, then freed with no record, and reported
+    // as Refused; the next scan tries it again.
     //
     // If outResults is given it receives one entry per DLL the scan found: what
     // became of it and what to do next.

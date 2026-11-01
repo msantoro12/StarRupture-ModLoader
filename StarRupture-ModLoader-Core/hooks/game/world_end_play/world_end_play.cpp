@@ -3,6 +3,7 @@
 #include "logging/logger.h"
 #include "memory_scanner/scanner.h"
 #include "../scan_patterns.h"
+#include "plugins/reload_policy.h"
 #include "../SDK.hpp"
 #include "Engine_classes.hpp"
 #include <vector>
@@ -65,6 +66,10 @@ namespace Hooks::WorldEndPlay
 		{
 			ModLoaderLogger::LogWarn(L"[WorldEndPlay]   worldThis is null");
 		}
+
+		// The gameplay world is ending: plugins whose settings say "main menu only"
+		// may be loaded and unloaded again (plugins/reload_policy.h).
+		ReloadPolicy::NoteWorldEnded(worldName.c_str());
 
 		// --- Before callbacks ---
 		if (!g_beforeCallbacks.empty())

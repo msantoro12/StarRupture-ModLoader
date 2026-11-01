@@ -361,7 +361,7 @@ against, and shows **Incompatible** on the others.
 On a client build with `[AutoUpdate] Enabled` on, the loader can also fetch a newer map as a signed
 file (`version-map-feed.txt`, attached to the loader's Latest release). It checks the Ed25519
 signature before it reads anything else in the file, rejects a file over 1 MiB, and keeps the last
-good copy in `ModLoaderersion-map-client.v1.cache`. A fetched map never changes where the loader
+good copy in `ModLoaderversion-map-client.v1.cache`. A fetched map never changes where the loader
 looks for something it already shipped with for your game build; it adds builds and keys. The
 request is made when the running game is in neither the built-in map nor the cache, after a refusal
 for the next launch, and at most once a day otherwise. The map is read once at startup and does

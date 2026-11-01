@@ -205,13 +205,49 @@ inline constexpr std::array<FunctionRow, 122> kFunctionRows = {{
 	{ 128786, 0xCF8579A6, 0x0F47D000, 1, 0x00000000, false, "40 55 41 56 48 81 EC ?? ?? ?? ?? 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 84 24 ?? ?? ?? ?? F6 81", 0, -1, -1, 0x05385D40, nullptr },
 }};
 
-inline constexpr std::array<FieldRow, 10> kFieldRows = {{
+inline constexpr std::array<FieldRow, 28> kFieldRows = {{
+	// AAuPlayerCameraManager::AdditionalFOVOffset
+	{ 127004, 0x299C, 0x4, 0x00, nullptr },
+	// AAuPlayerCameraManager::FOV
+	{ 127004, 0x2998, 0x4, 0x00, nullptr },
 	// ACrCrafter::CraftComponent
 	{ 127004, 0x6D8, 0x8, 0x00, nullptr },
 	{ 128786, 0x6E0, 0x8, 0x00, nullptr },
 	// ACrPackageTransportReplicator::SendingTime
 	{ 127004, 0x2C0, 0x4, 0x00, nullptr },
 	{ 128786, 0x2C0, 0x4, 0x00, nullptr },
+	// ACrPlayerControllerBase::PlayerControlState
+	{ 127004, 0xE88, 0x1, 0x00, nullptr },
+	// ACrPlayerControllerBase::bMapMenuOpen
+	{ 127004, 0xF68, 0x1, 0xFF, nullptr },
+	// ACrTechnologyKeeper::bUnlockAllBuildings
+	{ 127004, 0x3A8, 0x1, 0xFF, nullptr },
+	// APlayerController::bPlayerIsWaiting
+	{ 127004, 0x4D0, 0x1, 0x10, nullptr },
+	// UCrEnviroWaveTimerSubsystem::NextWaveTimer
+	{ 127004, 0x7C, 0x4, 0x00, nullptr },
+	// UCrEnviroWaveTimerSubsystem::TimerActor
+	{ 127004, 0x90, 0x8, 0x00, nullptr },
+	// UCrEnviroWaveTimerSubsystem::WaitingDuration
+	{ 127004, 0x78, 0x4, 0x00, nullptr },
+	// UCrEnviroWaveTimerSubsystem::bPause
+	{ 127004, 0x81, 0x1, 0xFF, nullptr },
+	// UCrEnviroWaveTimerSubsystem::bStopWaves
+	{ 127004, 0x83, 0x1, 0xFF, nullptr },
+	// UCrEnviroWaveTimerSubsystem::bWaitingForNextWave
+	{ 127004, 0x80, 0x1, 0xFF, nullptr },
+	// UCrGameInstance::ServerSessionName
+	{ 127004, 0x290, 0x10, 0x00, nullptr },
+	// UCrUW_InventoryContainer::InventoryComponent
+	{ 127004, 0x468, 0x8, 0x00, nullptr },
+	// ULocalPlayer::Origin
+	{ 127004, 0x80, 0x10, 0x00, nullptr },
+	// ULocalPlayer::Size
+	{ 127004, 0x90, 0x10, 0x00, nullptr },
+	// UMassActorSubsystem::ActorManager
+	{ 127004, 0x38, 0x10, 0x00, nullptr },
+	// UMassEntitySubsystem::EntityManager
+	{ 127004, 0x38, 0x10, 0x00, nullptr },
 	// UWorld::GameState
 	{ 127004, 0x1B0, 0x8, 0x00, nullptr },
 	{ 128786, 0x1B0, 0x8, 0x00, nullptr },
@@ -287,11 +323,29 @@ inline constexpr std::array<Index, 61> kFunctions = {{
 	{ "UWorld::EndPlay", 120, 2 },
 }};
 
-inline constexpr std::array<Index, 5> kFields = {{
-	{ "ACrCrafter::CraftComponent", 0, 2 },
-	{ "ACrPackageTransportReplicator::SendingTime", 2, 2 },
-	{ "UWorld::GameState", 4, 2 },
-	{ "UWorld::LineBatchers", 6, 2 },
-	{ "UWorld::NetDriver", 8, 2 },
+inline constexpr std::array<Index, 23> kFields = {{
+	{ "AAuPlayerCameraManager::AdditionalFOVOffset", 0, 1 },
+	{ "AAuPlayerCameraManager::FOV", 1, 1 },
+	{ "ACrCrafter::CraftComponent", 2, 2 },
+	{ "ACrPackageTransportReplicator::SendingTime", 4, 2 },
+	{ "ACrPlayerControllerBase::PlayerControlState", 6, 1 },
+	{ "ACrPlayerControllerBase::bMapMenuOpen", 7, 1 },
+	{ "ACrTechnologyKeeper::bUnlockAllBuildings", 8, 1 },
+	{ "APlayerController::bPlayerIsWaiting", 9, 1 },
+	{ "UCrEnviroWaveTimerSubsystem::NextWaveTimer", 10, 1 },
+	{ "UCrEnviroWaveTimerSubsystem::TimerActor", 11, 1 },
+	{ "UCrEnviroWaveTimerSubsystem::WaitingDuration", 12, 1 },
+	{ "UCrEnviroWaveTimerSubsystem::bPause", 13, 1 },
+	{ "UCrEnviroWaveTimerSubsystem::bStopWaves", 14, 1 },
+	{ "UCrEnviroWaveTimerSubsystem::bWaitingForNextWave", 15, 1 },
+	{ "UCrGameInstance::ServerSessionName", 16, 1 },
+	{ "UCrUW_InventoryContainer::InventoryComponent", 17, 1 },
+	{ "ULocalPlayer::Origin", 18, 1 },
+	{ "ULocalPlayer::Size", 19, 1 },
+	{ "UMassActorSubsystem::ActorManager", 20, 1 },
+	{ "UMassEntitySubsystem::EntityManager", 21, 1 },
+	{ "UWorld::GameState", 22, 2 },
+	{ "UWorld::LineBatchers", 24, 2 },
+	{ "UWorld::NetDriver", 26, 2 },
 }};
 }

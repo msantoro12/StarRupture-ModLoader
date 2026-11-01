@@ -338,7 +338,7 @@ the whole API and you can hot-reload it while the game runs.
 | Game will not start after adding a preload plugin | Launch with `-NoPreload`, or set `Enabled=0` under `[Preload]` in `modloader.ini`. The loader also skips any preload plugin that did not finish loading last launch, and says which it was. Delete `Preload\.state` to let it try again. |
 | A dialog offers "Start Game Without ModLoader" | The game build changed or a scan pattern no longer matches. The mod loader stays off until it is updated. **Copy Details** has the report. `-SkipPatternValidation` overrides an ambiguous or wrong-kind pattern, not a missing one. |
 | A dialog says the game has changed in a way that would break your plugins | At startup the mod loader checks that the game classes it and its plugins read are still laid out the way it was built for. A game update moved some of them, so no plugins load this session: start the game without them, or quit until an update is out. The loader writes `ModLoader\compat-report-<CL>.json` (the game build, the executable's SHA-256 and what moved). It is what a loader update is made from, so attach it to your report. |
-| A plugin says "Needs an update to run on CL-..." | The plugin was built for another game build and does not declare that it takes its game data from the version map, so it would read this game's data where its own build had it. It loads on the build it names. Ask its author for an update. See [Game updates](#game-updates). |
+| A plugin says "Needs an update to run on CL-..." | The plugin was built for another game build and does not declare that it takes its game data from the version map, so it would read this game's data where its own build had it. It loads on the build it names. Ask its author for an update. See [Game updates](#game-updates) and [VersionMap.md](VersionMap.md). |
 | Logs / diagnostics | Check `ModLoader\Logs\ModLoader.log`. Raise the detail in the **Logging** tab, or set `Level=DEBUG` under `[Logging]` in `ModLoader\modloader.ini`. |
 | One plugin is flooding the log | See [Log Levels](#log-levels) — turn that plugin down on its own, or use `-PluginLogLevel=` if it happens during startup. |
 | The *game's* log is flooding on a dedicated server | Hundreds of `LogTemp` / `LogSkinnedMeshComp` warnings a second come from the game itself, not the mod loader. Server builds turn those two categories down to errors automatically; edit `GameLogCategories` under `[Logging]` in `ModLoader\modloader.ini` to change the list, or blank it to leave the game log alone. `-LogCmds=` has no effect on this build. |
@@ -359,14 +359,9 @@ run on any listed build. A plugin that does not declare it loads only on the bui
 against, and shows **Incompatible** on the others.
 
 On a client build with `[AutoUpdate] Enabled` on, the loader can also fetch a newer map as a signed
-file (`version-map-client.v1.txt`, attached to the loader's Latest release). It checks the Ed25519
-signature before it reads anything else in the file, rejects a file over 1 MiB, and keeps the last
-good copy in `ModLoader\version-map-client.v1.cache`. A fetched map never changes where the loader
-looks for something it already shipped with for your game build; it adds builds and keys. The
-request is made when the running game is in neither the built-in map nor the cache, after a refusal
-for the next launch, and at most once a day otherwise. The map is read once at startup and does
-not change during a session. Until the project's own signing key is compiled in, a release build
-trusts no key and reads no feed. A server build never makes the request.
+file, so a new game build can be supported without a loader update. A server build never does.
+How the map is chosen, how the feed is fetched, signed and cached, how CI publishes it and what
+each failure looks like is in [VersionMap.md](VersionMap.md).
 
 ## Net timeouts
 

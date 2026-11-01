@@ -427,6 +427,13 @@ namespace VersionFeed
 		}
 	}
 
+	bool ReadCache(const std::wstring& path, const std::vector<PublicKey>& keys, SignedFeed& out)
+	{
+		std::string file, error;
+		bool missing = false;
+		return !keys.empty() && ReadFileCapped(path, file, missing) && ReadSigned(file, keys, out, error);
+	}
+
 	std::shared_ptr<const MapData> BuildFromCache(const std::wstring& path, const std::vector<PublicKey>& keys,
 		const Exe& running, const Coverage& cov, uint64_t* seqOut)
 	{

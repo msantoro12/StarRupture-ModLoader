@@ -412,6 +412,8 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClInclude Include="auto_update\auto_updater.h" />
+    <ClInclude Include="auto_update\feed_fetch.h" />
+    <ClInclude Include="auto_update\http_get.h" />
     <ClInclude Include="config\config_manager.h" />
     <ClInclude Include="config\config_edit.h" />
     <ClInclude Include="hooks\game\actor_begin_play\actor_begin_play.h" />
@@ -553,6 +555,8 @@
       <ExcludedFromBuild Condition="'$(Configuration)' != 'Client Debug' And '$(Configuration)' != 'Client Release' And '$(Configuration)' != 'Local SDK Client Debug' And '$(Configuration)' != 'Local SDK Client Release'">true</ExcludedFromBuild>
     </ClCompile>
     <ClCompile Include="auto_update\auto_updater.cpp" />
+    <ClCompile Include="auto_update\feed_fetch.cpp" />
+    <ClCompile Include="auto_update\http_get.cpp" />
     <ClCompile Include="config\config_manager.cpp" />
     <ClCompile Include="config\config_edit.cpp" />
     <ClCompile Include="core\globals.cpp" />

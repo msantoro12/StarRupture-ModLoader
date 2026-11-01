@@ -105,7 +105,7 @@ namespace VersionMap
 	// The feed format this loader reads (the `format` line of a feed).
 	constexpr int kFeedFormat = 1;
 
-	// Reads the text of a feed (version-map-client.v1.txt without its `sig`
+	// Reads the text of a feed (version-map-feed.txt without its `sig`
 	// line) into `out`: tab-separated lines, LF, a final LF, in the order
 	// `format`, `build`, `function`/`absent`, `field`, as ci/VERSION-MAP.md
 	// lists. Strict: a line off the format, a number out of range, a row whose

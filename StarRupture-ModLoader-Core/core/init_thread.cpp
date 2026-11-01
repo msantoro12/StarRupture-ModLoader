@@ -24,6 +24,7 @@
 #include "layout_check.h"
 #include "../memory_scanner/version_map.h"
 #include "../memory_scanner/version_feed.h"
+#include "../auto_update/feed_fetch.h"
 #include "../hooks/game/version_map.generated.h"
 #include "compat_report.h"
 #include "../plugins/plugin_manager.h"
@@ -169,7 +170,12 @@ DWORD WINAPI MainInitThreadProc(LPVOID)
     // The map every lookup reads is fixed here, once, before anything reads
     // it: the one compiled into the loader, plus the signed feed cached by an
     // earlier launch if it verifies. The server stays on its exact build.
-    VersionFeed::ActivateCached(GetModLoaderDirPath(L"version-map-client.v1.cache"));
+    // A new exe the map has never seen is fetched for first, here, with the
+    // main thread parked.
+    const FeedFetch::Config feedConfig = FeedFetch::LoaderConfig();
+    const bool feedAsked = FeedFetch::Stage1(feedConfig, g_mainThreadParked, [](uint32_t cl)
+        { Splash::SetStatus((L"Downloading game data for CL-" + std::to_wstring(cl)).c_str()); });
+    VersionFeed::ActivateCached(feedConfig.cachePath);
 #endif
 
     // Version check before hook installation -- if the game build is wrong
@@ -189,6 +195,9 @@ DWORD WINAPI MainInitThreadProc(LPVOID)
             Hooks::CrashDialog::Mode::VersionMismatch, versionDetails);
 
         ReleaseMainThread(suspendedMainThread);
+        // The game is booting now, so WinHTTP is safe. Ask for a feed for the
+        // next launch before Quit's exit; Stage 3 never runs after a refusal.
+        FeedFetch::AfterRefusal(feedConfig, feedAsked);
         if (choice == Hooks::CrashDialog::Result::QuitGame)
         {
             ModLoaderLogger::LogInfo(L"[init] User chose to quit the game after version mismatch");
@@ -231,6 +240,7 @@ DWORD WINAPI MainInitThreadProc(LPVOID)
             Hooks::CrashDialog::Mode::PatternFailure, preflightDetails);
 
         ReleaseMainThread(suspendedMainThread);
+        FeedFetch::AfterRefusal(feedConfig, feedAsked);
         if (choice == Hooks::CrashDialog::Result::QuitGame)
         {
             ModLoaderLogger::LogInfo(L"[init] User chose to quit the game after preflight failure");

@@ -12,7 +12,7 @@
 // ---------------------------------------------------------------------------
 // VersionFeed -- the signed map data a loader reads between releases.
 //
-// The feed is version-map-client.v1.txt (see VersionMap::ParseFeed for the
+// The feed is version-map-feed.txt (see VersionMap::ParseFeed for the
 // lines) plus two lines of its own:
 //
 //   format<TAB>1
@@ -105,6 +105,10 @@ namespace VersionFeed
 	// the number of keys it lacked.
 	std::vector<std::pair<uint32_t, size_t>> DropUncovered(VersionMap::MapData& merged,
 		const VersionMap::MapData& baseline, const Coverage& cov);
+
+	// The verified feed in the cache file at `path`; false, quietly, when
+	// there is none or it does not verify.
+	bool ReadCache(const std::wstring& path, const std::vector<PublicKey>& keys, SignedFeed& out);
 
 	// Reads the cache file at `path` and builds the map to run on: the
 	// baseline merged with the verified feed. Returns null, and leaves the

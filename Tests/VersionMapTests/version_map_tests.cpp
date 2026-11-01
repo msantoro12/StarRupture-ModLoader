@@ -295,6 +295,51 @@ int main()
 			"field: no reflection reader, no native member");
 	}
 
+	// Admission by the plugin's built CL (R3). A PluginInfo as a plugin fills it.
+	{
+		const auto info = [](int version, uint32_t builtCL, uint32_t flags)
+		{
+			PluginInfo i = { "T", "1", "t", "t", version, PLUGIN_TARGET_CLIENT };
+			i.gameBuiltCL = builtCL;
+			i.mapFlags    = flags;
+			return i;
+		};
+		const auto refusal = [&](uint32_t runningCL, int version, uint32_t builtCL, uint32_t flags, bool globals)
+		{
+			const PluginInfo i = info(version, builtCL, flags);
+			return VersionMap::OffBuildRefusal(VersionMap::Exe{ runningCL, 0, 0 }, version, VersionMap::ReadPluginGameBuild(i), globals);
+		};
+		constexpr uint32_t kM = PLUGIN_MAP_MIGRATED;
+
+		// v70 and v71 have no tail (a garbled one must not be read) and are judged as built on kLegacyPluginCL.
+		const VersionMap::PluginGameBuild legacy = VersionMap::ReadPluginGameBuild(info(71, 128786, kM));
+		Check(legacy.gameCL == VersionMap::kLegacyPluginCL && !legacy.declared && legacy.mapFlags == 0, "tail: v71 gets kLegacyPluginCL and no flags");
+		Check(refusal(127004, 70, 0, 0, false).empty() && refusal(127004, 71, 0, 0, false).empty(), "admission: v70 and v71 load on 127004");
+		Check(refusal(128786, 70, 0, 0, true).find("before the version map") != std::string::npos
+			&& refusal(128786, 71, 0, 0, true).find("It loads on CL-127004") != std::string::npos, "admission: v70 and v71 need an update on 128786");
+
+		// v72 built on 127004: loads there; off it, only when migrated and it took the globals.
+		Check(refusal(127004, 72, 127004, 0, false).empty(), "admission: v72 on its built CL, no flag");
+		Check(refusal(128786, 72, 127004, kM, true).empty(), "admission: v72 MIGRATED admitted off its build");
+		Check(refusal(128786, 72, 127004, kM, false).find("GetSdkGlobals") != std::string::npos, "admission: MIGRATED without the globals is refused");
+		const std::string noFlag = refusal(128786, 72, 127004, 0, true);
+		Check(noFlag.find("Needs an update") == 0 && noFlag.find("PLUGIN_MAP_MIGRATED") != std::string::npos, "admission: v72 without the flag names the flag");
+
+		// Judged by its own CL, not the loader's: built on 128786 without the flag it is refused on 127004.
+		const std::string future = refusal(127004, 72, 128786, 0, true);
+		Check(future.find("PLUGIN_MAP_MIGRATED") != std::string::npos && future.find("It loads on CL-128786") != std::string::npos,
+			"admission: built CL 128786 without the flag is refused on 127004");
+		Check(refusal(128786, 72, 128786, 0, false).empty(), "admission: built CL 128786 loads on 128786");
+		Check(refusal(127004, 72, 128786, kM, true).empty(), "admission: built CL 128786 MIGRATED loads on 127004");
+
+		// A zero tail: judged as built on 127004, so refused on 128786; with the flag, refused everywhere.
+		Check(refusal(127004, 72, 0, 0, false).empty(), "admission: zero tail loads on 127004");
+		const std::string zero = refusal(128786, 72, 0, 0, true);
+		Check(zero.find("Needs an update") == 0 && zero.find("names no game build") != std::string::npos && zero.find("It loads on CL-127004") != std::string::npos,
+			"admission: zero tail is refused on 128786");
+		Check(!refusal(127004, 72, 0, kM, true).empty() && !refusal(128786, 72, 0, kM, true).empty(), "admission: zero tail with MIGRATED is refused");
+	}
+
 	Check(Real::VersionMap::kFormatVersion == 2, "the real map is format 2");
 	Check(unmatched == 0, "every real map key is a registry row's");
 	Check(wrong == 0, "every real map row has its registry row's kind and fp");

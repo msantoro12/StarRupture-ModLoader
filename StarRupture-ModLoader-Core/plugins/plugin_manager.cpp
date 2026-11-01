@@ -244,6 +244,7 @@ namespace PluginManager
 	{
 		HMODULE hModule;
 		PluginInfo* info;
+		VersionMap::PluginGameBuild gameBuild;   // the PluginInfo tail, copied at load: info dies with the DLL
 		GetPluginInfoFunc getInfo;
 		PluginInitFunc init;
 		PluginShutdownFunc shutdown;
@@ -425,10 +426,15 @@ namespace PluginManager
 			return false;
 		}
 
-		// Off the SDK's own build, a plugin from before the version map reads
-		// the game where that build had things. It loads on that build only.
+		// A plugin is judged against the build its own SDK came from. Off that
+		// build it reads the game where its build had things, unless it takes
+		// everything from the map. The globals are asked for after PluginInit.
+		rec.gameBuild = VersionMap::ReadPluginGameBuild(*info);
+		if (info->interfaceVersion >= 72 && !rec.gameBuild.declared)
+			ModLoaderLogger::LogWarn(L"Plugin '%S' declares no game build; judging it as built on CL-%u.",
+				info->name ? info->name : "(unknown)", rec.gameBuild.gameCL);
 		if (const std::string refusal = VersionMap::OffBuildRefusal(VersionMap::RunningExe(),
-				info->interfaceVersion, true, true); !refusal.empty())
+				info->interfaceVersion, rec.gameBuild, true); !refusal.empty())
 		{
 			ModLoaderLogger::LogWarn(L"Plugin '%S' is not loaded: %S", info->name ? info->name : "(unknown)", refusal.c_str());
 			rec.cachedName           = info->name    ? info->name    : "";
@@ -444,7 +450,7 @@ namespace PluginManager
 		ModLoaderLogger::LogMessage(L"Plugin info - Name: %S, Version: %S, Author: %S, Interface: %d (modloader expects [%d, %d]), game build %S",
 			info->name, info->version, info->author,
 			info->interfaceVersion, PLUGIN_INTERFACE_VERSION_MIN, PLUGIN_INTERFACE_VERSION_MAX,
-			VersionMap::DescribePluginGameBuild(VersionMap::ReadPluginGameBuild(*info)).c_str());
+			VersionMap::DescribePluginGameBuild(rec.gameBuild).c_str());
 
 		rec.hModule        = hModule;
 		rec.info           = info;
@@ -668,9 +674,8 @@ namespace PluginManager
 	// pointer into a freed module the moment a later pattern missed.
 	//
 	// Caller must hold g_pluginLock.
-	static bool RunLoadHooksPhase(LoadedPlugin& plugin, bool& usedMap)
+	static bool RunLoadHooksPhase(LoadedPlugin& plugin)
 	{
-		usedMap = false;
 		if (!plugin.loadHooks)
 			return true;
 
@@ -709,7 +714,6 @@ namespace PluginManager
 				"crashed while resolving its patterns -- see modloader.log for the fault address and stack");
 		}
 
-		usedMap = PluginHookReport::SessionUsedMap(&plugin.self);
 		bool refused = false;
 		PluginHookReport::EndSession(&plugin.self, &refused);
 		return !refused;
@@ -740,27 +744,20 @@ namespace PluginManager
 		plugin.self.config  = ModLoaderLogger::GetPluginConfig();
 		plugin.self.hooks   = nullptr;   // populated below, after the scan phase
 
-		bool usedMap = false;
-		const bool resolved = RunLoadHooksPhase(plugin, usedMap);
+		const bool resolved = RunLoadHooksPhase(plugin);
 		const int interfaceVersion = plugin.info ? plugin.info->interfaceVersion : 0;
-		const std::string refusal = resolved
-			? VersionMap::OffBuildRefusal(VersionMap::RunningExe(), interfaceVersion, usedMap, true) : std::string();
-		if (!resolved || !refusal.empty())
+		if (!resolved)
 		{
 			// Refused. Free the DLL so nothing of it is left mapped -- it never
 			// got as far as registering anything, and leaving a half-committed
 			// plugin resident is how a stale detour outlives its module.
-			plugin.hookScanFailed = !resolved;
-			plugin.isOutOfDate    = !refusal.empty();
+			plugin.hookScanFailed = true;
 			if (plugin.hModule)
 				FreeLibrary(plugin.hModule);
 			ForgetEntryPoints(plugin);
-			if (resolved)
-				ModLoaderLogger::LogWarn(L"Plugin '%S' was NOT loaded: %S", plugin.cachedName.c_str(), refusal.c_str());
-			else
-				ModLoaderLogger::LogError(
-					L"Plugin '%S' was NOT loaded: one or more of its hooks could not be resolved.",
-					plugin.cachedName.c_str());
+			ModLoaderLogger::LogError(
+				L"Plugin '%S' was NOT loaded: one or more of its hooks could not be resolved.",
+				plugin.cachedName.c_str());
 			return false;
 		}
 
@@ -777,7 +774,7 @@ namespace PluginManager
 		InitSEHResult initResult = CallInitSEH(plugin.init, &plugin.self);
 		const bool askedSdkGlobals = ModLoaderLogger::SdkGlobalsCallsOnThisThread() != globalsCallsBefore;
 		const std::string lateRefusal = VersionMap::OffBuildRefusal(VersionMap::RunningExe(), interfaceVersion,
-			usedMap, askedSdkGlobals);
+			plugin.gameBuild, askedSdkGlobals);
 		bool success = false;
 
 		if (initResult.crashed)

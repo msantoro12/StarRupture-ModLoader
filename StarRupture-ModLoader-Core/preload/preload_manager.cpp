@@ -602,15 +602,15 @@ namespace PreloadManager
 			return;
 		}
 
-		// A preload plugin's layouts are compiled for the game build the loader
-		// was built against, and the preload interface has no way to take this
-		// build's from the version map (VersionMap::OffBuildRefusal), so on any
-		// other build none runs.
+		// A preload plugin has no PluginInfo tail and no way to take this build's
+		// layouts from the version map, so it is judged as built on
+		// VersionMap::kLegacyPluginCL (VersionMap::OffBuildRefusal) and runs
+		// only there.
 		const uint32_t runningCL = VersionMap::RunningExe().cl;
-		if (runningCL != VersionMap::kBuiltCL)
+		if (runningCL != VersionMap::kLegacyPluginCL)
 		{
 			g_skipReason = "game build CL-" + std::to_string(runningCL) + " is not CL-"
-				+ std::to_string(VersionMap::kBuiltCL) + ", the build preload plugins are written for";
+				+ std::to_string(VersionMap::kLegacyPluginCL) + ", the build preload plugins are written for";
 			LogToFile::Info("[Preload] Phase skipped: %s", g_skipReason.c_str());
 			return;
 		}

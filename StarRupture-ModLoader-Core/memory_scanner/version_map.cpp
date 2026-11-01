@@ -138,23 +138,27 @@ namespace VersionMap
 		return cl != 0 && std::find(builds.begin(), builds.end(), cl) != builds.end();
 	}
 
-	std::string OffBuildRefusal(const Exe& running, int interfaceVersion, bool usedMap, bool askedSdkGlobals)
+	std::string OffBuildRefusal(const Exe& running, int interfaceVersion, const PluginGameBuild& built, bool askedSdkGlobals)
 	{
 		constexpr int kFirstMapInterface = 72;   // ResolveField, candidates, GetSdkGlobals
-		if (running.cl == kBuiltCL)
+		const bool migrated = (built.mapFlags & PLUGIN_MAP_MIGRATED) != 0;
+		if (migrated && !built.declared)
+			return "It declares that it takes its game data from the version map, but its PluginInfo names no game build"
+				" (gameBuiltCL is 0), so the loader cannot tell which build its SDK came from.";
+		if (running.cl == built.gameCL)
 			return {};
 		std::string why;
 		if (interfaceVersion < kFirstMapInterface)
 			why = "it was built for plugin interface v" + std::to_string(interfaceVersion) + ", before the version map";
-		else if (!usedMap)
-			why = "it asks the version map for none of its game offsets";
+		else if (!migrated)
+			why = std::string("it does not declare PLUGIN_MAP_MIGRATED") + (built.declared ? "" : " and names no game build");
 		else if (!askedSdkGlobals)
 			why = "it does not take the Game-SDK globals from the loader (GetSdkGlobals)";
 		else
 			return {};
-		const std::string built = "CL-" + std::to_string(kBuiltCL);
+		const std::string was = "CL-" + std::to_string(built.gameCL);
 		return "Needs an update to run on CL-" + std::to_string(running.cl) + ": " + why
-			+ ", so it would read this game's data where " + built + " had it. It loads on " + built + ".";
+			+ ", so it would read this game's data where " + was + " had it. It loads on " + was + ".";
 	}
 
 	PluginGameBuild ReadPluginGameBuild(const PluginInfo& info)

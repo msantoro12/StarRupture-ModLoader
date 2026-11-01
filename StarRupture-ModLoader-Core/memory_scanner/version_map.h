@@ -82,23 +82,15 @@ namespace VersionMap
 	// True when the ProductVersion ends in the CL of one of SupportedBuilds().
 	bool IsSupported(const std::wstring& productVersion);
 
-	// Whether a plugin may run on `running`. On kBuiltCL every plugin may. On
-	// any other build its compiled-in layouts and its SDK's Offsets:: point
-	// where kBuiltCL had things, so it runs only when it takes all of them
-	// from this build: interface 72 or later, the map in OnPluginLoadHooks
-	// (a request with candidates or a map key, or ResolveField), and GetSdkGlobals in
-	// PluginInit. The loader asks at each of those three points, passing true
-	// for what it cannot know yet. Empty = admitted; else the reason, for the
-	// log and the plugin list.
-	std::string OffBuildRefusal(const Exe& running, int interfaceVersion, bool usedMap, bool askedSdkGlobals);
-
 	// The game build every plugin before interface 72 was compiled against:
 	// the one the last loader without a version map required.
 	constexpr uint32_t kLegacyPluginCL = 127004;
 
 	// The game build a plugin says its Game-SDK came from (the v72 PluginInfo
-	// tail). A plugin before interface 72 has no tail and gets kLegacyPluginCL;
-	// so does a v72 plugin whose tail is 0, with declared false.
+	// tail), and what it declares about itself. A plugin before interface 72
+	// has no tail and gets kLegacyPluginCL; so does a v72 plugin whose tail is
+	// 0, with declared false. The plugin manager copies this into the plugin's
+	// record at load.
 	struct PluginGameBuild
 	{
 		uint32_t gameCL   = kLegacyPluginCL;
@@ -109,6 +101,18 @@ namespace VersionMap
 
 	// "CL-127004", or "CL-127004 (none declared)", for log lines.
 	std::string DescribePluginGameBuild(const PluginGameBuild& build);
+
+	// Whether a plugin may run on `running`, judged against the build it was
+	// written for (`built`), not the loader's. On that build it loads as ever.
+	// On any other supported build its compiled-in layouts and its SDK's
+	// Offsets:: point where its own build had things, so it runs only when it
+	// takes all of them from this build: interface 72 or later, PLUGIN_MAP_MIGRATED
+	// in the tail, and GetSdkGlobals in PluginInit. A tail that sets
+	// PLUGIN_MAP_MIGRATED and names no build is refused on every build. The
+	// loader asks at DLL load, passing true for the globals it cannot know yet,
+	// and again after PluginInit. Empty = admitted; else the reason, for the
+	// log and the plugin list.
+	std::string OffBuildRefusal(const Exe& running, int interfaceVersion, const PluginGameBuild& built, bool askedSdkGlobals);
 
 	// Whether the Game-SDK globals found on `running` may be handed to plugins
 	// (IPluginEngineEvents::GetSdkGlobals), as absolute addresses, 0 = not

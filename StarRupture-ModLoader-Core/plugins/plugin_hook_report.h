@@ -98,12 +98,6 @@ namespace PluginHookReport
     // it is not going to load.
     bool SessionHasFailures(const IPluginSelf* self);
 
-    // v72. A request with candidates or a ResolveField call: the plugin takes
-    // game offsets from the version map. Asked before EndSession, for the
-    // off-build admission rule (VersionMap::OffBuildRefusal).
-    void RecordMapUse(const IPluginSelf* self);
-    bool SessionUsedMap(const IPluginSelf* self);
-
     // v72. Whether the session was opened with nameShared: the map keys a
     // plugin's own sites by its name, so neither of two plugins with one name
     // may read them (VersionMap::ResolveMapKey).

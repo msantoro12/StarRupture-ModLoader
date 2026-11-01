@@ -271,7 +271,6 @@ namespace ModLoaderLogger
 			const uint32_t rowCount = local.candidates ? local.candidateCount : 0;
 			if (!mapKey && rowCount == 0)
 				return RunAndRecord(self, validation, required);
-			PluginHookReport::RecordMapUse(self);
 
 			// v72: locators for other game builds. The loader picks the one for
 			// this build (memory_scanner/version_map.h); kind and the rest of the
@@ -414,7 +413,6 @@ namespace ModLoaderLogger
 				PluginHookReport::RecordFailure(self, key, "bad field request", true);
 				return false;
 			}
-			PluginHookReport::RecordMapUse(self);
 
 			VersionMap::FieldRequest field;
 			field.key         = local.key;

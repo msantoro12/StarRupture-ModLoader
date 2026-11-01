@@ -483,7 +483,7 @@ Contributors:
 
 - [@Mralexandresys](https://github.com/Mralexandresys)
 - [@Wilhelm-af](https://github.com/Wilhelm-af)
-- [@Kian369](https://github.com/Kian369)
+- Kian369 ([@LetMeInside](https://github.com/LetMeInside))
 - <a id="msantoro12"></a><sup>✦</sup> [@msantoro12](https://github.com/msantoro12), creator of [StarRupture Planner](https://starrupture.goodstuff.software)
 
 Third-party:

@@ -15,9 +15,9 @@ name: Publish the version-map feed
 # after that file verifies. With no feed on any release, only a manual run with
 # first_publish set uploads one, so an older signed feed cannot be the first.
 #
-# Until the owner's signing key is in version_feed.cpp, slot k1 holds a TEST
-# key. The scheduled run refuses a TEST-key feed; only a manual run with
-# allow_test_key set accepts one, for tests on a fork.
+# Slot k1 holds a TEST key and slot k2 the release key. The scheduled run
+# refuses a TEST-key feed; only a manual run with allow_test_key set
+# accepts one, for tests on a fork.
 
 on:
   schedule:

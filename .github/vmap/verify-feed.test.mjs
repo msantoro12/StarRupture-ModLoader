@@ -95,8 +95,9 @@ test('the release gate wants every feed build in the header, with the same stamp
 
 test("reads the loader's own key slots, and the loader's TEST fixture verifies against them", () => {
   const slots = readKeySlots(readFileSync(SOURCE, 'utf8'));
-  assert.deepEqual(Object.keys(slots), ['k1']);
+  assert.deepEqual(Object.keys(slots), ['k1', 'k2']);
   assert.equal(slots.k1.test, true);
+  assert.equal(slots.k2.test, false);
   const fx = readFileSync(join(root, 'Tests', 'VersionFeedTests', 'fixtures', 'test-feed-k1.txt'));
   assert.equal(check(fx, { keys: slots, now: 1761900000 }).test, true);
   assert.match(outcome(() => check(fx, { keys: slots, now: 1761900000, refuseTestKey: true })), /TEST key/);

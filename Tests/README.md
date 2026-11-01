@@ -284,7 +284,7 @@ fixture map of VersionMapTests, with no network. It checks:
 
 - Verify, then parse: a valid file, a flipped byte, an unknown key ID, a truncated, oversize or
   doubled file, another `format`, a bad `seq`, a scoped row with no `fp`.
-- A file signed by Node's crypto with the TEST key verifies against slot `k1`.
+- A file signed by Node's crypto with the TEST key verifies against slot `k1`. Built with `/p:VmapReleaseStyle=true` (no `VMAP_TRUST_TEST_KEY`, as a release is), the suite checks that only the release key `k2` is trusted and that the TEST-key feed is refused.
 - The merge: a clash on the running exe keeps the baseline, a feed locator fills a baseline `absent`,
   an `absent` for one `fp` and a locator for another both survive, a rebuilt exe of a known CL.
 - The per-CL coverage gate, counting a `ModLoader/` entry only under the loader's own `fp`.

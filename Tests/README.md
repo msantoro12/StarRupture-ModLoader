@@ -293,5 +293,5 @@ fixture map of VersionMapTests, with no network. It checks:
 
 ```
 msbuild Tests\VersionFeedTests\VersionFeedTests.vcxproj /p:Configuration="Client Release" /p:Platform=x64
-build	estsersion_feed_tests.exe
+build\tests\version_feed_tests.exe
 ```

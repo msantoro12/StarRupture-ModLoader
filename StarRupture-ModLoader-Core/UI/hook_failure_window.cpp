@@ -115,24 +115,54 @@ namespace UI::HookFailureWindow
             ImGuiCond_Appearing,
             ImVec2(0.5f, 0.5f));
 
+        int  refused        = 0;
+        int  featuresOff    = 0;
+        int  featurePlugins = 0;
+        bool anyFailures    = false;
+        for (const auto& r : s_cache)
+        {
+            if (r.refused) ++refused;
+            if (!r.failures.empty()) anyFailures = true;
+            if (!r.featuresOff.empty()) ++featurePlugins;
+            featuresOff += static_cast<int>(r.featuresOff.size());
+        }
+
+        // Nothing failed to load when only features are off, so the title
+        // should not say hooks failed.
         if (!UI::Theme::BeginChamferedWindow("Plugin Hooks##hook_failures",
-                                             "PLUGIN HOOKS FAILED", &s_isOpen,
-                                             nullptr,
+                                             anyFailures ? "PLUGIN HOOKS FAILED" : "PLUGIN FEATURES OFF",
+                                             &s_isOpen, nullptr,
                                              ImGuiWindowFlags_NoResize))
             return;
 
-        int refused = 0;
-        for (const auto& r : s_cache)
-            if (r.refused) ++refused;
+        // What a player needs first, in a line each: which feature is off in
+        // which plugin. The report below is for the plugin's author.
+        if (featuresOff > 0)
+        {
+            ImGui::TextColored(kOrange, "%d feature(s) are off in %d plugin(s).", featuresOff, featurePlugins);
+            for (const auto& r : s_cache)
+                for (const PluginHookReport::FeatureOff& f : r.featuresOff)
+                    ImGui::TextWrapped("%s: %s is off -- the game update moved something it needs.",
+                                       r.plugin.c_str(), f.title.c_str());
+            ImGui::TextDisabled("The rest of each plugin runs. Details are listed below.");
+
+            if (anyFailures)
+            {
+                ImGui::Spacing();
+                ImGui::Separator();
+                ImGui::Spacing();
+            }
+        }
 
         if (refused > 0)
             ImGui::TextColored(kRed, "%d plugin(s) did not load.", refused);
-        ImGui::TextWrapped(
-            "These plugins could not find the game code they hook into, or found more than one "
-            "candidate for it. A plugin that misses even one of its hooks is not loaded at all, "
-            "because there is no telling what it would do with the half it found. That normally "
-            "means the game updated and the plugin needs a new build -- it is not something you "
-            "can fix from here. Copy the details below and send them to the plugin's author.");
+        if (anyFailures)
+            ImGui::TextWrapped(
+                "These plugins could not find the game code they hook into, or found more than one "
+                "candidate for it. A plugin that misses even one of its hooks is not loaded at all, "
+                "because there is no telling what it would do with the half it found. That normally "
+                "means the game updated and the plugin needs a new build -- it is not something you "
+                "can fix from here. Copy the details below and send them to the plugin's author.");
 
         // Preload plugins fail in exactly the same way and belong in the same
         // list, but the consequence is different enough to be worth one line:
@@ -206,6 +236,21 @@ namespace UI::HookFailureWindow
                 // Not wrapped: an AOB pattern broken mid-byte is harder to read
                 // than one that runs off the side of a scrollable region.
                 ImGui::TextDisabled("%s", ForDisplay(f.detail).c_str());
+                ImGui::Unindent();
+            }
+
+            for (const PluginHookReport::FeatureOff& f : r.featuresOff)
+            {
+                ImGui::TextColored(kOrange, "[feature off]");
+                ImGui::SameLine();
+                ImGui::TextUnformatted(f.title.c_str());
+
+                ImGui::Indent();
+                for (const PluginHookReport::FeatureMiss& m : f.misses)
+                {
+                    ImGui::TextUnformatted(m.key.c_str());
+                    ImGui::TextDisabled("%s", ForDisplay(m.detail).c_str());
+                }
                 ImGui::Unindent();
             }
             ImGui::Unindent();

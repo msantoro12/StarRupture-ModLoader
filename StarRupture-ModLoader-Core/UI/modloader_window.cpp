@@ -6,6 +6,7 @@
 #include "imgui/imgui.h"
 #include "plugin_panel_registry.h"
 #include "plugins/plugin_manager.h"
+#include "plugins/plugin_hook_report.h"
 #include "config/config_manager.h"
 #include "config/config_edit.h"
 #include "global_settings.h"
@@ -298,6 +299,23 @@ namespace UI::ModLoaderWindow
         ImGui::PopStyleVar();
     }
 
+    // The hover text for a plugin row that has features turned off: which ones,
+    // and that the rest of the plugin runs. Built only while the row is hovered.
+    static void FeaturesOffTooltip(const char* plugin)
+    {
+        ImGui::BeginTooltip();
+        ImGui::TextUnformatted("Turned off for this game build:");
+        for (const PluginHookReport::PluginReport& r : PluginHookReport::Snapshot())
+        {
+            if (_stricmp(r.plugin.c_str(), plugin) != 0)
+                continue;
+            for (const PluginHookReport::FeatureOff& f : r.featuresOff)
+                ImGui::BulletText("%s", f.title.c_str());
+        }
+        ImGui::TextDisabled("The rest of the plugin runs.");
+        ImGui::EndTooltip();
+    }
+
     static void RenderPluginsTab()
     {
         RenderLoadNewPlugins();
@@ -347,6 +365,9 @@ namespace UI::ModLoaderWindow
                 DrawAutoUpdateDot(s.hasUpdateManifest);
                 ImGui::PopID();
                 ImGui::TextUnformatted(s.name[0] ? s.name : "?");
+                const int featuresOff = s.isLoaded ? PluginHookReport::GetFeaturesOffCount(s.name) : 0;
+                if (featuresOff > 0 && ImGui::IsItemHovered())
+                    FeaturesOffTooltip(s.name);
 
                 ImGui::TableSetColumnIndex(1);
                 ImGui::TextUnformatted(s.version[0] ? s.version : "?");
@@ -362,7 +383,16 @@ namespace UI::ModLoaderWindow
                 else if (s.isOutOfDate)
                     ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.1f, 1.0f), "Needs Update");
                 else if (s.isLoaded)
+                {
                     ImGui::TextColored(ImVec4(0.4f, 1.0f, 0.4f, 1.0f), "Loaded");
+                    if (featuresOff > 0)
+                    {
+                        ImGui::SameLine();
+                        ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.1f, 1.0f), "(%d off)", featuresOff);
+                        if (ImGui::IsItemHovered())
+                            FeaturesOffTooltip(s.name);
+                    }
+                }
                 else
                     ImGui::TextDisabled("Unloaded");
 
@@ -533,6 +563,12 @@ namespace UI::ModLoaderWindow
         bool showReset = e && e->defaultValue && e->defaultValue[0] &&
                          !(strcmp(kv.section, "General") == 0 && strcmp(kv.key, "Enabled") == 0);
 
+        // A feature the plugin declared is off on this game build: its entries
+        // stay on the page, but the controls cannot be changed and hovering
+        // them says why. The stored value is not touched.
+        const std::string offReason = PluginHookReport::ConfigOffReason(pluginName, kv.section, kv.key);
+        const bool        off       = !offReason.empty();
+
         const bool  isBool       = e && e->type == ConfigValueType::Boolean;
         const bool  isKeybind    = e && e->type == ConfigValueType::Keybind;
         // A Choice's description is followed by its choices, each after a
@@ -575,6 +611,11 @@ namespace UI::ModLoaderWindow
 
         // ---- Col 2: control + reset ----------------------------------------
         ImGui::TableSetColumnIndex(2);
+        if (off)
+        {
+            ImGui::BeginGroup();
+            ImGui::BeginDisabled();
+        }
         const float ctrlColStartX = ImGui::GetCursorPosX();
         const float resetX        = ctrlColStartX + controlW + innerSpacing; // fixed for every row type
         const float rightAlignX   = resetX - innerSpacing - toggleW;          // a right-aligned toggle's own left edge
@@ -900,6 +941,14 @@ namespace UI::ModLoaderWindow
             }
             if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal))
                 ImGui::SetTooltip("Reset to default: %s", e->defaultValue);
+        }
+
+        if (off)
+        {
+            ImGui::EndDisabled();
+            ImGui::EndGroup();
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_AllowWhenDisabled))
+                ImGui::SetTooltip("%s\nYour setting is kept and applies again when it is back.", offReason.c_str());
         }
     }
 

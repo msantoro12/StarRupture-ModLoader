@@ -839,7 +839,9 @@ namespace UI::Theme
             ImVec2(trackMin.x, trackMin.y + notch),
         };
         draw->AddConvexPolyFilled(trackPts, 5, trackColor);
-        draw->AddPolyline(trackPts, 5, AccentColor(), 1.0f, ImDrawFlags_Closed);
+        // GetColorU32 applies the style alpha, so a toggle inside BeginDisabled
+        // dims like every other control instead of staying at full accent.
+        draw->AddPolyline(trackPts, 5, ImGui::GetColorU32(AccentColor()), 1.0f, ImDrawFlags_Closed);
 
         const float knobMargin = height * 0.16f;
         const float knobSize   = height - knobMargin * 2.0f;
@@ -848,7 +850,7 @@ namespace UI::Theme
             : trackMin.x + knobMargin;
         ImVec2 knobMin(knobX, trackMin.y + knobMargin);
         ImVec2 knobMax(knobX + knobSize, trackMax.y - knobMargin);
-        draw->AddRectFilled(knobMin, knobMax, *v ? AccentColor() : ImGui::GetColorU32(ImGuiCol_TextDisabled));
+        draw->AddRectFilled(knobMin, knobMax, *v ? ImGui::GetColorU32(AccentColor()) : ImGui::GetColorU32(ImGuiCol_TextDisabled));
 
         // ImGui convention: "##" marks the start of an ID-only suffix that is
         // never rendered (mirrors ImGui::FindRenderedTextEnd used internally

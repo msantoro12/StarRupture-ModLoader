@@ -121,6 +121,8 @@ is available.
 - **Cannot Load** is a server plugin on a client, or the reverse.
 - **Needs Update** names the side that is behind: the plugin or the mod loader.
 - **WHY?** on a Hooks Failed row reopens the [report](#pop-up-windows).
+- **Loaded (2 off)** is a plugin that runs with two of its features turned off because a game
+  update moved something they need. Hover the name or the count to see which. <sup>[✦](#msantoro12)</sup>
 - Unload removes the panels, widgets and callbacks the plugin registered, even ones it left
   behind.
 - If the overlay is still drawing its panel after about a second, the unload is skipped and the log
@@ -140,6 +142,8 @@ is available.
 - Press and release a modifier alone to bind just that modifier. <sup>[✦](#msantoro12)</sup>
 - **Block** stops the game also reacting to the combo.
 - A setting with a fixed set of choices is a dropdown. <sup>[✦](#msantoro12)</sup>
+- A setting that belongs to a turned-off feature is greyed out. Hover it for the reason; its value
+  is kept, and it works again when the feature does. <sup>[✦](#msantoro12)</sup>
 - **Saved state** stands for values a plugin keeps by itself, such as where its windows were
   dragged. **Clear** puts them back to their defaults. <sup>[✦](#msantoro12)</sup>
 - The reset arrow restores the default. A plugin's `[General] Enabled` has none, nor does a
@@ -191,6 +195,10 @@ changed in each plugin when the plugin's release ships notes.
 when a later load or reload adds one. **Copy Details** puts the report on the clipboard for a bug
 report. **WHY?** reopens it; `hookfailures` prints the same list.
 
+When a plugin loads with a feature turned off, the same window opens as **Plugin Features Off**,
+with a short list at the top: one line for each plugin and feature. The detail below it is for the
+plugin's author. <sup>[✦](#msantoro12)</sup>
+
 <img src="images/popup-hooks-failed.png" width="383" alt="Plugin Hooks Failed pop-up with the missing hooks of one plugin">
 
 ---
@@ -213,7 +221,7 @@ in `help` ([Console.md](Console.md)).
 | Command | Also | Does |
 |---|---|---|
 | `help [command]` | `?`, `commands` | List commands, or explain one |
-| `plugins` | `list`, `mods` | List every plugin, its version and state |
+| `plugins` | `list`, `mods` | List every plugin, its version and state (`Loaded (2 off)` when features are turned off) |
 | `reload <target>` | | Shut a plugin down, free its DLL and load it again |
 | `unload <target>` | | Shut a plugin down and free its DLL |
 | `load <target>` | | Load a plugin that is unloaded |

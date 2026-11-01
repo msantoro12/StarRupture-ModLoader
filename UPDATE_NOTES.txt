@@ -10,3 +10,5 @@ The mod loader runs on every game build its version map lists, with no rebuild
 Plugin authors can look up functions and game-class members in the loader's version map by key
 Plugins built for another game build load only if they take their game data from the version map; otherwise they show Incompatible with the build they need
 The version map can be refreshed from a signed online file, so a new game build can be supported without a loader update
+A game update can turn off one feature of a plugin instead of the whole plugin: its settings grey out and the failure window lists it first
+Plugins tab and the plugins console command show how many features a plugin has turned off

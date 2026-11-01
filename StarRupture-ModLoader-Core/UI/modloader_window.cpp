@@ -45,7 +45,7 @@ namespace UI::ModLoaderWindow
     static bool s_isOpen = false;
     static bool s_closeRequested = false; // Escape while focused; consumed at the top of Render()
     static bool s_escapeWasDown  = false; // last frame's Escape level, for edge-detection below
-    static int  s_selectedPlugin = -1;  // index in Plugins tab
+    static int  s_selectedPlugin = -1;  // index into the loaded plugins on the Config tab
 
     // Indices into the icon tab strip. Named so a cross-tab jump (the Settings
     // tab's "Open Logging" button) does not hard-code a number that silently

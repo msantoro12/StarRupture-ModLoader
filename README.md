@@ -124,6 +124,16 @@ is available.
 - **WHY?** on a Hooks Failed row reopens the [report](#pop-up-windows).
 - **Loaded (2 off)** is a plugin that runs with two of its features turned off because a game
   update moved something they need. Hover the name or the count to see which. <sup>[✦](#msantoro12)</sup>
+- **Crashed** is a plugin that faulted in its own code during one of its callbacks: a tick, an
+  overlay panel or widget, a game event, a keybind, a console command, a network or HTTP handler.
+  The loader switches that plugin off and the game keeps running. Hover the status for the fault
+  code and the callback. Nothing calls into the plugin again until it is reloaded or unloaded, and
+  **RELOAD** brings it back fresh. Detours it placed on game functions and threads of its own are
+  not switched off, so restart the game if it still misbehaves. <sup>[✦](#msantoro12)</sup>
+  - A fault in game or mod loader code still crashes the game, even when a plugin's callback called
+    into it: carrying on past half-finished game code could freeze the game. The log names the
+    plugin and the callback it happened under.
+  - On a server, a crashed HTTP request filter denies every request until its plugin is reloaded.
 - **Return to the main menu to reload this plugin**, **This plugin requires a game restart**, **Unload
   not supported** and **Unload blocked: ...** take the place of the buttons the loader would refuse.
   They come from the plugin's own [load and unload settings](#load-and-unload-settings).
@@ -386,6 +396,7 @@ the whole API and you can hot-reload it while the game runs.
 | The *game's* log is flooding on a dedicated server | Hundreds of `LogTemp` / `LogSkinnedMeshComp` warnings a second come from the game itself, not the mod loader. Server builds turn those two categories down to errors automatically; edit `GameLogCategories` under `[Logging]` in `ModLoader\modloader.ini` to change the list, or blank it to leave the game log alone. `-LogCmds=` has no effect on this build. |
 | Game stops responding to input | Turn on *ModLoader Debug Values* in the **Settings** tab — it names the plugin holding input open. |
 | Game freezes ("Not Responding") | Look near the end of `ModLoader\Logs\ModLoader.log` for a `[PluginWatchdog]` line. A plugin's tick or overlay draw callback (a panel or widget) still running after 5 seconds is named there, e.g. `SomePlugin.dll widget render has been running for 5016 ms`. Disable that plugin and report it to its author. |
+| A plugin shows **Crashed** | It faulted in one of its callbacks and was switched off; the game kept running. `ModLoader.log` has the fault and a stack. Press **RELOAD** to run it again, and report the log lines to its author. |
 | The game crashes | The mod loader's own dialog has **Copy Details** and buttons for `ModLoader.log` and `StarRupture.log`. Include them in a bug report. |
 | Players dropped during a long map load | See [Net timeouts](#net-timeouts). Both ends need the mod loader. |
 

@@ -139,6 +139,15 @@ is available.
     into it: carrying on past half-finished game code could freeze the game. The log names the
     plugin and the callback it happened under.
   - On a server, a crashed HTTP request filter denies every request until its plugin is reloaded.
+  - A toast in the bottom right corner names the plugin and the callback, fades after about 7
+    seconds, and stacks when several plugins crash. About 3 seconds later the loader reloads the
+    plugin on its own, the same as **RELOAD**, if its [load and unload settings](#load-and-unload-settings)
+    allow it: **Any time** restarts at once, **Main menu only** waits until you are at the main menu,
+    and a plugin that needs a game restart stays off (the toast says so). Each plugin restarts
+    automatically at most 3 times a session; a fourth crash leaves it off until the game restarts.
+    Every crash, planned restart, restart and give-up is in `ModLoader.log`. On a dedicated server
+    there is no toast and plugins always restart. Nothing restarts once the game starts to exit.
+    <sup>[✦](#msantoro12)</sup>
 - **Return to the main menu to reload this plugin**, **This plugin requires a game restart**, **Unload
   not supported** and **Unload blocked: ...** take the place of the buttons the loader would refuse.
   They come from the plugin's own [load and unload settings](#load-and-unload-settings).
@@ -209,6 +218,9 @@ splash have none. How a plugin declares these is in the SDK's `PluginDevelopment
   interpolated frames skip the overlay and flicker. <sup>[✦](#msantoro12)</sup>
 - **Keyboard navigation** (on by default) lets Tab, the arrow keys and Space or Enter drive the loader
   and plugin windows while they are open. <sup>[✦](#msantoro12)</sup>
+- **Restart crashed plugins automatically** (on by default) reloads a [crashed](#plugins-tab) plugin
+  a few seconds after its crash toast. Turn it off to restart them yourself with **RELOAD**.
+  <sup>[✦](#msantoro12)</sup>
 - **Connection Timeout**: see [Net timeouts](#net-timeouts).
 - **Enable Auto Updates** takes effect next launch. A mod loader update asks Yes or No first; a No
   is remembered for that version.
@@ -235,7 +247,9 @@ there only. See [Console commands](#console-commands).
 ### Pop-up windows
 
 **Plugins Updated** appears once at the main menu after an automatic plugin update. It lists what
-changed in each plugin when the plugin's release ships notes.
+changed in each plugin when the plugin's release ships notes. Plugins whose notes are word for
+word the same share one line (the names joined, in the accent colour) with the notes shown once, and
+that line leaves out the versions. <sup>[✦](#msantoro12)</sup>
 
 <img src="images/popup-plugins-updated.png" width="325" alt="Plugins Updated pop-up listing old and new versions with each plugin's notes">
 
@@ -480,6 +494,7 @@ these for you.
 | | `FontFamily` | `Arial` | `Default` if Arial is not installed. Set by **Font Family** |
 | | `Theme` | empty | Empty is `Default`, unless the file has an old `[ThemeColors]` block: that is saved as the `Custom` theme. Set by **Active Theme** |
 | | `KeyboardNavigation` | `1` | `0` turns off Tab, arrow-key and Space or Enter navigation. Set by **Keyboard navigation** |
+| `[Plugins]` | `RestartCrashed` | `1` | `0` stops crashed plugins restarting on their own. Set by **Restart crashed plugins automatically** |
 | `[Input]` | `SuppressKeybindsWhileTyping` | `1` | Keybinds ignore keys typed into a game text box |
 | `[Console]` | `OpenKey` | `Tilde` | |
 | `[HUD]` | `ShowFPS`, `ShowWorldName`, `ShowPlayerPosition`, `ShowDebugValues` | `0` | The Settings toggles |

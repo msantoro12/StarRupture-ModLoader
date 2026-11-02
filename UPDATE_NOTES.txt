@@ -3,5 +3,3 @@
 - LOAD NEW adds plugins you drop in while the game is running
 - Click a plugin in the list to open its settings
 - Settings with a fixed set of choices are now dropdowns
-- A window now lists which plugins were updated and what changed
-- This update message now shows what is new

@@ -1767,6 +1767,25 @@ namespace UI::ModLoaderWindow
         }
 
         ImGui::Spacing();
+        ImGui::SeparatorText("Plugins");
+        ImGui::Spacing();
+
+        bool restartCrashed = UI::GlobalSettings::GetRestartCrashedPlugins();
+        if (UI::Theme::ToggleSwitch("Restart crashed plugins automatically", &restartCrashed))
+            UI::GlobalSettings::SetRestartCrashedPlugins(restartCrashed);
+        ImGui::SameLine();
+        ImGui::TextDisabled("(?)");
+        if (ImGui::IsItemHovered())
+        {
+            ImGui::SetTooltip(
+                "When a plugin crashes, the loader switches it off so the game keeps\n"
+                "running. With this on, it reloads the plugin a few seconds later, up to\n"
+                "3 times a session, if the plugin allows a reload right now. Plugins that\n"
+                "only reload at the main menu wait for it; plugins that need a game\n"
+                "restart stay off until then.");
+        }
+
+        ImGui::Spacing();
         ImGui::SeparatorText("Networking");
         ImGui::Spacing();
 

@@ -27,6 +27,7 @@
 #include "../UI/splash_window.h"
 #include "../UI/theme.h"
 #include "../UI/tick_profiler_window.h"
+#include "../UI/toast.h"
 #include "../UI/update_notice_window.h"
 #include "../UI/wheel_test.h"
 #include "../logging/log.h"
@@ -172,6 +173,7 @@ void InitClientUI()
             UI::ConsoleWindow::Render();
             UI::PluginPanelRegistry::RenderPanelWindows(api);
             UI::PluginWidgetRegistry::RenderWidgets(api);
+            UI::Toast::Render();
 #ifdef _DEBUG
             UI::WheelTest::RenderOverlay();
 #endif

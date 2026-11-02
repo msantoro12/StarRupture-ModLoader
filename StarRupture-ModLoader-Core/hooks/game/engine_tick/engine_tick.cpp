@@ -4,6 +4,7 @@
 #include "stack_sampler.h"
 #include "logging/logger.h"
 #include "plugins/plugin_guard.h"
+#include "plugins/plugin_manager.h"
 #include "memory_scanner/scanner.h"
 #include "../scan_patterns.h"
 #include "../world_begin_play/world_begin_play.h"
@@ -107,6 +108,10 @@ namespace Hooks::EngineTick
 
 		// Drain any tasks posted to the game thread from background threads
 		GameThreadDispatch::Drain();
+
+		// Reload plugins the crash guard switched off, at the same point in the
+		// frame a RELOAD from the Plugins tab runs.
+		PluginManager::PumpCrashRestarts();
 
 		if (profileThisTick)
 			QueryPerformanceCounter(&dispatchEnd);

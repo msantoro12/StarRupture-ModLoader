@@ -1728,7 +1728,7 @@ namespace ModConsole
             {
                 RunHandler(cmd, args, sink);
                 if (onComplete) onComplete();
-            });
+            }, sink->Owner());
             return;
         }
 
@@ -1887,6 +1887,6 @@ namespace ModConsole
         if (GameThreadDispatch::IsGameThread())
             run();
         else
-            GameThreadDispatch::PostVoid(std::move(run));
+            GameThreadDispatch::PostVoid(std::move(run), sink->Owner());
     }
 }

@@ -63,18 +63,6 @@ namespace UI::PluginPanelRegistry
     // Calls into plugin code made outside s_mutex; see plugin_call_tracker.h.
     static PluginCallTracker s_calls;
 
-    // The module an address lives in, or null if it is in none.
-    static HMODULE ModuleOf(const void* address)
-    {
-        HMODULE owner = nullptr;
-        if (!address ||
-            !GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
-                                GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                                static_cast<LPCSTR>(address), &owner))
-            return nullptr;
-        return owner;
-    }
-
     // Invokes all registered panel-closed callbacks for the given handle.
     // Must NOT be called while holding s_mutex.
     static void FirePanelClosed(PanelHandle handle)
@@ -112,7 +100,7 @@ namespace UI::PluginPanelRegistry
 
         // Resolved before taking the lock, like the callback below. A renderFn
         // in no module could never be purged by ForgetModule, so refuse it.
-        const HMODULE owner = ModuleOf(reinterpret_cast<const void*>(desc->renderFn));
+        const HMODULE owner = PluginGuard::ModuleOf(reinterpret_cast<const void*>(desc->renderFn));
         if (!owner)
             return nullptr;
 
@@ -241,7 +229,7 @@ namespace UI::PluginPanelRegistry
     void RegisterOnPanelWindowClosed(PluginPanelClosedCallback callback)
     {
         if (!callback) return;
-        const HMODULE owner = ModuleOf(reinterpret_cast<const void*>(callback));
+        const HMODULE owner = PluginGuard::ModuleOf(reinterpret_cast<const void*>(callback));
         if (!owner) return;
         std::lock_guard<std::mutex> lock(s_mutex);
         s_panelClosedCallbacks.push_back({ callback, owner });

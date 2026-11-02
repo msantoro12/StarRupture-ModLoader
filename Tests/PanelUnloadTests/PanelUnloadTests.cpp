@@ -14,6 +14,7 @@
 #include "UI/plugin_call_tracker.h"
 #include "plugins/plugin_guard.h"
 #include "imgui/imgui.h"
+#include "imgui/imgui_internal.h"   // GImGui, to see what a crashed render left behind
 #include "test_doubles.h"
 
 #include <windows.h>
@@ -323,9 +324,11 @@ static std::string ReadSource(const std::filesystem::path& file)
     return StripLineComments(std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()));
 }
 
-// Every ForgetModule(HMODULE) a loader header declares is called from
-// ForgetRegistrations or ForgetPluginCallbacks: a registry added later
-// without being wired in would keep a freed plugin's callbacks.
+// Every ForgetModule(HMODULE) and ForgetPlugin(const char*) a loader header
+// declares is called from ForgetRegistrations or ForgetPluginCallbacks: a
+// registry added later without being wired in would keep a freed plugin's
+// callbacks. A list with no purge at all is not caught here; those are
+// tested on the real list (the game-thread queue in KeyAndThreadTests).
 static void Test_EveryForgetModuleIsCalledOnUnload()
 {
     wchar_t exe[MAX_PATH];
@@ -344,24 +347,28 @@ static void Test_EveryForgetModuleIsCalledOnUnload()
         if (entry.path().extension() != L".h" || entry.path().filename() == L"plugin_guard.h")
             continue;
         const std::string header = ReadSource(entry.path());
-        const size_t decl = header.find("ForgetModule(HMODULE");
-        if (decl == std::string::npos)
-            continue;
+        for (const std::string purge : { "ForgetModule(HMODULE", "ForgetPlugin(const char*" })
+        {
+            const size_t decl = header.find(purge);
+            if (decl == std::string::npos)
+                continue;
+            const std::string call = purge.substr(0, purge.find('(') + 1);   // "ForgetModule("
 
-        // The innermost namespace the declaration sits in: "namespace Hooks::EngineTick" -> "EngineTick".
-        const size_t ns = header.rfind("namespace ", decl);
-        CHECK(ns != std::string::npos);
-        if (ns == std::string::npos) continue;
-        const size_t nameStart = ns + strlen("namespace ");
-        std::string name = header.substr(nameStart, header.find_first_of(" \r\n{", nameStart) - nameStart);
-        if (const size_t colon = name.rfind("::"); colon != std::string::npos)
-            name.erase(0, colon + 2);
+            // The innermost namespace the declaration sits in: "namespace Hooks::EngineTick" -> "EngineTick".
+            const size_t ns = header.rfind("namespace ", decl);
+            CHECK(ns != std::string::npos);
+            if (ns == std::string::npos) continue;
+            const size_t nameStart = ns + strlen("namespace ");
+            std::string name = header.substr(nameStart, header.find_first_of(" \r\n{", nameStart) - nameStart);
+            if (const size_t colon = name.rfind("::"); colon != std::string::npos)
+                name.erase(0, colon + 2);
 
-        ++declared;
-        const bool called = calls.find(name + "::ForgetModule(") != std::string::npos;
-        if (!called)
-            printf("    not called on unload: %s::ForgetModule (%ls)\n", name.c_str(), entry.path().filename().c_str());
-        CHECK(called);
+            ++declared;
+            const bool called = calls.find(name + "::" + call) != std::string::npos;
+            if (!called)
+                printf("    not called on unload: %s::%s) (%ls)\n", name.c_str(), call.c_str(), entry.path().filename().c_str());
+            CHECK(called);
+        }
     }
     CHECK(declared >= 20);
 }
@@ -645,6 +652,159 @@ static void Test_GuardLeavesLoaderFaultsAlone()
     CHECK(!PluginGuard::GetFault(ThisModule(), nullptr));
 }
 
+// A fault raised outside the plugin, in code its callback called (here
+// ntdll's strlen, standing in for the engine or the loader), is not contained:
+// the frames between it and the guard may hold locks. It reaches the caller's
+// handler, and the plugin is not switched off.
+static size_t (__cdecl* g_ntdllStrlen)(const char*) = nullptr;
+static void FaultBelowA(int) { volatile size_t n = g_ntdllStrlen(nullptr); (void)n; }
+
+static bool FaultBelowPluginPropagates()
+{
+    __try { PluginGuard::Invoke(FaultBelowA, "tick callback", 0); return false; }
+    __except (EXCEPTION_EXECUTE_HANDLER) { return true; }
+}
+
+static void Test_GuardPassesOnFaultsOutsideThePlugin()
+{
+    g_ntdllStrlen = reinterpret_cast<size_t (__cdecl*)(const char*)>(
+        GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "strlen"));
+    CHECK(g_ntdllStrlen != nullptr);
+    if (!g_ntdllStrlen) return;
+
+    PluginGuard::SetReporter(CountReport);
+    g_guardReports = 0;
+    TestDoubles::loggedErrors = 0;
+    PluginGuard::Track(ThisModule(), "A");
+
+    CHECK(FaultBelowPluginPropagates());
+    CHECK(g_guardReports == 0);
+    CHECK(!PluginGuard::GetFault(ThisModule(), nullptr));
+    CHECK(TestDoubles::loggedErrors == 1);          // one line naming A and the callback
+    CHECK(PluginGuard::Invoke(OkA, "tick callback", 0));
+
+    PluginGuard::Untrack(ThisModule());
+}
+
+// C++ exceptions are not the guard's: they reach the caller's catch, and the
+// plugin keeps running.
+static void ThrowA(int) { throw 42; }
+
+static void Test_GuardLetsCppExceptionsThrough()
+{
+    g_guardReports = 0;
+    PluginGuard::Track(ThisModule(), "A");
+
+    int caught = 0;
+    try { PluginGuard::Invoke(ThrowA, "tick callback", 0); }
+    catch (int v) { caught = v; }
+    CHECK(caught == 42);
+    CHECK(g_guardReports == 0);
+    CHECK(!PluginGuard::GetFault(ThisModule(), nullptr));
+    CHECK(PluginGuard::Invoke(OkA, "tick callback", 0));
+
+    PluginGuard::Untrack(ThisModule());
+}
+
+// Two threads fault in the same plugin at once: both are contained, and the
+// plugin is switched off and reported once.
+static void Test_GuardTwoThreadsFaultAtOnce()
+{
+    g_guardReports = 0;
+    PluginGuard::Track(ThisModule(), "A");
+
+    std::atomic<int> ready{ 0 };
+    bool ran[2] = { true, true };
+    auto fault = [&](int i) {
+        ++ready;
+        while (ready.load() < 2) {}
+        ran[i] = PluginGuard::Invoke(FaultA, "tick callback", 0);
+    };
+    std::thread t0(fault, 0), t1(fault, 1);
+    t0.join();
+    t1.join();
+
+    CHECK(!ran[0] && !ran[1]);
+    CHECK(g_guardReports == 1);
+    CHECK(PluginGuard::GetFault(ThisModule(), nullptr));
+
+    PluginGuard::Untrack(ThisModule());
+}
+
+// A call into memory that is no longer code (the callback of a DLL that is
+// gone) is contained; a call into a live thunk that faults is not stale, and
+// is no plugin's, so it goes on as before.
+static bool CallThunkPropagates(void (*thunk)(int))
+{
+    __try { PluginGuard::Invoke(thunk, "tick callback", 0); return false; }
+    __except (EXCEPTION_EXECUTE_HANDLER) { return true; }
+}
+
+static void Test_GuardStaleCallbacks()
+{
+    g_guardReports = 0;
+    SYSTEM_INFO si;
+    GetSystemInfo(&si);
+
+    void* data = VirtualAlloc(nullptr, si.dwPageSize, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+    CHECK(data != nullptr);
+    auto notCode = reinterpret_cast<void (*)(int)>(data);
+    CHECK(!PluginGuard::Invoke(notCode, "tick callback", 0));   // not executable
+    VirtualFree(data, 0, MEM_RELEASE);
+    CHECK(!PluginGuard::Invoke(notCode, "tick callback", 0));   // not mapped at all
+    CHECK(g_guardReports == 0);                                  // nothing to switch off
+
+    // mov dword ptr [0], 1 ; ret
+    static const unsigned char kFaultingThunk[] = { 0xC7, 0x04, 0x25, 0, 0, 0, 0, 1, 0, 0, 0, 0xC3 };
+    void* code = VirtualAlloc(nullptr, si.dwPageSize, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+    CHECK(code != nullptr);
+    memcpy(code, kFaultingThunk, sizeof(kFaultingThunk));
+    FlushInstructionCache(GetCurrentProcess(), code, sizeof(kFaultingThunk));
+    CHECK(CallThunkPropagates(reinterpret_cast<void (*)(int)>(code)));
+    VirtualFree(code, 0, MEM_RELEASE);
+    CHECK(g_guardReports == 0);
+}
+
+// A panel render that crashes halfway leaves ImGui as it was before the
+// render, and the panel is not drawn again while its plugin is off.
+static int g_crashRenders = 0;
+static void CrashingRender(IModLoaderImGui*)
+{
+    ++g_crashRenders;
+    ImGui::PushStyleVar(ImGuiStyleVar_Alpha, 0.5f);
+    ImGui::PushID("half-done");
+    *static_cast<volatile int*>(nullptr) = 1;
+}
+static const PluginPanelDesc kCrashingPanel = { "Crash", "Crashing panel", CrashingRender };
+
+static void Test_GuardRestoresImGuiAfterRenderFault()
+{
+    g_guardReports = 0;
+    g_crashRenders = 0;
+    PluginGuard::Track(ThisModule(), "A");
+    ImGui::GetIO().ConfigErrorRecoveryEnableAssert = false;
+
+    PanelHandle h = Registry::RegisterPanel(&kCrashingPanel);
+    CHECK(h != nullptr);
+    Registry::SetPanelOpen(h);
+
+    ImGuiContext& g = *GImGui;
+    const int styleVars = g.StyleVarStack.Size;
+    const int ids       = g.CurrentWindow ? g.CurrentWindow->IDStack.Size : 0;
+
+    DrawPanels();
+    CHECK(g_crashRenders == 1);
+    CHECK(g_guardReports == 1);
+    CHECK(g.StyleVarStack.Size == styleVars);
+    CHECK((g.CurrentWindow ? g.CurrentWindow->IDStack.Size : 0) == ids);
+
+    DrawPanels();
+    CHECK(g_crashRenders == 1);    // switched off: skipped
+
+    Registry::ForgetModule(ThisModule());
+    PluginGuard::Untrack(ThisModule());
+}
+
 // The helper every registry's ForgetModule uses: nothing of the freed module
 // is left, everything else is.
 struct GuardReg { int id; void (*cb)(int); };
@@ -698,6 +858,11 @@ int main()
     RunTest("GuardFaultSwitchesOffOnlyThatPlugin",  Test_GuardFaultSwitchesOffOnlyThatPlugin);
     RunTest("GuardLeavesLoaderFaultsAlone",         Test_GuardLeavesLoaderFaultsAlone);
     RunTest("GuardForgetModuleDropsOnlyThatModule", Test_GuardForgetModuleDropsOnlyThatModule);
+    RunTest("GuardPassesOnFaultsOutsideThePlugin",  Test_GuardPassesOnFaultsOutsideThePlugin);
+    RunTest("GuardLetsCppExceptionsThrough",        Test_GuardLetsCppExceptionsThrough);
+    RunTest("GuardTwoThreadsFaultAtOnce",           Test_GuardTwoThreadsFaultAtOnce);
+    RunTest("GuardStaleCallbacks",                  Test_GuardStaleCallbacks);
+    RunTest("GuardRestoresImGuiAfterRenderFault",   Test_GuardRestoresImGuiAfterRenderFault);
 
     CloseHandle(g_letRenderFinish);
     CloseHandle(g_inRender);

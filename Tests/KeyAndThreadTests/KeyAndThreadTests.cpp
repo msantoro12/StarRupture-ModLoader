@@ -509,6 +509,47 @@ static void ForgetModuleDropsItsKeybinds()
     CHECK(g_kPressed.load() == after);
 }
 
+// ForgetModule on the real queue: an unloading plugin's posted tasks never
+// run, whether still queued or later in the batch Drain is running (RELOAD and
+// UNLOAD run as a task, so the plugin's own tasks can sit right behind them).
+// This executable is plugin A, kernel32 plugin B.
+static void ForgetModuleDropsItsGameThreadTasks()
+{
+    const HMODULE a = GetModuleHandleW(nullptr);
+    const HMODULE b = GetModuleHandleW(L"kernel32.dll");
+    int ranA = 0, ranB = 0, ranLoader = 0;
+
+    // Still queued.
+    GameThreadDispatch::PostVoid([&] { ++ranA; }, a);
+    GameThreadDispatch::PostVoid([&] { ++ranB; }, b);
+    GameThreadDispatch::PostVoid([&] { ++ranLoader; });
+    GameThreadDispatch::ForgetModule(a);
+    GameThreadDispatch::ForgetModule(nullptr);   // the loader's own tasks are never dropped
+    GameThreadDispatch::Drain();
+    CHECK(ranA == 0);
+    CHECK(ranB == 1);
+    CHECK(ranLoader == 1);
+
+    // Behind the unload, in the same batch.
+    ranA = ranB = ranLoader = 0;
+    GameThreadDispatch::PostVoid([&] { ++ranA; }, a);
+    GameThreadDispatch::PostVoid([&] { GameThreadDispatch::ForgetModule(a); ++ranLoader; });
+    GameThreadDispatch::PostVoid([&] { ++ranA; }, a);
+    GameThreadDispatch::PostVoid([&] { ++ranB; }, b);
+    GameThreadDispatch::PostVoid([&] { ++ranA; }, a);
+    GameThreadDispatch::Drain();
+    CHECK(ranA == 1);          // only the one ahead of the unload
+    CHECK(ranB == 1);
+    CHECK(ranLoader == 1);
+
+    // Nothing is left over for the next tick, and A posts again once reloaded.
+    GameThreadDispatch::Drain();
+    CHECK(ranA == 1 && ranB == 1);
+    GameThreadDispatch::PostVoid([&] { ++ranA; }, a);
+    GameThreadDispatch::Drain();
+    CHECK(ranA == 2);
+}
+
 int main()
 {
     RunTest("IsGameThread: false on every thread before the first tick", GameThreadBeforeFirstTick);
@@ -533,6 +574,7 @@ int main()
     RunTest("IsKeyHeld: allocates nothing", AllocatesNothing);
     RunTest("IsKeyHeld: any thread", AnyThread);
     RunTest("ForgetModule: an unloading plugin's keybinds go", ForgetModuleDropsItsKeybinds);
+    RunTest("ForgetModule: an unloading plugin's game-thread tasks go", ForgetModuleDropsItsGameThreadTasks);
 
     printf("\n%d checks, %d failed\n", g_checks, g_failed);
     return g_failed == 0 ? 0 : 1;

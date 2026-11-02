@@ -55,11 +55,19 @@ namespace PluginGuard
 		return nullptr;
 	}
 
-	// An address no image holds: the callback of a DLL that is gone.
-	static bool Unmapped(const void* address)
+	// The call itself faulted, on an address that is no longer code: the
+	// callback of a DLL that is gone. Memory that is still executable (a
+	// thunk a plugin passed as its callback, or another DLL mapped there since)
+	// does not count.
+	static bool StaleCall(const void* callback, uintptr_t faultAddress)
 	{
+		if (faultAddress != reinterpret_cast<uintptr_t>(callback))
+			return false;
 		MEMORY_BASIC_INFORMATION mbi = {};
-		return VirtualQuery(address, &mbi, sizeof(mbi)) == 0 || mbi.State != MEM_COMMIT || mbi.Type != MEM_IMAGE;
+		if (VirtualQuery(callback, &mbi, sizeof(mbi)) == 0 || mbi.State != MEM_COMMIT)
+			return true;
+		constexpr DWORD kExecute = PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY;
+		return (mbi.Protect & kExecute) == 0;
 	}
 
 	void SetReporter(Reporter reporter)
@@ -146,35 +154,99 @@ namespace PluginGuard
 
 	namespace Detail
 	{
+		static constexpr size_t kMaxFrames = 24;
+
 		// Filled by the filter, read once the handler has run.
 		struct Capture
 		{
 			uint32_t  code;
 			uintptr_t address;
-			CONTEXT   context;
+			uintptr_t frames[kMaxFrames];
+			size_t    frameCount;
 		};
 
 		static constexpr DWORD kCppException = 0xE06D7363;   // MSVC's throw
 
-		// Plain function, no C++ objects: it runs on the faulting thread.
-		static LONG Filter(EXCEPTION_POINTERS* ep, const void* callback, Capture* out)
+		// The faulting thread's return addresses, walked from the fault's
+		// CONTEXT. Done in the filter: once the handler runs, the stack below it
+		// has been unwound and is reused. Holds no C++ objects (C2712).
+		static size_t WalkFrames(const CONTEXT& fault, uintptr_t* frames, size_t max)
+		{
+			CONTEXT ctx = fault;
+			size_t  n   = 0;
+			__try
+			{
+				while (n < max && ctx.Rip)
+				{
+					frames[n++] = static_cast<uintptr_t>(ctx.Rip);
+					DWORD64 imageBase = 0;
+					PRUNTIME_FUNCTION fn = RtlLookupFunctionEntry(ctx.Rip, &imageBase, nullptr);
+					if (fn)
+					{
+						void*   handlerData = nullptr;
+						DWORD64 establisher = 0;
+						RtlVirtualUnwind(UNW_FLAG_NHANDLER, imageBase, ctx.Rip, fn, &ctx, &handlerData, &establisher, nullptr);
+					}
+					else
+					{
+						ctx.Rip  = *reinterpret_cast<const DWORD64*>(ctx.Rsp);   // a leaf function
+						ctx.Rsp += sizeof(DWORD64);
+					}
+				}
+			}
+			__except (EXCEPTION_EXECUTE_HANDLER) {}   // a stack too broken to walk further
+			return n;
+		}
+
+		// A fault under a plugin's callback but outside its code: logged once
+		// per exception (nested guarded calls each see it), then passed on.
+		static void NotePassedOn(const EXCEPTION_RECORD* record, const Slot* owner, const char* what, uintptr_t fault)
+		{
+			static thread_local const EXCEPTION_RECORD* t_noted = nullptr;
+			if (t_noted == record) return;
+			t_noted = record;
+
+			const Slot* where = SlotFor(fault);
+			ModLoaderLogger::LogError(L"[PluginGuard] Fault (code=0x%08X at %p) under plugin '%S', in its %S, "
+			                          L"raised in %S: not contained, the crash goes on as it would without the guard",
+			                          record->ExceptionCode, reinterpret_cast<void*>(fault), owner->name, what,
+			                          where ? where->name : "engine or loader code");
+		}
+
+		// Plain function, no C++ objects: it runs on the faulting thread,
+		// before anything has been unwound.
+		static LONG Filter(EXCEPTION_POINTERS* ep, const void* callback, const char* what, Capture* out)
 		{
 			const DWORD code = ep->ExceptionRecord->ExceptionCode;
 			if (code == kCppException)
 				return EXCEPTION_CONTINUE_SEARCH;            // the dispatcher's catch handles it
-			if (!SlotFor(reinterpret_cast<uintptr_t>(callback)) && !Unmapped(callback))
-				return EXCEPTION_CONTINUE_SEARCH;            // the loader's own callback: as before
-			out->code    = code;
-			out->address = reinterpret_cast<uintptr_t>(ep->ExceptionRecord->ExceptionAddress);
-			out->context = *ep->ContextRecord;
+
+			// Contained only when the faulting instruction is the plugin's own:
+			// engine or loader frames below the callback may hold locks that an
+			// unwind past them would never release.
+			const uintptr_t fault = reinterpret_cast<uintptr_t>(ep->ExceptionRecord->ExceptionAddress);
+			const Slot* owner = SlotFor(reinterpret_cast<uintptr_t>(callback));
+			if (owner ? SlotFor(fault) != owner : !StaleCall(callback, fault))
+			{
+				if (owner) NotePassedOn(ep->ExceptionRecord, owner, what, fault);
+				return EXCEPTION_CONTINUE_SEARCH;            // not the plugin's own code: as before
+			}
+
+			out->code       = code;
+			out->address    = fault;
+			out->frameCount = 0;
+			if (code == EXCEPTION_STACK_OVERFLOW)
+				out->frames[out->frameCount++] = fault;      // no stack to spare for a walk
+			else
+				out->frameCount = WalkFrames(*ep->ContextRecord, out->frames, kMaxFrames);
 			return EXCEPTION_EXECUTE_HANDLER;
 		}
 
 		// Must hold no C++ objects (C2712).
-		static bool RunSEH(const void* callback, Thunk thunk, void* body, Capture* out)
+		static bool RunSEH(const void* callback, const char* what, Thunk thunk, void* body, Capture* out)
 		{
 			__try { thunk(body); return true; }
-			__except (Filter(GetExceptionInformation(), callback, out)) { return false; }
+			__except (Filter(GetExceptionInformation(), callback, what, out)) { return false; }
 		}
 
 		static void SwitchOff(const void* callback, const char* what, const Capture& c)
@@ -189,7 +261,7 @@ namespace PluginGuard
 				Slot* s = SlotFor(reinterpret_cast<uintptr_t>(callback));
 				if (!s)
 				{
-					// Nothing to switch off: the callback's DLL is gone.
+					// Nothing to switch off: the call landed where the callback's DLL used to be.
 					const auto address = reinterpret_cast<uintptr_t>(callback);
 					for (size_t i = 0; i < s_staleCount; ++i)
 						if (s_staleLogged[i] == address) return;
@@ -206,7 +278,7 @@ namespace PluginGuard
 				s->off.store(true, std::memory_order_release);
 				s_offCount.fetch_add(1);
 				strncpy_s(name, s->name, _TRUNCATE);
-				report = { reinterpret_cast<HMODULE>(s->base.load()), name, what, c.code, c.address, &c.context };
+				report = { reinterpret_cast<HMODULE>(s->base.load()), name, what, c.code, c.address, c.frames, c.frameCount };
 			}
 			if (Reporter r = s_reporter.load())
 				r(report);
@@ -218,7 +290,7 @@ namespace PluginGuard
 		bool Run(const void* callback, const char* what, Thunk thunk, void* body)
 		{
 			Capture c;
-			if (RunSEH(callback, thunk, body, &c))
+			if (RunSEH(callback, what, thunk, body, &c))
 				return true;
 			SwitchOff(callback, what, c);
 			return false;

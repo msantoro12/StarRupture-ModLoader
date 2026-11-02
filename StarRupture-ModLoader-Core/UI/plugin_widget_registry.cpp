@@ -37,10 +37,8 @@ namespace UI::PluginWidgetRegistry
             return nullptr;
 
         // A renderFn in no module could never be purged by ForgetModule.
-        HMODULE owner = nullptr;
-        if (!GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
-                                GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                                reinterpret_cast<LPCSTR>(desc->renderFn), &owner) || !owner)
+        const HMODULE owner = PluginGuard::ModuleOf(reinterpret_cast<const void*>(desc->renderFn));
+        if (!owner)
             return nullptr;
 
         std::lock_guard<std::mutex> lock(s_mutex);

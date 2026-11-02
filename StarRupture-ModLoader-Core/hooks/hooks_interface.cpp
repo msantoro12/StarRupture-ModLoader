@@ -456,9 +456,10 @@ namespace ModLoaderLogger
 	static void HooksPostToGameThread(PluginGameThreadCallback fn, void* context)
 	{
 		if (!fn) return;
-		// Guarded too: a task queued just before its plugin was unloaded runs
-		// into an unmapped address, which the guard contains.
-		GameThreadDispatch::PostVoid([fn, context]() { PluginGuard::Invoke(fn, "game-thread task", context); });
+		// Tagged with the plugin's module, so an unload or reload drops the
+		// task before it can run with a context the old instance owned.
+		GameThreadDispatch::PostVoid([fn, context]() { PluginGuard::Invoke(fn, "game-thread task", context); },
+		                             PluginGuard::ModuleOf(reinterpret_cast<const void*>(fn)));
 	}
 
 	static void HooksRegisterActorBeginPlayCallback(void (*callback)(void*))

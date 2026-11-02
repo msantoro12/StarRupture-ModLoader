@@ -155,9 +155,6 @@ is available.
 
 - The HUD toggles share one draggable box. It starts at the top left and remembers where you put
   it. **ModLoader Debug Values** adds input details to it ([Troubleshooting](#troubleshooting)).
-- **Pause Frame Generation While Windows Are Open** turns DLSS frame generation off while the mod
-  loader window, the console or a plugin panel is open, and back on when they close. Its
-  interpolated frames skip the overlay and flicker. <sup>[✦](#msantoro12)</sup>
 - **Connection Timeout**: see [Net timeouts](#net-timeouts).
 - **Enable Auto Updates** takes effect next launch. A mod loader update asks Yes or No first; a No
   is remembered for that version.
@@ -428,7 +425,6 @@ these for you.
 | `[Input]` | `SuppressKeybindsWhileTyping` | `1` | Keybinds ignore keys typed into a game text box |
 | `[Console]` | `OpenKey` | `Tilde` | |
 | `[HUD]` | `ShowFPS`, `ShowWorldName`, `ShowPlayerPosition`, `ShowDebugValues` | `0` | The Settings toggles |
-| `[Rendering]` | `PauseFrameGenWhileOpen` | `1` | |
 | `[Network]` | `ConnectionTimeout`, `InitialConnectTimeout` | `300.0` | Seconds, 1 to 3600; anything else logs a warning and uses 300. `0` keeps the engine default. See [Net timeouts](#net-timeouts) |
 | `[AutoUpdate]` | `Enabled` | `1` | |
 | | `ManifestUrl` | empty | Empty uses the built-in manifest |

@@ -7,7 +7,6 @@
 #include "../hooks/game/text_input_focus/text_input_focus.h"
 #include "../hooks/game/world_begin_play/world_begin_play.h"
 #include "../hooks/game/engine_tick/engine_tick.h"
-#include "../hooks/game/framegen_pause/framegen_pause.h"
 #include "../hooks/game/slate_present/slate_present.h"
 #include "../hooks/game/game_menu/game_menu.h"
 #include "../hooks/game/game_menu/game_menu_registry.h"
@@ -228,22 +227,9 @@ void InitClientUI()
     };
     Hooks::WorldBeginPlay::RegisterAnyWorldCallback(s_onWorldReady);
 
-    Hooks::FrameGenPause::Initialize();
-
-    static auto s_onTick = [](float deltaSeconds)
+    static auto s_onTick = [](float)
     {
         Hooks::GameMenu::Tick();
-
-        // DLSS Frame Generation flicker workaround (see FrameGenPause) --
-        // checked every tick regardless of pawn/world state below, since an
-        // overlay window can be open at the main menu too.
-        const bool anyOverlayWindowOpen =
-            UI::ModLoaderWindow::IsOpen()
-            || UI::ConsoleWindow::IsOpen()
-            || UI::PluginPanelRegistry::AnyPanelOpen();
-        Hooks::FrameGenPause::Tick(
-            UI::GlobalSettings::GetPauseFrameGenWhileOpen() && anyOverlayWindowOpen,
-            deltaSeconds);
 
         // Look up the current world fresh every tick -- a cached pointer can
         // outlive the world it points to between EndPlay and the next

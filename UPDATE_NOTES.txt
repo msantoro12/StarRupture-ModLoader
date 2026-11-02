@@ -11,3 +11,5 @@ Plugin authors can look up functions and game-class members in the loader's vers
 Plugins built for another game build load only if they take their game data from the version map; otherwise they show Incompatible with the build they need
 The version map can be refreshed from a signed online file, so a new game build can be supported without a loader update
 Click a plugin's row to open its Config page
+Overlay windows are drawn into frame-generation frames, so they no longer flicker, and frame generation stays on while a window is open
+The Pause Frame Generation While Windows Are Open setting is removed

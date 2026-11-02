@@ -79,9 +79,6 @@
     <Filter Include="Source Files\hooks\game\engine_exec">
       <UniqueIdentifier>{9c2e4b71-58d3-4f6a-a1b0-3e7d2c8f5a14}</UniqueIdentifier>
     </Filter>
-    <Filter Include="Source Files\hooks\game\framegen_pause">
-      <UniqueIdentifier>{2f6a8d13-7c95-4e2b-b04d-8a1f3c6e9d52}</UniqueIdentifier>
-    </Filter>
     <Filter Include="Source Files\hooks\game\slate_present">
       <UniqueIdentifier>{7d3b1e52-94a6-4c08-b2f1-5e8a6c0d3f27}</UniqueIdentifier>
     </Filter>
@@ -326,9 +323,6 @@
     </ClInclude>
     <ClInclude Include="hooks\game\engine_exec\engine_exec.h">
       <Filter>Source Files\hooks\game\engine_exec</Filter>
-    </ClInclude>
-    <ClInclude Include="hooks\game\framegen_pause\framegen_pause.h">
-      <Filter>Source Files\hooks\game\framegen_pause</Filter>
     </ClInclude>
     <ClInclude Include="hooks\game\slate_present\slate_present.h">
       <Filter>Source Files\hooks\game\slate_present</Filter>
@@ -724,9 +718,6 @@
     </ClCompile>
     <ClCompile Include="hooks\game\engine_exec\engine_exec.cpp">
       <Filter>Source Files\hooks\game\engine_exec</Filter>
-    </ClCompile>
-    <ClCompile Include="hooks\game\framegen_pause\framegen_pause.cpp">
-      <Filter>Source Files\hooks\game\framegen_pause</Filter>
     </ClCompile>
     <ClCompile Include="hooks\game\slate_present\slate_present.cpp">
       <Filter>Source Files\hooks\game\slate_present</Filter>

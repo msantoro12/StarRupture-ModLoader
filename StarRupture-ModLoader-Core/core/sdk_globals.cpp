@@ -459,13 +459,15 @@ namespace SdkGlobals
     {
         // Both members resolved (or, on the SDK's build, the compiled ones)
         // and an engine with a viewport: that viewport's world, null included.
-        // Anything short of that is the GWorld global, as before.
-        SDK::UEngine* engine = SDK::UEngine::GetEngine();
-        if (engine && g_fieldOffsets[kGameViewport].load(std::memory_order_acquire) >= 0
+        // Anything short of that is the GWorld global, as before. The offsets
+        // are tested first: they are set only once the layout check has
+        // verified GObjects, which GetEngine walks.
+        if (g_fieldOffsets[kGameViewport].load(std::memory_order_acquire) >= 0
             && g_fieldOffsets[kViewportWorld].load(std::memory_order_acquire) >= 0)
         {
-            if (SDK::UGameViewportClient* viewport = PointerAt<SDK::UGameViewportClient>(engine, kGameViewport))
-                return PointerAt<SDK::UWorld>(viewport, kViewportWorld);
+            if (SDK::UEngine* engine = SDK::UEngine::GetEngine())
+                if (SDK::UGameViewportClient* viewport = PointerAt<SDK::UGameViewportClient>(engine, kGameViewport))
+                    return PointerAt<SDK::UWorld>(viewport, kViewportWorld);
         }
         return GetGWorld();
     }

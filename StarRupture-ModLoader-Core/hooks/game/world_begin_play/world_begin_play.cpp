@@ -52,7 +52,7 @@ namespace Hooks::WorldBeginPlay
 		                          Hooks::GetCallerModuleName(callerAddr).c_str());
 
 		// Call original first so the world is fully initialised before we read from it.
-		ModLoaderLogger::LogDebug(L"[WorldBeginPlay]   Calling original OnWorldBeginPlay...");
+		ModLoaderLogger::LogDebug(L"[WorldBeginPlay]   Calling original UWorld::BeginPlay...");
 		if (g_original)
 		{
 			g_original(world);

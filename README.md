@@ -106,6 +106,9 @@ is available.
 
 - **LOAD NEW** picks up plugin DLLs added to the Plugins folder since the game started, and a
   popup lists each one with what to do next. <sup>[✦](#msantoro12)</sup>
+
+  <img src="images/popup-load-new.png" width="336" alt="The New Plugins pop-up listing each DLL LOAD NEW found with its result">
+
   - **Loaded** means nothing it registered for in PluginInit had already fired (save-loaded
     callbacks are not tracked). **Loaded late** registered for a world or experience start that had
     already fired; load a save to catch it up (the any-world start also re-fires on returning to

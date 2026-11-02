@@ -18,3 +18,6 @@ Plugins tab and the plugins console command show how many features a plugin has 
 Plugins can set when they may be loaded and unloaded: any time, only at the main menu, or only at game start
 Plugin interface v73: a plugin can mark itself busy, and the loader then refuses to unload or reload it until it is not
 Reload, unload and load say why they were refused, in the plugin list and on the console
+LOAD NEW picks up plugin DLLs added while the game runs, and a popup says what each one needs: Loaded, Loaded late, Needs restart, Incompatible, Hooks failed, Retry or Duplicate
+A rescan console command prints the same result
+A startup dialog says when the game changed in a way that would break plugins, and the loader writes compat-report-<CL>.json for the bug report

@@ -7,7 +7,7 @@
 //
 // User-configurable toggles persisted in modloader.ini, mostly HUD display
 // ones under [HUD] plus a handful of other loader-wide settings under their
-// own section (e.g. [Network]). Settings are loaded once at startup and
+// own section (e.g. [UI]). Settings are loaded once at startup and
 // saved immediately on change.
 //
 // The world-name and player-position values are written from the game thread

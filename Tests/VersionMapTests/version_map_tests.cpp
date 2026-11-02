@@ -866,7 +866,7 @@ int main()
 
 	Check(Real::VersionMap::kFormatVersion == 2, "the real map is format 2");
 	Check(unmatched == 0, "every real map key is a registry row's or a plugin's global or scoped key");
-	Check(pluginKeys == 106, "the real map holds the 106 plugin function keys: 10 of WAILA and ProductionViewer, 96 of MiniMap");
+	Check(pluginKeys == 105, "the real map holds the 105 plugin function keys; FRHIComputeCommandList::Transition is a loader registry key now");
 	Check(wrong == 0, "every real map row has its registry row's kind and fp");
 
 	printf("%d checks, %d failed\n", g_checks, g_failed);

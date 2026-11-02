@@ -1,12 +1,19 @@
 #pragma once
 
 #include <cstdint>
+#include <cwchar>
 #include <string>
 
 // Persists pattern-scan results to disk, keyed by the game's ProductVersion
-// string and a hash of the AOB pattern string. On a matching version, callers
-// can skip the (slow) full-module scan entirely and jump straight to the cached
-// offset.
+// string, the exe's PE timestamp and image size, and a hash of the AOB pattern
+// string. On a matching exe, callers can skip the (slow) full-module scan
+// entirely and jump straight to the cached offset.
+//
+// The ProductVersion alone does not say which exe it is: a hotfix that keeps
+// the CL, or a patched exe, has the same string and different bytes. The PE
+// timestamp and image size are what the version map already uses to tell
+// builds apart, so the cache uses them too. A file written before that (one
+// section per bare ProductVersion) matches nothing and is discarded.
 //
 // The pattern string itself (not the caller-supplied name) is hashed to form
 // the key: plugin callers don't supply a friendly name -- they pass the same
@@ -41,14 +48,24 @@
 // the pattern path never reads them.
 namespace ScanCache
 {
+    // The INI section a build's entries live under: the ProductVersion, then
+    // the PE timestamp and image size, e.g. "1.0.0-CL-127004|65A1B2C3|3F40000".
+    inline std::wstring SectionName(const std::wstring& gameVersion, uint32_t imageStamp, uint32_t imageSize)
+    {
+        wchar_t suffix[32]{};
+        swprintf_s(suffix, L"|%08X|%X", imageStamp, imageSize);
+        return gameVersion + suffix;
+    }
+
     struct Entry
     {
         uintptr_t offset     = 0;
         uint32_t  matchCount = 0;  // 0 = unknown / not counted
     };
 
-    // Looks up the cached entry for the given AOB pattern string under the given
-    // game version. Returns true and fills out on a hit, false on a miss.
+    // Looks up the cached entry for the given AOB pattern string under the
+    // running exe (the given ProductVersion plus the main module's PE timestamp
+    // and image size). Returns true and fills out on a hit, false on a miss.
     bool TryGet(const std::wstring& gameVersion, const std::string& pattern, Entry& out);
 
     // Stores/updates the entry and writes the cache file to disk immediately.

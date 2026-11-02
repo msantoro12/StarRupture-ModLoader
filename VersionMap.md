@@ -80,6 +80,15 @@ convention from the native one a hook or call needs, so using it would be a wron
 
 An `absent` row for the running CL ends the search for the requests it binds.
 
+**The plugin's own pattern.** A plugin's own AOB pattern has to match the running exe exactly
+once, whether or not a row decides the request. When a row (step 1 or the latest row's rescan)
+resolves, the pattern is not needed to load, so the loader checks it on the side: once per pattern
+per session, through `scan_cache.ini`, with the same rule as any scan. If it matches 0 or 2 or more
+places the loader logs one warning, `[Map] <plugin>: <key>: its own pattern matches <n> times on this
+exe ...`, and still uses the row. Without that check a pattern that is ambiguous would pass here and
+be refused on a loader that has no row for the build, since the pattern is then the only locator.
+The loader's own registry patterns are not checked this way; CI already holds them to the same rule.
+
 **AMBIGUOUS.** Two locators for the same build that resolve to different addresses. The loader
 picks neither, fails the request, and the log lists each locator and where it landed
 (`AMBIGUOUS: the locators that resolve disagree:`).
@@ -332,6 +341,7 @@ What a player sees, and what the log says (`ModLoader\Logs\ModLoader.log`).
 | The feed has the build, but a row is `absent` for something a plugin needs | That plugin's request fails. If it belongs to a declared feature, that feature is off; otherwise the plugin is refused, with the reason in the failure window. Other plugins and the game run. |
 | The feed has the build but misses a required loader entry | That CL is dropped from the feed, and the build is refused as above. |
 | A plugin built for another build does not declare `PLUGIN_MAP_MIGRATED` | **Incompatible**: "Needs an update to run on CL-...". It loads on its own build. |
+| A plugin's own pattern matches 0 or 2 or more places, but a row resolves the key | The plugin loads on the row. `ModLoader.log` has one `[Map]` warning naming the plugin, the key and the count. Without the row it would be refused, so the author should make the pattern unique. |
 | Two keys for one request disagree (AMBIGUOUS) | The request fails, with the locators listed: a declared feature turns off, any other key refuses the plugin. |
 | A game class a plugin reads moved | That plugin's own field request, or its `SR_SIZE_CHECK`, fails and the plugin alone is affected (a declared feature off, else refused), with the reason in the failure window. The loader's layout check covers the loader's own classes only. |
 

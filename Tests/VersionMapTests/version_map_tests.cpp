@@ -10,6 +10,7 @@
 #include "plugins/plugin_hook_report.h"
 #include "plugins/plugin_interface.h"
 #include "plugins/reload_policy.h"
+#include "memory_scanner/scan_cache.h"
 
 #include <array>
 #include <cstdint>
@@ -153,6 +154,18 @@ int main()
 	Check(VersionMap::Fingerprint(2, "B0 01", 0, -1, -1, 1) == 0x0BD817FA, "fp carries the arithmetic revision");
 	Check(VersionMap::Fingerprint(2, "B0 01", 0, -1, -1, 0) != 0x0BD817FA, "fp changes with the revision");
 
+	// The scan cache keeps one INI section per exe: the ProductVersion plus the PE
+	// timestamp and image size, so a rebuilt exe with the same ProductVersion misses.
+	{
+		const std::wstring v = L"1.0.0-CL-127004";
+		const std::wstring a = ScanCache::SectionName(v, 0x65A1B2C3, 0x3F40000);
+		Check(a == L"1.0.0-CL-127004|65A1B2C3|3F40000", "scan cache section: version, PE timestamp, image size");
+		Check(a != v, "scan cache section: a bare ProductVersion section from an older file does not match");
+		Check(a != ScanCache::SectionName(v, 0x65A1B2C4, 0x3F40000), "scan cache section: another timestamp is another section");
+		Check(a != ScanCache::SectionName(v, 0x65A1B2C3, 0x3F40001), "scan cache section: another image size is another section");
+		Check(a == ScanCache::SectionName(v, 0x65A1B2C3, 0x3F40000), "scan cache section: the same exe is the same section");
+	}
+
 	// A global key only the map holds; its row for the running build wins.
 	Result r = Key("VmapProbe", Ask("Test::MapOnly", Kind::FunctionStart));
 	Check(At(r, 0x1000) && Logged(L"loader map, CL-128786 row"), "global key: the map's row for this build");
@@ -164,6 +177,39 @@ int main()
 	r = Key("VmapProbe", Ask("Test::MapOnly", Kind::FunctionStart, "AB 01"), { ownRow });
 	Check(At(r, 0x1000) && Logged(L"loader map, CL-128786 row") && !Logged(L"own CL-128786 row"),
 		"the map's row first: the own row for this build is not tried");
+
+	// The plugin's own pattern is checked even when the map's row decides. It must
+	// match exactly once: 0 or 2+ matches is a warning that names the plugin, the
+	// key and the count, and the row is still used.
+	{
+		TestDoubles::g_counts["D1 01"] = 3;
+		TestDoubles::g_rvas["D3 01"] = 0xA000;
+		r = Key("OwnCheck", Ask("Test::MapOnly", Kind::FunctionStart, "D1 01"));
+		Check(At(r, 0x1000) && Logged(L"[Map] OwnCheck: Test::MapOnly: its own pattern matches 3 times"),
+			"own pattern: 3 matches warns with the plugin, the key and the count, and the row is still used");
+		r = Key("OwnCheck", Ask("Test::MapOnly", Kind::FunctionStart, "D2 01"));
+		Check(At(r, 0x1000) && Logged(L"its own pattern matches 0 times"), "own pattern: 0 matches warns, and the row is still used");
+		r = Key("OwnCheck", Ask("Test::MapOnly", Kind::FunctionStart, "D3 01"));
+		Check(At(r, 0x1000) && !Logged(L"its own pattern matches"), "own pattern: a unique pattern does not warn");
+		r = Key("OwnCheck", Ask("Test::MapOnly", Kind::FunctionStart));
+		Check(At(r, 0x1000) && !Logged(L"its own pattern matches"), "own pattern: a request without one has nothing to check");
+
+		// Once per pattern: a second request for the same pattern neither scans nor warns again.
+		const int calls = TestDoubles::g_resolveCalls["D1 01"];
+		r = Key("OwnCheck", Ask("Test::MapOnly", Kind::FunctionStart, "D1 01"));
+		Check(At(r, 0x1000) && !Logged(L"its own pattern matches") && TestDoubles::g_resolveCalls["D1 01"] == calls,
+			"own pattern: scanned and reported once per pattern");
+
+		// The loader's own registry rows are not plugin patterns.
+		TestDoubles::g_counts["D5 01"] = 2;
+		Candidate loaderRow;
+		loaderRow.gameCL  = kRunning.cl;
+		loaderRow.fromMap = true;
+		loaderRow.pattern = "AA 01";
+		r = VersionMap::Select("ModLoader", Ask("Test::MapOnly", Kind::FunctionStart, "D5 01"), { loaderRow }, kRunning);
+		Check(!Logged(L"its own pattern matches") && TestDoubles::g_resolveCalls["D5 01"] == 0,
+			"own pattern: the loader's own rows are not checked");
+	}
 
 	// The plugin's own address-only row for this exe: agrees, or AMBIGUOUS.
 	r = Key("VmapProbe", Ask("Test::MapOnly", Kind::FunctionStart), { AddressRow(0x1000) });
@@ -323,6 +369,13 @@ int main()
 		q = Key("VmapProbe", Ask("Test::Missed", Kind::FunctionStart, "C0 03"));
 		Check(At(q, 0x9200) && Logged(L"no row for CL-128786; own pattern resolves"),
 			"order: the latest row is not found here, so the request's own pattern");
+
+		// 3b. No row for this build and an own pattern that matches twice: the latest
+		// row decides, and the own pattern is reported.
+		TestDoubles::g_counts["D4 01"] = 2;
+		q = Key("OwnCheck", Ask("Test::Chain", Kind::FunctionStart, "D4 01"));
+		Check(At(q, 0x9100) && Logged(L"[Map] OwnCheck: Test::Chain: its own pattern matches 2 times"),
+			"own pattern: no row for this build, the latest row decides and the ambiguous own pattern is reported");
 
 		// 4. Nothing resolves: a miss, which the caller turns into a feature off or a refusal.
 		q = Key("VmapProbe", Ask("Test::Missed", Kind::FunctionStart));

@@ -19,3 +19,5 @@ Plugin interface v73: a plugin can mark itself busy, and the loader then refuses
 Reload, unload and load say why they were refused, in the plugin list and on the console
 A plugin that crashes in one of its callbacks is switched off and shown as Crashed; the game keeps running, and RELOAD brings the plugin back
 A crash in game or mod loader code under a plugin callback still crashes the game, and the log names the plugin and callback it happened under
+The log warns when a plugin's own pattern matches 0 or 2 or more places on the running game, even when the version map resolves it, so a pattern that only works because of the map is caught early
+The pattern scan cache is kept per game exe (version, build timestamp and size), so a rebuilt exe with the same version rescans

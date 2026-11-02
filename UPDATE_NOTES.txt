@@ -22,3 +22,6 @@ A plugin that crashes in one of its callbacks is switched off and shown as Crash
 A crash in game or mod loader code under a plugin callback still crashes the game, and the log names the plugin and callback it happened under
 The log warns when a plugin's own pattern matches 0 or 2 or more places on the running game, even when the version map resolves it, so a pattern that only works because of the map is caught early
 The pattern scan cache is kept per game exe (version, build timestamp and size), so a rebuilt exe with the same version rescans
+LOAD NEW moved up beside the window title
+Keys 1 to 5 open the Plugins, Config, Settings, Logging and Theme tabs, and the tab tooltips show the number
+Tab, the arrow keys and Space or Enter work in the loader and plugin windows while one is open, and Settings can turn that off

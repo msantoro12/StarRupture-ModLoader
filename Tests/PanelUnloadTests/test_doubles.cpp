@@ -39,7 +39,7 @@ namespace ModLoaderLogger
 // renders, but the panel's renderFn is called when drawWindows is set.
 namespace UI::Theme
 {
-    bool BeginChamferedWindow(const char* title, const char*, bool*, const char*, ImGuiWindowFlags, bool)
+    bool BeginChamferedWindow(const char* title, const char*, bool*, const char*, ImGuiWindowFlags, bool, void (*)())
     {
         TestDoubles::drawnTitles.push_back(title);
         return TestDoubles::drawWindows;

@@ -90,6 +90,11 @@ turned off in the **Settings** tab.
 
 - **F2** (rebindable: `OpenKey` under `[UI]` in `modloader.ini`) opens it. So does **MOD LOADER** in the game's main and pause menus, below OPTIONS.
 - **Esc** closes it. <sup>[✦](#msantoro12)</sup>
+- **1** to **5** open Plugins, Config, Settings, Logging and Theme while the window has the focus. They
+  do nothing while a text box, a slider drag or a keybind capture is taking keys. <sup>[✦](#msantoro12)</sup>
+- **Tab**, **Shift+Tab** and the arrow keys move between buttons and fields in this window and in
+  plugin windows, **Space** or **Enter** uses the one picked. It runs only while a window is open, and
+  **Keyboard navigation** in the **Settings** tab turns it off. <sup>[✦](#msantoro12)</sup>
 - **`~`** (tilde; rebindable: `OpenKey` under `[Console]` in `modloader.ini`) opens the [developer console](#developer-console).
 
 <img src="images/pause-menu.png" width="360" alt="The pause menu with the MOD LOADER, BETTER CHEATS and BETTER DRONE rows">
@@ -104,8 +109,8 @@ is available.
 
 <img src="images/plugins-tab.png" width="480" alt="Plugins tab listing plugins in each status">
 
-- **LOAD NEW** picks up plugin DLLs added to the Plugins folder since the game started, and a
-  popup lists each one with what to do next. <sup>[✦](#msantoro12)</sup>
+- **LOAD NEW**, beside the window title, picks up plugin DLLs added to the Plugins folder since the
+  game started, and a popup lists each one with what to do next. <sup>[✦](#msantoro12)</sup>
   - **Loaded** means nothing it registered for in PluginInit had already fired (save-loaded
     callbacks are not tracked). **Loaded late** registered for a world or experience start that had
     already fired; load a save to catch it up (the any-world start also re-fires on returning to
@@ -203,6 +208,8 @@ splash have none. How a plugin declares these is in the SDK's `PluginDevelopment
 - **Pause Frame Generation While Windows Are Open** turns DLSS frame generation off while the mod
   loader window, the console or a plugin panel is open, and back on when they close. Its
   interpolated frames skip the overlay and flicker. <sup>[✦](#msantoro12)</sup>
+- **Keyboard navigation** (on by default) lets Tab, the arrow keys and Space or Enter drive the loader
+  and plugin windows while they are open. <sup>[✦](#msantoro12)</sup>
 - **Connection Timeout**: see [Net timeouts](#net-timeouts).
 - **Enable Auto Updates** takes effect next launch. A mod loader update asks Yes or No first; a No
   is remembered for that version.
@@ -480,6 +487,7 @@ these for you.
 | | `FontScale` | `1.00` | 0.75 to 5.00. Set by **Text Size** |
 | | `FontFamily` | `Arial` | `Default` if Arial is not installed. Set by **Font Family** |
 | | `Theme` | empty | Empty is `Default`, unless the file has an old `[ThemeColors]` block: that is saved as the `Custom` theme. Set by **Active Theme** |
+| | `KeyboardNavigation` | `1` | `0` turns off Tab, arrow-key and Space or Enter navigation. Set by **Keyboard navigation** |
 | `[Input]` | `SuppressKeybindsWhileTyping` | `1` | Keybinds ignore keys typed into a game text box |
 | `[Console]` | `OpenKey` | `Tilde` | |
 | `[HUD]` | `ShowFPS`, `ShowWorldName`, `ShowPlayerPosition`, `ShowDebugValues` | `0` | The Settings toggles |

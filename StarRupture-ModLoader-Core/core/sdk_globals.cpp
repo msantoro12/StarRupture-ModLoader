@@ -287,7 +287,9 @@ namespace SdkGlobals
         return globals;
     }
 
-    SDK::UWorld* GetWorld()
+    // The engine's GWorld global: Offsets::GWorld on the SDK's build, else the
+    // one ResolveAndApply found (null when none). GetWorld's fallback.
+    static SDK::UWorld* GetGWorld()
     {
         if (VersionMap::RunningExe().cl == VersionMap::kBuiltCL)
             return SDK::UWorld::GetWorld();
@@ -305,7 +307,7 @@ namespace SdkGlobals
     bool VerifyGObjects() { return true; }
     bool SdkOnResolvedGlobals() { return false; }
     const PluginSdkGlobals* ForPlugins() { return nullptr; }
-    SDK::UWorld* GetWorld() { return SDK::UWorld::GetWorld(); }
+    static SDK::UWorld* GetGWorld() { return SDK::UWorld::GetWorld(); }
 }
 
 #endif
@@ -340,14 +342,22 @@ namespace SdkGlobals
             uint32_t    size;
         };
 
-        enum FieldId { kCraftComponent, kGameState, kLineBatchers, kNetDriver, kFieldCount };
+        // The mapped members (kLoaderFieldKeys) come first. The engine's
+        // viewport members after them are reflected engine members GetWorld
+        // reads; a miss on one is not a layout failure, GetWorld just keeps
+        // to GWorld, so they are not in kLoaderFieldKeys (which every map
+        // build must cover).
+        enum FieldId { kCraftComponent, kGameState, kLineBatchers, kNetDriver, kMappedFieldCount,
+                       kGameViewport = kMappedFieldCount, kViewportWorld, kFieldCount };
 
         static_assert(std::is_same_v<decltype(SDK::ACrCrafter::CraftComponent), SDK::UCrCraftingComponent*>);
         static_assert(std::is_same_v<decltype(SDK::UWorld::GameState), SDK::AGameStateBase*>);
         static_assert(std::is_same_v<std::remove_extent_t<decltype(SDK::UWorld::LineBatchers)>, SDK::ULineBatchComponent*>);
         static_assert(std::is_same_v<decltype(SDK::UWorld::NetDriver), SDK::UNetDriver*>);
+        static_assert(std::is_same_v<decltype(SDK::UEngine::GameViewport), SDK::UGameViewportClient*>);
+        static_assert(std::is_same_v<decltype(SDK::UGameViewportClient::World), SDK::UWorld*>);
 
-        static_assert(std::size(VersionMap::kLoaderFieldKeys) == kFieldCount, "one key per loader field");
+        static_assert(std::size(VersionMap::kLoaderFieldKeys) == kMappedFieldCount, "one key per mapped loader field");
 
         const FieldSpec kFieldSpecs[kFieldCount] = {
             { VersionMap::kLoaderFieldKeys[kCraftComponent], "ACrCrafter", "CraftComponent",
@@ -358,11 +368,15 @@ namespace SdkGlobals
               offsetof(SDK::UWorld, LineBatchers), sizeof(SDK::UWorld::LineBatchers) },
             { VersionMap::kLoaderFieldKeys[kNetDriver], "UWorld", "NetDriver",
               offsetof(SDK::UWorld, NetDriver), sizeof(SDK::UWorld::NetDriver) },
+            { "UEngine::GameViewport", "UEngine", "GameViewport",
+              offsetof(SDK::UEngine, GameViewport), sizeof(SDK::UEngine::GameViewport) },
+            { "UGameViewportClient::World", "UGameViewportClient", "World",
+              offsetof(SDK::UGameViewportClient, World), sizeof(SDK::UGameViewportClient::World) },
         };
 
         // Written once by ResolveFields on the init thread, read from any.
         // -1: not resolved (yet, or on this build).
-        std::atomic<int32_t> g_fieldOffsets[kFieldCount] = { -1, -1, -1, -1 };
+        std::atomic<int32_t> g_fieldOffsets[kFieldCount] = { -1, -1, -1, -1, -1, -1 };
         std::atomic<bool>    g_unresolvedLogged[kFieldCount] = {};
 
         // The pointer stored at the resolved offset of `id` in `object`, as
@@ -402,7 +416,9 @@ namespace SdkGlobals
             }
             if (running.cl != VersionMap::kBuiltCL)
             {
-                unresolved.push_back(std::string(spec.key) + ": " + error);
+                // SelectField has logged it; GetWorld keeps to GWorld.
+                if (id < kMappedFieldCount)
+                    unresolved.push_back(std::string(spec.key) + ": " + error);
                 continue;
             }
             ModLoaderLogger::LogWarn(L"[Map] ModLoader: %S: the SDK's compiled offset 0x%X, on the build it was made for",
@@ -437,5 +453,20 @@ namespace SdkGlobals
     SDK::UCrCraftingComponent* CrafterCraftComponent(const SDK::ACrCrafter* crafter)
     {
         return PointerAt<SDK::UCrCraftingComponent>(crafter, kCraftComponent);
+    }
+
+    SDK::UWorld* GetWorld()
+    {
+        // Both members resolved (or, on the SDK's build, the compiled ones)
+        // and an engine with a viewport: that viewport's world, null included.
+        // Anything short of that is the GWorld global, as before.
+        SDK::UEngine* engine = SDK::UEngine::GetEngine();
+        if (engine && g_fieldOffsets[kGameViewport].load(std::memory_order_acquire) >= 0
+            && g_fieldOffsets[kViewportWorld].load(std::memory_order_acquire) >= 0)
+        {
+            if (SDK::UGameViewportClient* viewport = PointerAt<SDK::UGameViewportClient>(engine, kGameViewport))
+                return PointerAt<SDK::UWorld>(viewport, kViewportWorld);
+        }
+        return GetGWorld();
     }
 }

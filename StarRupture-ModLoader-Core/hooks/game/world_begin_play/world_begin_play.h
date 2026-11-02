@@ -11,7 +11,7 @@ namespace SDK
 }
 
 // ---------------------------------------------------------------------------
-// UCrSessionWorldLoaderSubsystem::OnWorldBeginPlay Hook
+// UWorld::BeginPlay Hook
 // ---------------------------------------------------------------------------
 
 namespace Hooks::WorldBeginPlay

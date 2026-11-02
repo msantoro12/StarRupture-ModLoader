@@ -25,15 +25,7 @@ namespace PluginConsole
     // -----------------------------------------------------------------------
     static bool StillMapped(const void* fn)
     {
-        if (!fn) return false;
-
-        HMODULE owner = nullptr;
-        if (!GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
-                                   GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                                static_cast<LPCSTR>(fn), &owner))
-            return false;
-
-        return owner != nullptr;
+        return PluginGuard::ModuleOf(fn) != nullptr;
     }
 
     // -----------------------------------------------------------------------
@@ -171,8 +163,13 @@ namespace PluginConsole
     class CallbackSink : public ModConsole::Sink
     {
     public:
-        CallbackSink(std::string owner, PluginConsoleOutputCallback onLine, void* userData)
-            : m_owner(std::move(owner)), m_onLine(onLine), m_userData(userData) {}
+        CallbackSink(std::string owner, PluginConsoleOutputCallback onLine,
+                     PluginConsoleCompleteCallback onComplete, void* userData)
+            : m_owner(std::move(owner)), m_onLine(onLine), m_userData(userData),
+              m_module(PluginGuard::ModuleOf(onLine ? reinterpret_cast<const void*>(onLine)
+                                                    : reinterpret_cast<const void*>(onComplete))) {}
+
+        HMODULE Owner() const override { return m_module; }
 
         void Write(ModConsole::LineKind kind, const char* text) override
         {
@@ -193,6 +190,7 @@ namespace PluginConsole
         std::string                 m_owner;
         PluginConsoleOutputCallback m_onLine;
         void*                       m_userData;
+        HMODULE                     m_module;   // the calling plugin's
     };
 
     // -----------------------------------------------------------------------
@@ -350,7 +348,7 @@ namespace PluginConsole
     {
         if (!self || !self->name || !line || !*line) return false;
 
-        auto sink = std::make_shared<CallbackSink>(self->name, onLine, userData);
+        auto sink = std::make_shared<CallbackSink>(self->name, onLine, onComplete, userData);
         return ModConsole::Dispatch(line, sink, MakeCompletion(self->name, onComplete, userData));
     }
 
@@ -361,7 +359,7 @@ namespace PluginConsole
     {
         if (!self || !self->name || !line || !*line) return false;
 
-        auto sink = std::make_shared<CallbackSink>(self->name, onLine, userData);
+        auto sink = std::make_shared<CallbackSink>(self->name, onLine, onComplete, userData);
 
         // forceGameThread: the caller is typically a socket thread, and one
         // rule for every line beats some running inline there and some a

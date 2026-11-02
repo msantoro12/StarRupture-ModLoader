@@ -169,9 +169,17 @@ namespace Hooks::HttpServer
 		const PluginHttpRequest* req)
 	{
 		// PluginGuard switches the plugin off on a fault in its filter; the
-		// outer __try still catches anything else, as before.
+		// outer __try still catches anything else, as before. A filter that
+		// crashed, or whose plugin is switched off, denies: a filter is there to
+		// keep requests out, and one that cannot run must not wave them all in
+		// for the rest of the session.
 		HttpRequestAction action = HttpRequestAction::Approve;
-		__try { PluginGuard::InvokeInto(&action, cb, "HTTP request filter", req); return action; }
+		__try
+		{
+			if (!PluginGuard::InvokeInto(&action, cb, "HTTP request filter", req))
+				return HttpRequestAction::Deny;
+			return action;
+		}
 		__except (EXCEPTION_EXECUTE_HANDLER) { return HttpRequestAction::Approve; }
 	}
 

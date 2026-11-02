@@ -19,10 +19,16 @@
 // that plugin's DLL, on every thread, until it is unloaded or reloaded. The
 // Plugins tab shows it as Crashed, with the exception code and the callback.
 //
-// Only a fault in a callback that lives in a plugin DLL is caught, plus one
-// whose address is no longer mapped at all (a callback left behind by a
-// plugin that was unloaded). A fault in a callback of the loader's own goes
-// on as before. C++ exceptions are not touched: they reach the caller's catch.
+// Only a fault raised in the plugin's own code is caught: the callback lives
+// in a plugin DLL and the faulting instruction is in that same DLL. A fault
+// in engine or loader code that the callback called into is not caught, since
+// unwinding past those frames would leave their locks held and their state
+// half-written: it is logged once, naming the plugin and the callback it ran
+// under, and goes on to the crash handler as it would without the guard. So
+// does a fault in a callback of the loader's own. A call into an address that
+// is no longer code at all (a callback left behind by a plugin that was
+// unloaded) is caught and logged. C++ exceptions are not touched: they reach
+// the caller's catch.
 //
 // Not covered: detours a plugin installs on game functions, the plugin's own
 // threads, and its DllMain. Those run outside any loader call.
@@ -40,16 +46,18 @@ namespace PluginGuard
 		const char* callback = nullptr;  // the callback it crashed in (a string literal)
 	};
 
-	// What the reporter is told, once per plugin that is switched off. The
-	// CONTEXT is the faulting thread's at the fault, for a stack walk.
+	// What the reporter is told, once per plugin that is switched off.
+	// `frames` is the faulting thread's call stack, walked in the filter while
+	// it was still intact, innermost first.
 	struct Report
 	{
-		HMODULE        module;
-		const char*    pluginName;
-		const char*    callback;
-		uint32_t       code;
-		uintptr_t      faultAddress;
-		const CONTEXT* context;
+		HMODULE          module;
+		const char*      pluginName;
+		const char*      callback;
+		uint32_t         code;
+		uintptr_t        faultAddress;
+		const uintptr_t* frames;
+		size_t           frameCount;
 	};
 	using Reporter = void (*)(const Report& report);
 

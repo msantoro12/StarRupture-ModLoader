@@ -11,6 +11,8 @@
 #include "memory_scanner/hook_scanner_interface.h"
 #include "plugins/plugin_hook_report.h"
 #include "plugins/plugin_guard.h"
+#include "plugins/plugin_watchdog.h"
+#include "utils/game_thread_dispatch.h"
 #include "plugins/reload_policy.h"
 #include "hooks/hooks_interface.h"
 #include "memory_scanner/version_map.h"
@@ -187,6 +189,14 @@ namespace PluginManager
 		__except (PluginCrashFilter(GetExceptionInformation())) { return false; }
 	}
 
+	// Shutdown also runs after a plugin crashed, and a crash can leave the
+	// plugin's own locks held, so a shutdown that hangs is named in the log.
+	static bool CallShutdown(PluginShutdownFunc fn)
+	{
+		PluginWatchdog::Scope watch(reinterpret_cast<const void*>(fn), "PluginShutdown");
+		return CallShutdownSEH(fn);
+	}
+
 	struct InitSEHResult { bool crashed; bool retval; };
 	static InitSEHResult CallInitSEH(PluginInitFunc fn, IPluginSelf* self)
 	{
@@ -259,8 +269,18 @@ namespace PluginManager
 		uintptr_t faultOffset = 0;
 		ResolveModuleAndOffset(r.faultAddress, faultModuleName, MAX_PATH, &faultOffset);
 
+		// The guard walked the stack before the unwind, so every frame is real.
 		wchar_t stackTrace[2048] = {};
-		AppendStackTrace(*r.context, stackTrace, std::size(stackTrace));
+		for (size_t i = 0; i < r.frameCount; ++i)
+		{
+			wchar_t modName[MAX_PATH];
+			uintptr_t modOffset = 0;
+			ResolveModuleAndOffset(r.frames[i], modName, MAX_PATH, &modOffset);
+
+			wchar_t line[MAX_PATH + 32];
+			swprintf_s(line, L"\n    #%zu  %s+0x%llX", i, modName, static_cast<unsigned long long>(modOffset));
+			wcscat_s(stackTrace, line);
+		}
 
 		ModLoaderLogger::LogError(
 			L"[PluginManager] Plugin '%S' CRASHED in its %S -- code=0x%08X  fault=0x%llX  (+0x%llX from plugin DLL base)"
@@ -796,6 +816,17 @@ namespace PluginManager
 	}
 
 	static bool ShutDownAndFree(LoadedPlugin& p, const wchar_t* action);
+	static void ForgetRegistrations(LoadedPlugin&);
+
+	// What the plugin says it is busy with. A plugin that crashed and was
+	// switched off is busy with nothing: a reason it set before the crash
+	// would otherwise refuse the unload or reload that recovers it.
+	static std::string BusyReasonOf(const LoadedPlugin& p)
+	{
+		if (p.hModule && PluginGuard::GetFault(p.hModule, nullptr))
+			return {};
+		return ReloadPolicy::BusyReason(&p.self);
+	}
 
 	// Calls PluginInit on a single record that has been loaded but not yet initialized.
 	// Caller must hold g_pluginLock. Returns true if the plugin is now initialized.
@@ -847,6 +878,8 @@ namespace PluginManager
 		{
 			LogPluginCrash(plugin.cachedName.c_str(), plugin.hModule, L"PluginInit");
 			ModLoaderLogger::LogError(L"Plugin '%S' crashed during PluginInit -- it has been left unloaded", plugin.cachedName.c_str());
+			// Whatever it registered before the crash would go on being called.
+			ForgetRegistrations(plugin);
 		}
 		else if (initResult.retval && !lateRefusal.empty())
 		{
@@ -962,6 +995,11 @@ namespace PluginManager
 	// the plugin did not unregister itself, or unregistered from the wrong
 	// list, would otherwise be called into freed memory -- or, once another
 	// DLL is mapped at the same address, into the middle of its code.
+	//
+	// This drops what is registered or queued; it does not wait for a call
+	// already running. The game and render threads are not inside the plugin
+	// here (RELOAD and UNLOAD run on the game thread, and WaitOutPluginRenders
+	// has waited out the overlay), but an HTTP or network thread can be.
 	static void ForgetRegistrations(LoadedPlugin& p)
 	{
 		// The schema the config manager cached lives inside this module.
@@ -977,6 +1015,11 @@ namespace PluginManager
 
 		// Every game-event, tick, input, network and HTTP callback.
 		ModLoaderLogger::ForgetPluginCallbacks(p.hModule);
+
+		// Game-thread tasks it posted that have not run yet, including any in
+		// the batch running right now behind this unload: each holds its
+		// callback and a context pointer into the module or its heap.
+		GameThreadDispatch::ForgetModule(p.hModule);
 #ifdef MODLOADER_CLIENT_BUILD
 		// A panel or widget it registered and did not unregister: the
 		// registries keep its descriptor and renderFn, both inside the module.
@@ -1002,7 +1045,7 @@ namespace PluginManager
 			if (plugin->isInitialized)
 			{
 				ModLoaderLogger::LogMessage(L"Shutting down plugin: %S", plugin->cachedName.c_str());
-				if (!CallShutdownSEH(plugin->shutdown))
+				if (!CallShutdown(plugin->shutdown))
 					LogPluginCrash(plugin->cachedName.c_str(), plugin->hModule, L"PluginShutdown (unload all)");
 				plugin->isInitialized = false;
 			}
@@ -1086,7 +1129,7 @@ namespace PluginManager
 				out[i].hasUpdateManifest = HasUpdateSidecar(p.fileName);
 
 				const bool world = ReloadPolicy::GameplayWorldRunning();
-				const std::string busy = ReloadPolicy::BusyReason(&p.self);
+				const std::string busy = BusyReasonOf(p);
 				const std::string unloadWhy = p.isInitialized ? ReloadPolicy::UnloadRefusal(p.reload.unload, busy, world) : std::string();
 				const std::string reloadWhy = ReloadPolicy::ReloadRefusal(p.reload, busy, p.isInitialized, world);
 				strncpy_s(out[i].unloadBlock, unloadWhy.c_str(), _TRUNCATE);
@@ -1126,7 +1169,7 @@ namespace PluginManager
 	// its renders is still running: it is shut down, but stays mapped.
 	static bool ShutDownAndFree(LoadedPlugin& p, const wchar_t* action)
 	{
-		if (!CallShutdownSEH(p.shutdown))
+		if (!CallShutdown(p.shutdown))
 			LogPluginCrash(p.cachedName.c_str(), p.hModule, L"PluginShutdown (unload)");
 		p.isInitialized = false;
 		ReloadPolicy::SetBusyReason(&p.self, nullptr);
@@ -1166,7 +1209,7 @@ namespace PluginManager
 
 		// Everything is asked before anything is shut down, so a refusal leaves
 		// the plugin running exactly as it was.
-		if (std::string why = ReloadPolicy::UnloadRefusal(p.reload.unload, ReloadPolicy::BusyReason(&p.self),
+		if (std::string why = ReloadPolicy::UnloadRefusal(p.reload.unload, BusyReasonOf(p),
 				ReloadPolicy::GameplayWorldRunning()); !why.empty())
 		{
 			ModLoaderLogger::LogWarn(L"Unload of %S refused: %S", p.cachedName.c_str(), why.c_str());
@@ -1198,7 +1241,7 @@ namespace PluginManager
 
 		// The unload half and the load half are both asked before the first of
 		// them starts: a refused reload must not leave a plugin shut down.
-		if (std::string why = ReloadPolicy::ReloadRefusal(p.reload, ReloadPolicy::BusyReason(&p.self), p.isInitialized,
+		if (std::string why = ReloadPolicy::ReloadRefusal(p.reload, BusyReasonOf(p), p.isInitialized,
 				ReloadPolicy::GameplayWorldRunning()); !why.empty())
 		{
 			ModLoaderLogger::LogWarn(L"Reload of %S refused: %S", p.cachedName.c_str(), why.c_str());
@@ -1211,7 +1254,7 @@ namespace PluginManager
 
 		if (p.isInitialized)
 		{
-			if (!CallShutdownSEH(p.shutdown))
+			if (!CallShutdown(p.shutdown))
 				LogPluginCrash(p.cachedName.c_str(), p.hModule, L"PluginShutdown (reload)");
 			p.isInitialized = false;
 			ReloadPolicy::SetBusyReason(&p.self, nullptr);

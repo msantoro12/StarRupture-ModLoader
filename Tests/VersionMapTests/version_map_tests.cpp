@@ -11,6 +11,8 @@
 #include "plugins/plugin_interface.h"
 #include "plugins/reload_policy.h"
 #include "memory_scanner/scan_cache.h"
+#include "plugins/crash_restart.h"
+#include "UI/update_notice_window.h"
 
 #include <array>
 #include <cstdint>
@@ -923,6 +925,98 @@ int main()
 	Check(unmatched == 0, "every real map key is a registry row's or a plugin's global or scoped key");
 	Check(pluginKeys == 105, "the real map holds the 105 plugin function keys; FRHIComputeCommandList::Transition is a loader registry key now");
 	Check(wrong == 0, "every real map row has its registry row's kind and fp");
+
+	// Restarting a plugin the crash guard switched off: the plan for each setting, the limiter, the timing.
+	{
+		using CrashRestart::Plan;
+		constexpr PluginReload A = PluginReload::ANYTIME, M = PluginReload::MENU, R = PluginReload::RESTART;
+		const auto settings = [](PluginReload load, PluginReload unload) { ReloadPolicy::Settings s; s.load = load; s.unload = unload; return s; };
+
+		// Each combination agrees with what RELOAD itself would allow (a crashed plugin has no busy reason).
+		for (const PluginReload load : { A, M, R })
+			for (const PluginReload unload : { A, M, R })
+				for (const bool world : { false, true })
+				{
+					const Plan plan = CrashRestart::Decide(settings(load, unload), world, 0, true);
+					const bool allowed = ReloadPolicy::ReloadRefusal(settings(load, unload), "", true, world).empty();
+					Check((plan == Plan::RestartNow) == allowed, "restart: restarts exactly when RELOAD is allowed");
+					if (load == R || unload == R)
+						Check(plan == Plan::NeedsGameRestart, "restart: RESTART in either setting waits for a game restart");
+					else if (world && (load == M || unload == M))
+						Check(plan == Plan::WaitForMenu, "restart: MENU in a world waits for the main menu");
+				}
+		Check(CrashRestart::Decide(settings(M, M), false, 0, true) == Plan::RestartNow, "restart: MENU at the main menu restarts");
+		Check(CrashRestart::Decide(settings(A, A), false, 0, false) == Plan::Disabled, "restart: the setting off wins");
+
+		// The limiter: three restarts per plugin per session, then it gives up; counted by name.
+		CrashRestart::Scheduler s;
+		for (int i = 0; i < CrashRestart::kMaxRestarts; ++i)
+		{
+			Check(CrashRestart::Decide(settings(A, A), true, s.Restarts("BetterDrone"), true) == Plan::RestartNow, "limiter: restarts below the limit");
+			s.CountRestart("BetterDrone");
+		}
+		Check(s.Restarts("BetterDrone") == 3, "limiter: three counted");
+		Check(CrashRestart::Decide(settings(A, A), true, s.Restarts("BetterDrone"), true) == Plan::GaveUp, "limiter: the fourth crash gives up");
+		Check(CrashRestart::Decide(settings(R, R), true, s.Restarts("BetterDrone"), true) == Plan::GaveUp, "limiter: gives up whatever the setting");
+		Check(s.Restarts("Codex") == 0, "limiter: per plugin");
+		Check(CrashRestart::Announcement(Plan::GaveUp, "BetterDrone", "tick callback").find("stays off until the game restarts") != std::string::npos,
+			"limiter: the give-up text");
+		Check(CrashRestart::Announcement(Plan::NeedsGameRestart, "BetterDrone", "tick callback").find("Restart the game to turn it back on") != std::string::npos,
+			"RESTART: the toast asks for a game restart");
+		Check(CrashRestart::Restarted("BetterDrone", "tick callback") == "BetterDrone crashed (tick callback) and was restarted", "the restarted text");
+
+		// Timing: a new crash is announced at once, reloads after the delay, and one noted mid-pass waits for the next pass.
+		CrashRestart::Scheduler q;
+		Check(!q.HasWork(), "scheduler: idle");
+		q.NoteCrash(0x1000, "BetterDrone", "tick callback", 100);
+		q.NoteCrash(0x1000, "BetterDrone", "tick callback", 100);
+		Check(q.HasWork(), "scheduler: a crash is work");
+		std::vector<CrashRestart::Entry> ready = q.TakeReady(100, false);
+		Check(ready.size() == 1 && ready[0].stage == CrashRestart::Stage::New, "scheduler: one entry per module, taken at once to announce");
+		q.Requeue(ready[0], CrashRestart::Stage::Scheduled, 100 + CrashRestart::kDelayMs);
+		q.NoteCrash(0x2000, "Codex", "panel render", 150);          // a crash while the pass runs
+		Check(q.TakeReady(101, false).size() == 1, "scheduler: the next pass takes only the new crash");
+		Check(q.TakeReady(100 + CrashRestart::kDelayMs - 1, false).empty(), "scheduler: no reload before the delay");
+		ready = q.TakeReady(100 + CrashRestart::kDelayMs, false);
+		Check(ready.size() == 1 && ready[0].stage == CrashRestart::Stage::Scheduled && ready[0].name == "BetterDrone", "scheduler: due after the delay");
+		Check(q.TakeReady(100 + CrashRestart::kDelayMs, false).empty() && !q.HasWork(), "scheduler: taken once, nothing left");
+
+		// MENU: waits while a world runs, released at the main menu.
+		q.Requeue(ready[0], CrashRestart::Stage::WaitingForMenu, 0);
+		Check(q.TakeReady(1u << 30, true).empty() && q.HasWork(), "MENU: waits while a world runs");
+		Check(q.TakeReady(1u << 30, false).size() == 1, "MENU: released at the main menu");
+
+		// Exit: nothing is kept or accepted once stopped.
+		q.NoteCrash(0x3000, "WAILA", "tick callback", 0);
+		q.Stop();
+		q.NoteCrash(0x4000, "Compass", "tick callback", 0);
+		Check(!q.HasWork() && q.TakeReady(1u << 30, false).empty() && q.Stopped(), "exit: stopped drops everything and accepts nothing");
+	}
+
+	// The PLUGINS UPDATED window: plugins with word-for-word the same notes share one entry.
+	{
+		struct U { std::string name; std::vector<std::string> notes; };
+		const std::vector<std::string> shared = { "Keeps working after a game update" };
+		const std::vector<U> updates = {
+			{ "BetterDrone", { "Speedometer", "Feet in mph" } },
+			{ "ProductionViewer", shared },
+			{ "Compass", shared },
+			{ "NoNotesA", {} },
+			{ "NoNotesB", {} },
+			{ "RuptureTimer", shared },
+			{ "Codex", { "Speedometer" } },
+			{ "Waila", { "Speedometer", "Feet in mph" } },
+		};
+		const auto groups = UI::UpdateNoticeWindow::GroupByNotes(updates, [](const U& u) -> const std::vector<std::string>& { return u.notes; });
+		const auto names = [](const std::vector<const U*>& g) { std::string s; for (const U* u : g) s += (s.empty() ? "" : ",") + u->name; return s; };
+		Check(groups.size() == 5, "grouping: five entries");
+		Check(groups.size() == 5 && names(groups[0]) == "BetterDrone,Waila", "grouping: identical multi-line notes group, at the first one's place");
+		Check(groups.size() == 5 && names(groups[1]) == "ProductionViewer,Compass,RuptureTimer", "grouping: the shared line names all three, in order");
+		Check(groups.size() == 5 && names(groups[2]) == "NoNotesA" && names(groups[3]) == "NoNotesB", "grouping: plugins with no notes stay apart");
+		Check(groups.size() == 5 && names(groups[4]) == "Codex", "grouping: notes that are only a prefix of another's are their own");
+		Check(UI::UpdateNoticeWindow::GroupByNotes(std::vector<U>{}, [](const U& u) -> const std::vector<std::string>& { return u.notes; }).empty(),
+			"grouping: nothing in, nothing out");
+	}
 
 	printf("%d checks, %d failed\n", g_checks, g_failed);
 	return g_failed ? 1 : 0;

@@ -24,6 +24,7 @@ namespace UI::GlobalSettings
     static bool  s_showPlayerPosition = false;
     static bool  s_showDebugValues     = false;
     static bool  s_keyboardNavigation = true;
+    static bool  s_restartCrashedPlugins = true;
     static float s_fontScale          = 1.0f;
     static char  s_fontFamily[32]     = "Default";
     static char  s_theme[64]          = {}; // "" until StartupLoadTheme resolves it
@@ -96,6 +97,7 @@ namespace UI::GlobalSettings
         s_showPlayerPosition = ReadBool(L"HUD", L"ShowPlayerPosition", false);
         s_showDebugValues    = ReadBool(L"HUD", L"ShowDebugValues",    false);
         s_keyboardNavigation = ReadBool(L"UI", L"KeyboardNavigation", true);
+        s_restartCrashedPlugins = ReadBool(L"Plugins", L"RestartCrashed", true);
 
         wchar_t buf[32] = {};
         GetPrivateProfileStringW(L"UI", L"FontScale", L"1.00", buf, 32, s_iniPath);
@@ -143,6 +145,7 @@ namespace UI::GlobalSettings
         WriteBool(L"HUD", L"ShowPlayerPosition", s_showPlayerPosition);
         WriteBool(L"HUD", L"ShowDebugValues",    s_showDebugValues);
         WriteBool(L"UI", L"KeyboardNavigation", s_keyboardNavigation);
+        WriteBool(L"Plugins", L"RestartCrashed", s_restartCrashedPlugins);
 
         wchar_t buf[32] = {};
         swprintf_s(buf, L"%.2f", s_fontScale);
@@ -220,6 +223,14 @@ namespace UI::GlobalSettings
     void SetKeyboardNavigation(bool v)
     {
         s_keyboardNavigation = v;
+        Save(nullptr);
+    }
+
+    bool GetRestartCrashedPlugins() { return s_restartCrashedPlugins; }
+
+    void SetRestartCrashedPlugins(bool v)
+    {
+        s_restartCrashedPlugins = v;
         Save(nullptr);
     }
 

@@ -58,6 +58,12 @@ namespace UI::GlobalSettings
     bool GetKeyboardNavigation();
     void SetKeyboardNavigation(bool v);
 
+    // [Plugins] RestartCrashed -- after the crash guard switches a plugin off,
+    // reload it a few seconds later, if its load and unload settings allow it
+    // (plugins/crash_restart.h). Default on. Read on the game thread.
+    bool GetRestartCrashedPlugins();
+    void SetRestartCrashedPlugins(bool v);
+
     float GetFontScale();
     void  SetFontScale(float scale);
 

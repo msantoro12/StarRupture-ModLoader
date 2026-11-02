@@ -14,6 +14,7 @@
 #include "plugins/plugin_watchdog.h"
 #include "utils/game_thread_dispatch.h"
 #include "plugins/reload_policy.h"
+#include "plugins/crash_restart.h"
 #include "hooks/hooks_interface.h"
 #include "memory_scanner/version_map.h"
 #include "console/plugin_console.h"
@@ -42,6 +43,8 @@
 #include "UI/modloader_window.h"
 #include "UI/plugin_panel_registry.h"
 #include "UI/plugin_widget_registry.h"
+#include "UI/global_settings.h"
+#include "UI/toast.h"
 #endif
 
 namespace PluginManager
@@ -295,6 +298,10 @@ namespace PluginManager
 			L"[PluginManager] '%S' is switched off: the loader calls none of its callbacks until it is unloaded or reloaded. "
 			L"Detours it placed on game functions keep running.",
 			r.pluginName);
+
+		// Only noted here, on whatever thread faulted: PumpCrashRestarts decides
+		// what happens next on the game thread.
+		CrashRestart::Global().NoteCrash(reinterpret_cast<uintptr_t>(r.module), r.pluginName, r.callback, GetTickCount64());
 	}
 
 	// Structure to hold loaded plugin information
@@ -1038,6 +1045,9 @@ namespace PluginManager
 	{
 		ModLoaderLogger::LogMessage(L"Unloading all plugins...");
 
+		// No crash restart may reload anything from here on.
+		CrashRestart::Global().Stop();
+
 		EnterCriticalSection(&g_pluginLock);
 
 		for (auto& plugin : g_loadedPlugins)
@@ -1309,6 +1319,146 @@ namespace PluginManager
 		}
 
 		return ok;
+	}
+
+	// ---- Restarting a plugin the crash guard switched off (plugins/crash_restart.h)
+
+	static bool RestartCrashedEnabled()
+	{
+#ifdef MODLOADER_CLIENT_BUILD
+		return UI::GlobalSettings::GetRestartCrashedPlugins();
+#else
+		return true;
+#endif
+	}
+
+	static void ShowCrashToast(const std::string& name, const std::string& text)
+	{
+#ifdef MODLOADER_CLIENT_BUILD
+		UI::Toast::Show(name, text);
+#else
+		(void)name; (void)text;
+#endif
+	}
+
+	// The index of the record still running `module` in its crashed state, and
+	// its settings; -1 once it was unloaded or reloaded (nothing to restart).
+	static int FindCrashedRecord(uintptr_t module, ReloadPolicy::Settings* settings)
+	{
+		int found = -1;
+		EnterCriticalSection(&g_pluginLock);
+		for (size_t i = 0; i < g_loadedPlugins.size(); ++i)
+		{
+			const LoadedPlugin& p = *g_loadedPlugins[i];
+			if (p.isInitialized && p.hModule && reinterpret_cast<uintptr_t>(p.hModule) == module &&
+				PluginGuard::GetFault(p.hModule, nullptr))
+			{
+				found     = static_cast<int>(i);
+				*settings = p.reload;
+				break;
+			}
+		}
+		LeaveCriticalSection(&g_pluginLock);
+		return found;
+	}
+
+	static bool IsRecordInitialized(int index)
+	{
+		EnterCriticalSection(&g_pluginLock);
+		const bool on = index >= 0 && index < static_cast<int>(g_loadedPlugins.size()) && g_loadedPlugins[index]->isInitialized;
+		LeaveCriticalSection(&g_pluginLock);
+		return on;
+	}
+
+	static void RestartCrashed(const CrashRestart::Entry& e, int index, int done)
+	{
+		CrashRestart::Global().CountRestart(e.name);
+		ModLoaderLogger::LogMessage(L"[PluginManager] Auto-restart %d of %d: reloading '%S' after it crashed in its %S",
+			done + 1, CrashRestart::kMaxRestarts, e.name.c_str(), e.callback.c_str());
+
+		std::string why;
+		if (ReloadPlugin(index, &why) && IsRecordInitialized(index))
+		{
+			ModLoaderLogger::LogMessage(L"[PluginManager] '%S' was restarted", e.name.c_str());
+			ShowCrashToast(e.name, CrashRestart::Restarted(e.name, e.callback));
+		}
+		else
+		{
+			ModLoaderLogger::LogWarn(L"[PluginManager] Auto-restart of '%S' failed: %S", e.name.c_str(),
+				why.empty() ? "it did not load or initialize again (see above)" : why.c_str());
+			ShowCrashToast(e.name, CrashRestart::RestartFailed(e.name, e.callback, why));
+		}
+	}
+
+	void PumpCrashRestarts()
+	{
+		CrashRestart::Scheduler& restarts = CrashRestart::Global();
+		if (!restarts.HasWork() || !g_managerInitialized)
+			return;
+
+		const uint64_t now   = GetTickCount64();
+		const bool     world = ReloadPolicy::GameplayWorldRunning();
+
+		// A snapshot: a plugin that crashes again while one of these reloads it
+		// is noted for a later tick, so nothing restarts twice in one frame.
+		for (CrashRestart::Entry& e : restarts.TakeReady(now, world))
+		{
+			ReloadPolicy::Settings settings;
+			const int index = FindCrashedRecord(e.module, &settings);
+			if (index < 0)
+			{
+				ModLoaderLogger::LogMessage(L"[PluginManager] No auto-restart for '%S': it was unloaded or reloaded since it crashed",
+					e.name.c_str());
+				continue;
+			}
+
+			const int done = restarts.Restarts(e.name);
+			const CrashRestart::Plan plan = CrashRestart::Decide(settings, world, done, RestartCrashedEnabled());
+			const bool announce = e.stage == CrashRestart::Stage::New;
+
+			switch (plan)
+			{
+			case CrashRestart::Plan::RestartNow:
+				if (e.stage == CrashRestart::Stage::Scheduled)
+				{
+					if (!restarts.Stopped())
+						RestartCrashed(e, index, done);
+					break;
+				}
+				if (announce)
+					ShowCrashToast(e.name, CrashRestart::Announcement(plan, e.name, e.callback));
+				ModLoaderLogger::LogMessage(L"[PluginManager] '%S' will be restarted in %llu s (auto-restart %d of %d)",
+					e.name.c_str(), static_cast<unsigned long long>(CrashRestart::kDelayMs / 1000), done + 1, CrashRestart::kMaxRestarts);
+				restarts.Requeue(std::move(e), CrashRestart::Stage::Scheduled, now + CrashRestart::kDelayMs);
+				break;
+
+			case CrashRestart::Plan::WaitForMenu:
+				if (announce)
+					ShowCrashToast(e.name, CrashRestart::Announcement(plan, e.name, e.callback));
+				ModLoaderLogger::LogMessage(L"[PluginManager] '%S' reloads only at the main menu: auto-restart waits for it",
+					e.name.c_str());
+				restarts.Requeue(std::move(e), CrashRestart::Stage::WaitingForMenu, 0);
+				break;
+
+			case CrashRestart::Plan::NeedsGameRestart:
+				ShowCrashToast(e.name, CrashRestart::Announcement(plan, e.name, e.callback));
+				ModLoaderLogger::LogMessage(L"[PluginManager] '%S' requires a game restart to load: it stays off until then",
+					e.name.c_str());
+				break;
+
+			case CrashRestart::Plan::GaveUp:
+				ShowCrashToast(e.name, CrashRestart::Announcement(plan, e.name, e.callback));
+				ModLoaderLogger::LogWarn(L"[PluginManager] Giving up on '%S': it crashed again after %d automatic restarts and stays off until the game restarts",
+					e.name.c_str(), done);
+				break;
+
+			case CrashRestart::Plan::Disabled:
+				ShowCrashToast(e.name, CrashRestart::Announcement(plan, e.name, e.callback));
+				ModLoaderLogger::LogMessage(L"[PluginManager] '%S' stays off: automatic restart is turned off in Settings",
+					e.name.c_str());
+				break;
+			}
+		}
 	}
 
 	int FindPluginIndex(const char* nameOrFile)

@@ -4,7 +4,6 @@
 #include "logging/logger.h"
 #include "plugins/plugin_guard.h"
 #include "memory_scanner/scanner.h"
-#include "../ufunction_resolve.h"
 #include "../scan_patterns.h"
 #include "../SDK.hpp"
 #include "Engine_classes.hpp"
@@ -176,14 +175,11 @@ namespace Hooks::WorldBeginPlay
 	{
 		ModLoaderLogger::LogInfo(L"[WorldBeginPlay] Installing hook...");
 
-		uintptr_t addr = Hooks::ResolveUFunctionNativeAddr("World", "BeginPlay");
-		if (!addr)
-		{
-			ModLoaderLogger::LogDebug(L"[WorldBeginPlay] Not a UFUNCTION -- falling back to pattern scan");
-			addr = Scanner::FindPatternInMainModule(
-				"UWorld::BeginPlay",
-				ScanPatterns::UWorld_BeginPlay);
-		}
+		// UWorld::BeginPlay is not a UFUNCTION, so there is no UFunction to
+		// resolve, and the hook must be in place before the first world starts.
+		uintptr_t addr = Scanner::FindPatternInMainModule(
+			"UWorld::BeginPlay",
+			ScanPatterns::UWorld_BeginPlay);
 		if (!addr)
 			return false;
 

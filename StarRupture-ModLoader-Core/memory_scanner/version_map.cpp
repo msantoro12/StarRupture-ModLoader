@@ -113,6 +113,12 @@ namespace VersionMap
 		// pattern matches 0 or 2+ places. Resolve the plugin's own pattern once
 		// per process, through scan_cache, and say so when it would be refused.
 		// `known` is the result when the caller has already resolved it.
+		//
+		// A unique pattern is cached by Resolve itself. A pattern that matches 0
+		// or 2+ places is not, and Resolve would then scan it again on every
+		// launch (with the match enumeration a refusal gets), so its count is
+		// kept here under its own key, 1 + the count like the "vmap " entries.
+		// The cache section is the exe's, so the count is as good as the scan.
 		void WarnIfOwnPatternNotUnique(const char* owner, const ScanValidation::Request& request,
 			const ScanValidation::Result* known = nullptr)
 		{
@@ -127,13 +133,38 @@ namespace VersionMap
 					return;
 			}
 
-			const ScanValidation::Result own = known ? *known : ScanValidation::Resolve(request);
-			if (own.outcome != ScanValidation::Outcome::NoMatch && own.outcome != ScanValidation::Outcome::MultipleMatches)
+			const std::wstring gameVersion = request.module == nullptr || request.module == GetModuleHandleW(nullptr)
+				? GetGameVersionString() : std::wstring();
+			const std::string  cacheKey    = "own " + request.pattern;
+
+			size_t count = 1;
+			ScanCache::Entry cached;
+			if (!gameVersion.empty() && ScanCache::TryGet(gameVersion, cacheKey, cached) && cached.matchCount >= 1)
+				count = cached.matchCount - 1;
+			else
+			{
+				const ScanValidation::Result own = known ? *known : ScanValidation::Resolve(request);
+				if (own.outcome != ScanValidation::Outcome::NoMatch && own.outcome != ScanValidation::Outcome::MultipleMatches)
+					return;
+				count = own.matchCount;
+				if (!gameVersion.empty())
+				{
+					ScanCache::Entry entry;
+					entry.matchCount = static_cast<uint32_t>(count + 1);
+					ScanCache::Store(gameVersion, cacheKey, entry);
+				}
+			}
+			if (count == 1)
 				return;
 
-			ModLoaderLogger::LogWarn(L"[Map] %S: %S: its own pattern matches %zu time%S on this exe, and a pattern must match exactly once; "
-				L"the map row is carrying it, but a loader without the row refuses this plugin. Make the pattern unique.",
-				owner ? owner : "?", request.name.c_str(), own.matchCount, own.matchCount == 1 ? "" : "s");
+			if (count == 0)
+				ModLoaderLogger::LogWarn(L"[Map] %S: %S: its own pattern matches 0 times on this exe (stale for this build?); "
+					L"a row decides this key and is carrying it, but a loader without that row would not find the function. Update the pattern.",
+					owner ? owner : "?", request.name.c_str());
+			else
+				ModLoaderLogger::LogWarn(L"[Map] %S: %S: its own pattern matches %zu times on this exe, and a pattern must match exactly once; "
+					L"a row decides this key and is carrying it, but a loader without that row refuses this plugin. Make the pattern unique.",
+					owner ? owner : "?", request.name.c_str(), count);
 		}
 	}
 

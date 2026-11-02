@@ -23,7 +23,6 @@ namespace UI::GlobalSettings
     static bool  s_showWorldName      = false;
     static bool  s_showPlayerPosition = false;
     static bool  s_showDebugValues     = false;
-    static bool  s_pauseFrameGenWhileOpen = true;
     static bool  s_keyboardNavigation = true;
     static float s_fontScale          = 1.0f;
     static char  s_fontFamily[32]     = "Default";
@@ -96,7 +95,6 @@ namespace UI::GlobalSettings
         s_showWorldName      = ReadBool(L"HUD", L"ShowWorldName",      false);
         s_showPlayerPosition = ReadBool(L"HUD", L"ShowPlayerPosition", false);
         s_showDebugValues    = ReadBool(L"HUD", L"ShowDebugValues",    false);
-        s_pauseFrameGenWhileOpen = ReadBool(L"Rendering", L"PauseFrameGenWhileOpen", true);
         s_keyboardNavigation = ReadBool(L"UI", L"KeyboardNavigation", true);
 
         wchar_t buf[32] = {};
@@ -144,7 +142,6 @@ namespace UI::GlobalSettings
         WriteBool(L"HUD", L"ShowWorldName",      s_showWorldName);
         WriteBool(L"HUD", L"ShowPlayerPosition", s_showPlayerPosition);
         WriteBool(L"HUD", L"ShowDebugValues",    s_showDebugValues);
-        WriteBool(L"Rendering", L"PauseFrameGenWhileOpen", s_pauseFrameGenWhileOpen);
         WriteBool(L"UI", L"KeyboardNavigation", s_keyboardNavigation);
 
         wchar_t buf[32] = {};
@@ -215,14 +212,6 @@ namespace UI::GlobalSettings
     void SetShowDebugValues(bool v)
     {
         s_showDebugValues = v;
-        Save(nullptr);
-    }
-
-    bool GetPauseFrameGenWhileOpen() { return s_pauseFrameGenWhileOpen; }
-
-    void SetPauseFrameGenWhileOpen(bool v)
-    {
-        s_pauseFrameGenWhileOpen = v;
         Save(nullptr);
     }
 

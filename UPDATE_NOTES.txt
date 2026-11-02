@@ -25,3 +25,5 @@ The pattern scan cache is kept per game exe (version, build timestamp and size),
 LOAD NEW moved up beside the window title
 Keys 1 to 5 open the Plugins, Config, Settings, Logging and Theme tabs, and the tab tooltips show the number
 Tab, the arrow keys and Space or Enter work in the loader and plugin windows while one is open, and Settings can turn that off
+Overlay windows are drawn into frame-generation frames, so they no longer flicker, and frame generation stays on while a window is open
+The Pause Frame Generation While Windows Are Open setting is removed

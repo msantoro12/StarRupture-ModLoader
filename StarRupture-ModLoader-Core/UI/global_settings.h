@@ -7,7 +7,7 @@
 //
 // User-configurable toggles persisted in modloader.ini, mostly HUD display
 // ones under [HUD] plus a handful of other loader-wide settings under their
-// own section (e.g. [Rendering]). Settings are loaded once at startup and
+// own section (e.g. [Network]). Settings are loaded once at startup and
 // saved immediately on change.
 //
 // The world-name and player-position values are written from the game thread
@@ -51,14 +51,6 @@ namespace UI::GlobalSettings
     // bug where a plugin holds input open and the player has no way to see it.
     bool GetShowDebugValues();
     void SetShowDebugValues(bool v);
-
-    // [Rendering] PauseFrameGenWhileOpen -- disables DLSS Frame Generation
-    // (r.Streamline.DLSSG.Enable) for as long as any overlay window is open,
-    // and restores it when the last one closes. Works around generated
-    // frames never getting the overlay drawn on them (see FrameGenPause).
-    // Default on.
-    bool GetPauseFrameGenWhileOpen();
-    void SetPauseFrameGenWhileOpen(bool v);
 
     // [UI] KeyboardNavigation -- Dear ImGui's keyboard navigation (Tab, the
     // arrow keys, Space/Enter to activate) while an overlay window is open.

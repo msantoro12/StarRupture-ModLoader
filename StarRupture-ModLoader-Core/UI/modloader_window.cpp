@@ -246,6 +246,7 @@ namespace UI::ModLoaderWindow
 
     // The button that picks up plugin DLLs dropped into the Plugins folder after
     // startup, and the short result line beside it (a few seconds, then gone).
+    // Drawn on the title line, next to the title; see TitleBarExtras().
     static void RenderLoadNewPlugins()
     {
         static double s_resultShownAt = 0.0;   // render thread only
@@ -366,10 +367,38 @@ namespace UI::ModLoaderWindow
         ImGui::EndTooltip();
     }
 
+    // Passed to BeginChamferedWindow: what sits next to the title. LOAD NEW
+    // belongs to the Plugins page, so it shows only there. s_activeTab is last
+    // frame's, which a tab click changes later in the same frame.
+    static void TitleBarExtras()
+    {
+        if (s_activeTab == kTabPlugins)
+            RenderLoadNewPlugins();
+    }
+
+    // 1-5 open the sidebar sections in order (About has no number). Only while
+    // this window has the focus and nothing is taking keys: a text field, a
+    // slider being dragged, the keybind capture. Called inside the window.
+    static void HandleTabHotkeys()
+    {
+        static_assert(kTabTheme == 4, "the number keys 1-5 map to the first five tabs");
+
+        const ImGuiIO& io = ImGui::GetIO();
+        if (!ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) ||
+            io.WantTextInput || ImGui::IsAnyItemActive() || s_rebind.active ||
+            io.KeyCtrl || io.KeyAlt || io.KeySuper)
+            return;
+
+        for (int tab = kTabPlugins; tab <= kTabTheme; ++tab)
+        {
+            if (ImGui::IsKeyPressed(static_cast<ImGuiKey>(ImGuiKey_1 + tab), false) ||
+                ImGui::IsKeyPressed(static_cast<ImGuiKey>(ImGuiKey_Keypad1 + tab), false))
+                s_activeTab = tab;
+        }
+    }
+
     static void RenderPluginsTab()
     {
-        RenderLoadNewPlugins();
-
         // The return is the TOTAL record count, not how many were copied --
         // clamp to the buffer before iterating.
         static PluginManager::PluginStatus statuses[64];
@@ -1702,6 +1731,25 @@ namespace UI::ModLoaderWindow
         }
 
         ImGui::Spacing();
+        ImGui::SeparatorText("Keyboard");
+        ImGui::Spacing();
+
+        bool keyboardNav = UI::GlobalSettings::GetKeyboardNavigation();
+        if (UI::Theme::ToggleSwitch("Keyboard navigation", &keyboardNav))
+            UI::GlobalSettings::SetKeyboardNavigation(keyboardNav);
+        ImGui::SameLine();
+        ImGui::TextDisabled("(?)");
+        if (ImGui::IsItemHovered())
+        {
+            ImGui::SetTooltip(
+                "Move around the loader and plugin windows without the mouse: Tab and\n"
+                "Shift+Tab or the arrow keys pick a widget, Space or Enter uses it, and\n"
+                "Esc closes the window.\n\n"
+                "Only while a window is open. In the loader window, 1-5 also open the\n"
+                "Plugins, Config, Settings, Logging and Theme pages.");
+        }
+
+        ImGui::Spacing();
         ImGui::SeparatorText("Networking");
         ImGui::Spacing();
 
@@ -2288,8 +2336,11 @@ namespace UI::ModLoaderWindow
         // inside the nav column and tab content children below, each
         // independently, rather than the whole window scrolling as one unit.
         if (!UI::Theme::BeginChamferedWindow("Mod Loader##main", "MOD LOADER", &s_isOpen,
-                                              "BUILD " MODLOADER_BUILD_TAG, ImGuiWindowFlags_NoScrollbar))
+                                              "BUILD " MODLOADER_BUILD_TAG, ImGuiWindowFlags_NoScrollbar,
+                                              true, TitleBarExtras))
             return;
+
+        HandleTabHotkeys();
 
         // Snapshot before the tabs render below: RenderConfigTab -> Render-
         // RebindModal can cancel an in-progress capture this same frame, which
@@ -2324,11 +2375,11 @@ namespace UI::ModLoaderWindow
         };
         static const char* s_tabTooltips[kTabCount] =
         {
-            "Plugins -- load, unload and reload installed plugins",
-            "Plugin Config -- edit each plugin's own settings and keybinds",
-            "Settings -- HUD overlays, auto-update and diagnostics",
-            "Logging -- log levels for the loader, the game and each plugin",
-            "Theme -- font, text size and every UI color",
+            "Plugins (1) -- load, unload and reload installed plugins",
+            "Plugin Config (2) -- edit each plugin's own settings and keybinds",
+            "Settings (3) -- HUD overlays, auto-update and diagnostics",
+            "Logging (4) -- log levels for the loader, the game and each plugin",
+            "Theme (5) -- font, text size and every UI color",
             "About -- build tag and the plugins currently loaded",
         };
 

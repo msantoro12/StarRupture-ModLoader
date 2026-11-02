@@ -1038,8 +1038,8 @@ static bool InitD3D12Resources(IDXGISwapChain* swapChain)
 	IMGUI_CHECKVERSION();
 	ImGui::CreateContext();
 	ImGuiIO& io = ImGui::GetIO();
-	io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard
-		| ImGuiConfigFlags_NoMouseCursorChange; // don't touch OS cursor by default
+	// Keyboard navigation is switched per frame by the RenderFrame callback.
+	io.ConfigFlags |= ImGuiConfigFlags_NoMouseCursorChange; // don't touch OS cursor by default
 	// Build an absolute path so the file lands in the ModLoader folder
 	// regardless of the game process working directory.
 	static char s_iniPath[MAX_PATH] = {};

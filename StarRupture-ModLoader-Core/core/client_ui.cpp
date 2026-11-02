@@ -151,6 +151,17 @@ void InitClientUI()
                 s_themeApplied = true;
             }
 
+            // Keyboard navigation (Tab, arrows, Space/Enter) only while an
+            // overlay window owns the keyboard. Left on at other times, a
+            // focused plugin window would make ImGui claim every key
+            // (io.WantCaptureKeyboard follows NavActive) and cooperative mode
+            // would then cut WASD out of the game. Read at the next NewFrame.
+            ImGuiIO& io = ImGui::GetIO();
+            if (UI::GlobalSettings::GetKeyboardNavigation() && ShouldCaptureInputNow())
+                io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+            else
+                io.ConfigFlags &= ~ImGuiConfigFlags_NavEnableKeyboard;
+
             UI::Overlay::Render();
             UI::Overlay::RenderHud();
             UI::ModLoaderWindow::Render(api);

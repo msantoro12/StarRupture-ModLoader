@@ -60,6 +60,12 @@ namespace UI::GlobalSettings
     bool GetPauseFrameGenWhileOpen();
     void SetPauseFrameGenWhileOpen(bool v);
 
+    // [UI] KeyboardNavigation -- Dear ImGui's keyboard navigation (Tab, the
+    // arrow keys, Space/Enter to activate) while an overlay window is open.
+    // Default on. client_ui.cpp applies it to the shared ImGui context.
+    bool GetKeyboardNavigation();
+    void SetKeyboardNavigation(bool v);
+
     float GetFontScale();
     void  SetFontScale(float scale);
 

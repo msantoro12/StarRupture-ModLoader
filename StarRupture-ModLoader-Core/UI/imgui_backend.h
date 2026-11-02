@@ -51,6 +51,11 @@ namespace UI::ImGuiBackend
     // The game window the overlay draws on: null before the first Present, or
     // when the host DLL is not loaded. Safe to call from any thread.
     HWND GetGameWindow();
+
+    // Slate's present step (hooks/game/slate_present); see
+    // ImGuiHost_RecordUiOverlay / ImGuiHost_SubmitUiOverlay.
+    int  RecordUiOverlay(void* rhiBackBuffer);
+    bool SubmitUiOverlay(int slot, ImGuiUiOverlaySync* sync);
 }
 
 #endif // MODLOADER_CLIENT_BUILD

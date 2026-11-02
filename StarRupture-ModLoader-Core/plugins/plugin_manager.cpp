@@ -10,6 +10,7 @@
 #include "config/config_manager.h"
 #include "memory_scanner/hook_scanner_interface.h"
 #include "plugins/plugin_hook_report.h"
+#include "plugins/reload_policy.h"
 #include "hooks/hooks_interface.h"
 #include "memory_scanner/version_map.h"
 #include "console/plugin_console.h"
@@ -245,6 +246,7 @@ namespace PluginManager
 		HMODULE hModule;
 		PluginInfo* info;
 		VersionMap::PluginGameBuild gameBuild;   // the PluginInfo tail, copied at load: info dies with the DLL
+		ReloadPolicy::Settings reload;           // its load and unload settings, copied the same way
 		GetPluginInfoFunc getInfo;
 		PluginInitFunc init;
 		PluginShutdownFunc shutdown;
@@ -293,7 +295,7 @@ namespace PluginManager
 
 	// Why a DLL did not come up, so ScanForNewPlugins can say so. Most failures
 	// leave no record behind, so the reason has to travel out separately.
-	enum class LoadFailure { None, CouldNotLoad, Crashed, NotAPlugin, OutOfDate, WrongTarget, OffBuild };
+	enum class LoadFailure { None, CouldNotLoad, Crashed, NotAPlugin, OutOfDate, WrongTarget, OffBuild, Refused };
 
 	struct LoadFailureInfo
 	{
@@ -301,7 +303,7 @@ namespace PluginManager
 		DWORD       win32Error       = 0;   // CouldNotLoad: GetLastError() of LoadLibrary
 		int         interfaceVersion = 0;   // OutOfDate: the newer interface the plugin was built for
 		std::string name;                   // whatever name the DLL reported, if it got that far
-		std::string detail;                 // OffBuild: VersionMap::OffBuildRefusal's reason
+		std::string detail;                 // OffBuild: VersionMap::OffBuildRefusal's reason; Refused: the load setting's
 	};
 
 	// Inner load helper: performs LoadLibrary, GetProcAddress, GetPluginInfo,
@@ -310,7 +312,12 @@ namespace PluginManager
 	// function pointers, cached strings, and isInitialized are all populated.
 	// On failure: any resources acquired are released and the record is left clean,
 	// and why (if given) says which way it failed.
-	static bool LoadPluginIntoRecord(LoadedPlugin& rec, LoadFailureInfo* why = nullptr)
+	//
+	// startup: this is the loader's startup plugin load. Anywhere else the plugin's
+	// load setting is checked once its info has been read (a DLL has to be loaded
+	// to be asked), and a refused plugin is freed before PluginInit or its load
+	// hooks run.
+	static bool LoadPluginIntoRecord(LoadedPlugin& rec, bool startup, LoadFailureInfo* why = nullptr)
 	{
 		if (g_refuseLoads.load())
 		{
@@ -450,6 +457,19 @@ namespace PluginManager
 			return false;
 		}
 
+		rec.reload = ReloadPolicy::Read(info->interfaceVersion, rec.gameBuild.mapFlags);
+		if (const std::string refusal = ReloadPolicy::LoadRefusal(rec.reload.load, startup, ReloadPolicy::GameplayWorldRunning());
+			!refusal.empty())
+		{
+			ModLoaderLogger::LogWarn(L"Plugin '%S' is not loaded: %S", info->name ? info->name : "(unknown)", refusal.c_str());
+			rec.cachedName    = info->name    ? info->name    : "";
+			rec.cachedVersion = info->version ? info->version : "";
+			rec.cachedAuthor  = info->author  ? info->author  : "";
+			if (why) { why->kind = LoadFailure::Refused; why->detail = refusal; }
+			FreeLibrary(hModule);
+			return false;
+		}
+
 		ModLoaderLogger::LogMessage(L"Plugin info - Name: %S, Version: %S, Author: %S, Interface: %d (modloader expects [%d, %d]), game build %S",
 			info->name, info->version, info->author,
 			info->interfaceVersion, PLUGIN_INTERFACE_VERSION_MIN, PLUGIN_INTERFACE_VERSION_MAX,
@@ -470,8 +490,8 @@ namespace PluginManager
 		return true;
 	}
 
-	// Load a single plugin DLL by path (used during startup scan).
-	static bool LoadPlugin(const std::wstring& dllPath, LoadFailureInfo* why = nullptr)
+	// Load a single plugin DLL by path (the startup scan, and ScanForNewPlugins).
+	static bool LoadPlugin(const std::wstring& dllPath, bool startup, LoadFailureInfo* why = nullptr)
 	{
 		auto rec = std::make_unique<LoadedPlugin>();
 		rec->fileName = dllPath;
@@ -480,7 +500,7 @@ namespace PluginManager
 		rec->isWrongTarget        = false;
 		rec->hookScanFailed       = false;
 
-		if (!LoadPluginIntoRecord(*rec, why))
+		if (!LoadPluginIntoRecord(*rec, startup, why))
 		{
 			if (why) why->name = rec->cachedName;
 
@@ -637,7 +657,7 @@ namespace PluginManager
 			Splash::SetSubProgress(static_cast<float>(i) / static_cast<float>(total));
 #endif
 
-			if (LoadPlugin(dllPaths[i]))
+			if (LoadPlugin(dllPaths[i], true))
 				loadedCount++;
 		}
 
@@ -746,6 +766,7 @@ namespace PluginManager
 		plugin.self.logger  = ModLoaderLogger::GetPluginLogger();
 		plugin.self.config  = ModLoaderLogger::GetPluginConfig();
 		plugin.self.hooks   = nullptr;   // populated below, after the scan phase
+		ReloadPolicy::SetBusyReason(&plugin.self, nullptr);   // a new instance starts not busy
 
 		const bool resolved = RunLoadHooksPhase(plugin);
 		const int interfaceVersion = plugin.info ? plugin.info->interfaceVersion : 0;
@@ -998,6 +1019,13 @@ namespace PluginManager
 				out[i].fileName[sizeof(out[i].fileName) - 1] = '\0';
 
 				out[i].hasUpdateManifest = HasUpdateSidecar(p.fileName);
+
+				const bool world = ReloadPolicy::GameplayWorldRunning();
+				const std::string busy = ReloadPolicy::BusyReason(&p.self);
+				const std::string unloadWhy = p.isInitialized ? ReloadPolicy::UnloadRefusal(p.reload.unload, busy, world) : std::string();
+				const std::string reloadWhy = ReloadPolicy::ReloadRefusal(p.reload, busy, p.isInitialized, world);
+				strncpy_s(out[i].unloadBlock, unloadWhy.c_str(), _TRUNCATE);
+				strncpy_s(out[i].reloadBlock, reloadWhy.c_str(), _TRUNCATE);
 			}
 		}
 		LeaveCriticalSection(&g_pluginLock);
@@ -1030,6 +1058,7 @@ namespace PluginManager
 		if (!CallShutdownSEH(p.shutdown))
 			LogPluginCrash(p.cachedName.c_str(), p.hModule, L"PluginShutdown (unload)");
 		p.isInitialized = false;
+		ReloadPolicy::SetBusyReason(&p.self, nullptr);
 		const bool idle = WaitOutPluginRenders(p.hModule, p.cachedName.c_str(), action);
 
 		// Before FreeLibrary, not after: the schema the config manager cached lives
@@ -1070,8 +1099,9 @@ namespace PluginManager
 		return true;
 	}
 
-	bool UnloadPlugin(int index)
+	bool UnloadPlugin(int index, std::string* refusal)
 	{
+		if (refusal) refusal->clear();
 		EnterCriticalSection(&g_pluginLock);
 
 		if (index < 0 || index >= static_cast<int>(g_loadedPlugins.size()) ||
@@ -1082,6 +1112,18 @@ namespace PluginManager
 		}
 
 		LoadedPlugin& p = *g_loadedPlugins[index];
+
+		// Everything is asked before anything is shut down, so a refusal leaves
+		// the plugin running exactly as it was.
+		if (std::string why = ReloadPolicy::UnloadRefusal(p.reload.unload, ReloadPolicy::BusyReason(&p.self),
+				ReloadPolicy::GameplayWorldRunning()); !why.empty())
+		{
+			ModLoaderLogger::LogWarn(L"Unload of %S refused: %S", p.cachedName.c_str(), why.c_str());
+			LeaveCriticalSection(&g_pluginLock);
+			if (refusal) *refusal = std::move(why);
+			return false;
+		}
+
 		ModLoaderLogger::LogMessage(L"Unloading plugin: %S", p.cachedName.c_str());
 		const bool freed = ShutDownAndFree(p, L"Unload");
 		LeaveCriticalSection(&g_pluginLock);
@@ -1090,8 +1132,9 @@ namespace PluginManager
 		return freed;
 	}
 
-	bool ReloadPlugin(int index)
+	bool ReloadPlugin(int index, std::string* refusal)
 	{
+		if (refusal) refusal->clear();
 		EnterCriticalSection(&g_pluginLock);
 
 		if (index < 0 || index >= static_cast<int>(g_loadedPlugins.size()))
@@ -1101,6 +1144,18 @@ namespace PluginManager
 		}
 
 		LoadedPlugin& p = *g_loadedPlugins[index];
+
+		// The unload half and the load half are both asked before the first of
+		// them starts: a refused reload must not leave a plugin shut down.
+		if (std::string why = ReloadPolicy::ReloadRefusal(p.reload, ReloadPolicy::BusyReason(&p.self), p.isInitialized,
+				ReloadPolicy::GameplayWorldRunning()); !why.empty())
+		{
+			ModLoaderLogger::LogWarn(L"Reload of %S refused: %S", p.cachedName.c_str(), why.c_str());
+			LeaveCriticalSection(&g_pluginLock);
+			if (refusal) *refusal = std::move(why);
+			return false;
+		}
+
 		ModLoaderLogger::LogMessage(L"Reloading plugin: %S", p.cachedName.c_str());
 
 		if (p.isInitialized)
@@ -1108,6 +1163,7 @@ namespace PluginManager
 			if (!CallShutdownSEH(p.shutdown))
 				LogPluginCrash(p.cachedName.c_str(), p.hModule, L"PluginShutdown (reload)");
 			p.isInitialized = false;
+			ReloadPolicy::SetBusyReason(&p.self, nullptr);
 		}
 		if (p.hModule)
 		{
@@ -1144,7 +1200,8 @@ namespace PluginManager
 		p.isWrongTarget        = false;
 		p.hookScanFailed       = false;
 
-		bool ok = LoadPluginIntoRecord(p);
+		LoadFailureInfo failure;
+		bool ok = LoadPluginIntoRecord(p, false, &failure);
 		++g_pluginGeneration;
 
 		if (ok)
@@ -1160,6 +1217,9 @@ namespace PluginManager
 		else
 		{
 			LeaveCriticalSection(&g_pluginLock);
+			// The pre-check read the settings of the build that was loaded. If
+			// the DLL on disk now declares a stricter load setting, say so.
+			if (refusal && failure.kind == LoadFailure::Refused) *refusal = failure.detail;
 			ModLoaderLogger::LogMessage(L"Plugin reload failed for index %d", index);
 		}
 
@@ -1248,6 +1308,7 @@ namespace PluginManager
 		case ScanStatus::NotAPlugin:   return "Not a plugin";
 		case ScanStatus::Failed:       return "Failed";
 		case ScanStatus::Duplicate:    return "Duplicate";
+		case ScanStatus::Refused:      return "Refused";
 		}
 		return "?";
 	}
@@ -1333,6 +1394,11 @@ namespace PluginManager
 			r.status = ScanStatus::Incompatible;
 			snprintf(text, sizeof(text), "%s", why.detail.c_str());
 			break;
+		case LoadFailure::Refused:
+			// Not a fault: the plugin asked not to be loaded in this state.
+			r.status = ScanStatus::Refused;
+			snprintf(text, sizeof(text), "%s", why.detail.c_str());
+			break;
 		case LoadFailure::WrongTarget:
 			r.status = ScanStatus::WrongTarget;
 			snprintf(text, sizeof(text), "Built for the other build target: a server plugin on the client, or the reverse.");
@@ -1413,7 +1479,7 @@ namespace PluginManager
 
 			ModLoaderLogger::LogMessage(L"ScanForNewPlugins: new plugin DLL found: %s", path.c_str());
 			LoadFailureInfo why;
-			if (!LoadPlugin(path, &why))
+			if (!LoadPlugin(path, false, &why))
 			{
 				if (outResults)
 					outResults->push_back(ResultForLoadFailure(path, why));

@@ -771,6 +771,20 @@
 //      MIN is the oldest interface whose plugins can run on a build this
 //      loader supports; the auto-updater skips plugin updates below it.
 //
+//      Also in v73: a plugin can say when it may be loaded and unloaded while
+//      the game runs. Two settings, one for load and one for unload (reload is
+//      both), each PluginReload::ANYTIME, MENU or RESTART, are packed into the
+//      spare bits of PluginInfo::mapFlags (PluginLoadSetting and
+//      PluginUnloadSetting build the value). No member moved: a plugin built
+//      before this has those bits 0, which reads as ANYTIME for both, so it
+//      behaves as it always did. A plugin can also mark itself busy at run
+//      time with IPluginEngineEvents::SetBusyReason, which makes the loader
+//      refuse an unload or reload until it clears the reason. The loader never
+//      calls into the plugin to ask. SetBusyReason is appended at the BOTTOM of
+//      IPluginEngineEvents. A refusal never touches the plugin and is never
+//      applied to game shutdown. See PluginDevelopment.md, "Load and unload
+//      settings".
+//
 #define PLUGIN_INTERFACE_VERSION_MIN 70
 #define PLUGIN_INTERFACE_VERSION_MAX 73
 #define PLUGIN_INTERFACE_VERSION 73
@@ -1462,6 +1476,17 @@ struct IPluginEngineEvents
 	// false as "post it with PostToGameThread", never as "this is a worker
 	// thread".
 	bool (*IsGameThread)();
+
+	// --- v73 ---
+
+	// Marks the calling plugin busy: while reason is set, the loader refuses
+	// to unload or reload it, before anything is shut down, and shows
+	// "Unload blocked: <reason>" in the plugin list and on the console. Pass
+	// null or "" to clear it. The reason is short plain text (cut at 80
+	// characters). Safe to call from any thread, and the loader never calls
+	// back to ask: it only reads the reason. self is the IPluginSelf given to
+	// PluginInit. A plugin that unloads or reloads starts with no reason.
+	void (*SetBusyReason)(const IPluginSelf* self, const char* reason);
 };
 
 static_assert(offsetof(IPluginEngineEvents, RegisterOnInit)                       ==   0, "v70 layout");
@@ -1483,6 +1508,7 @@ static_assert(offsetof(IPluginEngineEvents, GetLoadPackageAddress)              
 static_assert(offsetof(IPluginEngineEvents, GetAssetDataFastGetAssetAddress)      == 128, "v70 layout");
 static_assert(offsetof(IPluginEngineEvents, GetSdkGlobals)                        == 136, "v72 starts where v71 ended");
 static_assert(offsetof(IPluginEngineEvents, IsGameThread)                         == 144, "v72 layout");
+static_assert(offsetof(IPluginEngineEvents, SetBusyReason)                        == 152, "v73 starts where v72 ended");
 
 struct IPluginWorldEvents
 {
@@ -3387,6 +3413,38 @@ enum PluginMapFlags : uint32_t
     PLUGIN_MAP_MIGRATED = 1u << 0,
 };
 
+// v73. When a plugin may be loaded, or unloaded, while the game runs. Stored
+// in PluginInfo::mapFlags (bits 8-9 for load, 10-11 for unload; bits 1-7 stay
+// free for more map flags), so the default of 0 is ANYTIME for both and a
+// plugin built before v73 reads as ANYTIME without any change.
+//
+//   ANYTIME  no restriction. The default.
+//   MENU     only while no game world is running (the main menu, the splash).
+//            The loader refuses it while a world is running, with
+//            "Return to the main menu to reload this plugin".
+//   RESTART  load: only when the loader loads plugins at startup. Unload: never
+//            at run time; the plugin is shut down only when the game exits.
+//            The loader says "This plugin requires a game restart".
+//
+// A reload is an unload followed by a load, so it needs both to allow it.
+// Game shutdown unloads every plugin whatever these say.
+enum class PluginReload : uint32_t
+{
+    ANYTIME = 0,
+    MENU    = 1,
+    RESTART = 2,
+};
+
+constexpr uint32_t PLUGIN_RELOAD_LOAD_SHIFT   = 8;
+constexpr uint32_t PLUGIN_RELOAD_UNLOAD_SHIFT = 10;
+constexpr uint32_t PLUGIN_RELOAD_MASK         = 3;
+
+// The mapFlags bits for a load or unload setting; OR them with the other flags:
+//   info.mapFlags = PLUGIN_MAP_MIGRATED | PluginLoadSetting(PluginReload::MENU)
+//                                       | PluginUnloadSetting(PluginReload::MENU);
+constexpr uint32_t PluginLoadSetting(PluginReload when)   { return static_cast<uint32_t>(when) << PLUGIN_RELOAD_LOAD_SHIFT; }
+constexpr uint32_t PluginUnloadSetting(PluginReload when) { return static_cast<uint32_t>(when) << PLUGIN_RELOAD_UNLOAD_SHIFT; }
+
 struct PluginInfo
 {
 	const char* name;
@@ -3400,7 +3458,7 @@ struct PluginInfo
 	// Read only when interfaceVersion is 72 or later. The defaults fill them
 	// for a plugin that keeps the six-member initializer above.
 	uint32_t gameBuiltCL = PLUGIN_GAME_BUILT_CL;   // see PLUGIN_GAME_BUILT_CL
-	uint32_t mapFlags    = 0;                      // PluginMapFlags
+	uint32_t mapFlags    = 0;                      // PluginMapFlags; v73 also keeps the load and unload settings here (PluginReload)
 };
 
 static_assert(offsetof(PluginInfo, pluginTarget) == 36, "v70 layout");

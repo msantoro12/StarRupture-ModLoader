@@ -82,6 +82,9 @@
     <Filter Include="Source Files\hooks\game\framegen_pause">
       <UniqueIdentifier>{2f6a8d13-7c95-4e2b-b04d-8a1f3c6e9d52}</UniqueIdentifier>
     </Filter>
+    <Filter Include="Source Files\hooks\game\slate_present">
+      <UniqueIdentifier>{7d3b1e52-94a6-4c08-b2f1-5e8a6c0d3f27}</UniqueIdentifier>
+    </Filter>
     <Filter Include="Source Files\hooks\game\pak_mount">
       <UniqueIdentifier>{7d3f2a19-6b4c-4e85-9a1d-2c5e8f0b3a67}</UniqueIdentifier>
     </Filter>
@@ -264,6 +267,9 @@
     <ClInclude Include="plugins\plugin_manager.h">
       <Filter>Source Files\plugins</Filter>
     </ClInclude>
+    <ClInclude Include="plugins\reload_policy.h">
+      <Filter>Source Files\plugins</Filter>
+    </ClInclude>
     <ClInclude Include="plugins\plugin_watchdog.h">
       <Filter>Source Files\plugins</Filter>
     </ClInclude>
@@ -326,6 +332,9 @@
     </ClInclude>
     <ClInclude Include="hooks\game\framegen_pause\framegen_pause.h">
       <Filter>Source Files\hooks\game\framegen_pause</Filter>
+    </ClInclude>
+    <ClInclude Include="hooks\game\slate_present\slate_present.h">
+      <Filter>Source Files\hooks\game\slate_present</Filter>
     </ClInclude>
     <ClInclude Include="hooks\game\pak_mount\pak_mount.h">
       <Filter>Source Files\hooks\game\pak_mount</Filter>
@@ -721,6 +730,9 @@
     </ClCompile>
     <ClCompile Include="hooks\game\framegen_pause\framegen_pause.cpp">
       <Filter>Source Files\hooks\game\framegen_pause</Filter>
+    </ClCompile>
+    <ClCompile Include="hooks\game\slate_present\slate_present.cpp">
+      <Filter>Source Files\hooks\game\slate_present</Filter>
     </ClCompile>
     <ClCompile Include="hooks\game\pak_mount\pak_mount.cpp">
       <Filter>Source Files\hooks\game\pak_mount</Filter>

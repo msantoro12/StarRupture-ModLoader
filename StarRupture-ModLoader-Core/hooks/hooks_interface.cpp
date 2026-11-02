@@ -22,6 +22,7 @@
 #include "hooks/game/mass_do_spawning/mass_do_spawning.h"
 #include "console/plugin_console.h"
 #include "plugins/pak_registry.h"
+#include "plugins/reload_policy.h"
 #include "memory_scanner/scanner.h"
 #include "hooks/game/scan_patterns.h"
 #include "hooks/game/ufunction_resolve.h"
@@ -414,6 +415,9 @@ namespace ModLoaderLogger
 
 	static bool HooksIsGameThread()                               { return GameThreadDispatch::IsGameThread(); }
 
+	// v73. Any thread: ReloadPolicy keeps the reasons under a lock of their own.
+	static void HooksSetBusyReason(const IPluginSelf* self, const char* reason) { ReloadPolicy::SetBusyReason(self, reason); }
+
 	// --- Text utilities ---
 
 	static uintptr_t TextAsLocalizableAdvanced()
@@ -771,7 +775,8 @@ namespace ModLoaderLogger
 		HooksGetLoadPackageAddress,                // v36
 		HooksGetAssetDataFastGetAssetAddress,      // v36
 		HooksGetSdkGlobals,                        // v72
-		HooksIsGameThread                          // v72
+		HooksIsGameThread,                         // v72
+		HooksSetBusyReason                         // v73
 	};
 
 	static IPluginWorldEvents g_worldEvents = {

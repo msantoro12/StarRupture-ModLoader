@@ -605,6 +605,30 @@ namespace ScanPatterns
 	//   41 B0 01           mov  r8b, 1
 	inline constexpr auto GWorld_EngineLoopTick =
 		"48 8B 1D ?? ?? ?? ?? 48 85 DB 74 ?? 41 B0 01";
+
+	// FSlateRHIRenderer::PresentWindow_RenderThread(FRHICommandListImmediate&,
+	//   const FSlateDrawWindowPassInputs&, const FSlateDrawWindowPassOutputs&)
+	// Where Slate hands a window's finished back buffer to
+	// OnBackBufferReadyToPresent and then presents it. The tail reads
+	// Outputs.OutputTextureRHI (+0x10), the offset hooks/game/slate_present uses.
+	inline constexpr auto FSlateRHIRenderer_PresentWindow_RenderThread =
+		"40 55 53 56 57 41 54 41 55 41 56 41 57 48 8D AC 24 ?? ?? ?? ?? 48 81 EC ?? ?? ?? ?? "
+		"48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 85 ?? ?? ?? ?? 48 8D 99 ?? ?? ?? ?? 4C 89 4C 24 ?? 49 8B 49 10";
+
+	// FRHIComputeCommandList::Transition(TArrayView<const FRHITransitionInfo>, ERHITransitionCreateFlags)
+	inline constexpr auto FRHIComputeCommandList_Transition =
+		"40 53 56 57 41 54 41 56 41 57 48 83 EC 78 0F 10 02 48 8B DA 48 8B F9 48 8D 54 24 ?? "
+		"0F 29 44 24 ?? E8 ?? ?? ?? ?? 48 8B 43 08 0F 10 03 44 0F B6 67";
+
+	// FD3D12DynamicRHI::RHISignalManualFence / RHIWaitManualFence(FRHICommandList&, ID3D12Fence*, uint64).
+	// The two bodies are the same but for the checkf line number (0x2FE, 0x307)
+	// that ends each pattern.
+	inline constexpr auto FD3D12DynamicRHI_RHISignalManualFence =
+		"48 89 5C 24 08 48 89 74 24 10 57 48 83 EC 20 8B 0D ?? ?? ?? ?? B8 01 00 00 00 D3 E0 "
+		"49 8B D9 49 8B F8 48 8B F2 83 F8 02 74 ?? 4C 8D 0D ?? ?? ?? ?? 41 B8 FE 02 00 00";
+	inline constexpr auto FD3D12DynamicRHI_RHIWaitManualFence =
+		"48 89 5C 24 08 48 89 74 24 10 57 48 83 EC 20 8B 0D ?? ?? ?? ?? B8 01 00 00 00 D3 E0 "
+		"49 8B D9 49 8B F8 48 8B F2 83 F8 02 74 ?? 4C 8D 0D ?? ?? ?? ?? 41 B8 07 03 00 00";
 #endif
 
 	// What an entry's address is supposed to BE, checked against the image
@@ -762,6 +786,12 @@ namespace ScanPatterns
 		{ "FName::AppendString",                       FName_AppendString,                       false },
 		{ "GWorld",                                    GWorld_EngineLoopTick,                    false,
 		                                               PatternKind::Data, -1, 0 },
+		// Optional: without these the overlay is drawn at Present only, so
+		// frame generation shows it on real frames only.
+		{ "FSlateRHIRenderer::PresentWindow_RenderThread", FSlateRHIRenderer_PresentWindow_RenderThread, false },
+		{ "FRHIComputeCommandList::Transition",        FRHIComputeCommandList_Transition,        false },
+		{ "FD3D12DynamicRHI::RHISignalManualFence",    FD3D12DynamicRHI_RHISignalManualFence,    false },
+		{ "FD3D12DynamicRHI::RHIWaitManualFence",      FD3D12DynamicRHI_RHIWaitManualFence,      false },
 #endif
 
 #if defined(MODLOADER_SERVER_BUILD)

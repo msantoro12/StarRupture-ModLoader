@@ -24,6 +24,7 @@
 #include "plugins/plugin_hook_report.h"
 #include "plugins/plugin_interface.h"
 #include "plugins/plugin_manager.h"
+#include "plugins/reload_policy.h"
 #include "preload/preload_manager.h"
 #include "hooks/hook_broker.h"
 #include "hooks/game/engine_exec/engine_exec.h"
@@ -495,6 +496,12 @@ namespace ModConsole
                        s.version[0]  ? s.version : "?",
                        state,
                        s.fileName[0] ? s.fileName : "?");
+
+            // A running plugin the loader will not unload or reload right now,
+            // or an unloaded one it will not load, and why.
+            const char* block = s.isLoaded && s.unloadBlock[0] ? s.unloadBlock : s.reloadBlock;
+            if (block[0] && !s.isWrongTarget && !s.isOutOfDate && !s.hookScanFailed)
+                out.Notice("      %s", block);
         }
     }
 
@@ -513,8 +520,11 @@ namespace ModConsole
         for (int index : targets)
         {
             const std::string name = DisplayNameForIndex(index);
-            if (PluginManager::ReloadPlugin(index))
+            std::string refusal;
+            if (PluginManager::ReloadPlugin(index, &refusal))
                 out.Out("Reloaded %s.", name.c_str());
+            else if (!refusal.empty())
+                out.Error("Reload refused for %s: %s", name.c_str(), refusal.c_str());
             else
                 out.Error("Reload FAILED for %s -- see modloader.log.", name.c_str());
         }
@@ -535,8 +545,11 @@ namespace ModConsole
         for (int index : targets)
         {
             const std::string name = DisplayNameForIndex(index);
-            if (PluginManager::UnloadPlugin(index))
+            std::string refusal;
+            if (PluginManager::UnloadPlugin(index, &refusal))
                 out.Out("Unloaded %s.", name.c_str());
+            else if (!refusal.empty())
+                out.Error("Unload refused for %s: %s", name.c_str(), refusal.c_str());
             else
                 out.Notice("%s was not loaded.", name.c_str());
         }
@@ -573,8 +586,11 @@ namespace ModConsole
                 continue;
             }
 
-            if (PluginManager::ReloadPlugin(index))
+            std::string refusal;
+            if (PluginManager::ReloadPlugin(index, &refusal))
                 out.Out("Loaded %s.", name.c_str());
+            else if (!refusal.empty())
+                out.Error("Load refused for %s: %s", name.c_str(), refusal.c_str());
             else
                 out.Error("Load FAILED for %s -- see modloader.log.", name.c_str());
         }

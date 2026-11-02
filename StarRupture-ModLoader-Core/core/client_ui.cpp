@@ -8,6 +8,7 @@
 #include "../hooks/game/world_begin_play/world_begin_play.h"
 #include "../hooks/game/engine_tick/engine_tick.h"
 #include "../hooks/game/framegen_pause/framegen_pause.h"
+#include "../hooks/game/slate_present/slate_present.h"
 #include "../hooks/game/game_menu/game_menu.h"
 #include "../hooks/game/game_menu/game_menu_registry.h"
 #include "../hooks/input/input_processor.h"
@@ -205,6 +206,7 @@ void InitClientUI()
         };
 
         UI::ImGuiBackend::Initialize(cbs);
+        Hooks::SlatePresent::Install();
     }
 
     static auto s_onWorldReady = [](SDK::UWorld* /*world*/, const char* worldName)
@@ -273,7 +275,10 @@ void InitClientUI()
 void ShutdownClientUI()
 {
     if (s_imguiEnabled)
+    {
+        Hooks::SlatePresent::Remove();
         UI::ImGuiBackend::Shutdown();
+    }
     Hooks::Input::RemoveInputProcessor();
 }
 

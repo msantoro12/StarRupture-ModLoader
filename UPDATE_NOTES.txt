@@ -1,5 +1,5 @@
-- Keeps working after a game update, with no new loader needed for game builds it already knows
-- If a game update breaks part of a plugin, only that part turns off and the rest keeps working
+- Keeps working after a game update, for every game build it knows
+- If an update breaks part of a plugin, only that part turns off
 - LOAD NEW adds plugins you drop in while the game is running
 - Click a plugin in the list to open its settings
 - Settings with a fixed set of choices are now dropdowns

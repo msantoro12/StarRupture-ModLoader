@@ -2,6 +2,7 @@
 #include "engine_shutdown.h"
 #include "logging/logger.h"
 #include "plugins/plugin_guard.h"
+#include "plugins/crash_restart.h"
 #include "memory_scanner/scanner.h"
 #include "hooks/memory/engine_allocator.h"
 #include <vector>
@@ -40,6 +41,9 @@ namespace Hooks::EngineShutdown
 			return;
 
 		g_shutdownFired = true;
+
+		// A plugin switched off now stays off: no crash restart during the exit.
+		CrashRestart::Global().Stop();
 
 		ModLoaderLogger::LogInfo(L"[EngineShutdown] *** ENGINE SHUTTING DOWN *** (via %s) - notifying plugins",
 		                         hookSource);

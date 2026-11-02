@@ -109,6 +109,14 @@ namespace PluginManager
     // UnloadPlugin.
     bool ReloadPlugin(int index, std::string* refusal = nullptr);
 
+    // Game thread, every tick (engine_tick.cpp, right after GameThreadDispatch::Drain).
+    // Acts on plugins the crash guard switched off (plugins/crash_restart.h): a
+    // toast and a log line for each, then a ReloadPlugin a few seconds later
+    // when its settings allow one, at most CrashRestart::kMaxRestarts times per
+    // plugin per session. One atomic load when nothing has crashed. Does
+    // nothing once the game has started to exit.
+    void PumpCrashRestarts();
+
     // Index of the plugin record matching nameOrFile, or -1 if there is none.
     // Matches (case-insensitively) the PluginInfo name first, then the DLL file
     // name with and without its ".dll" extension.

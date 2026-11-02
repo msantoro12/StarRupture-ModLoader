@@ -383,10 +383,29 @@ namespace UI::ModLoaderWindow
     {
         static_assert(kTabTheme == 4, "the number keys 1-5 map to the first five tabs");
 
+        // The keybind capture reads its key with GetAsyncKeyState and ends in the
+        // frame the key goes down, while ImGui gets the same press from the
+        // WM_KEYDOWN a frame or so later. Left alone, rebinding to 1-5 would open
+        // a page. Hold the hotkeys off until the capture is over, its key is up
+        // and a few frames have passed.
+        static int s_holdFrames = 0;
+        if (s_rebind.active)
+            s_holdFrames = 3;
+        else if (s_holdFrames > 0)
+        {
+            bool numberKeyDown = false;
+            for (int tab = kTabPlugins; tab <= kTabTheme; ++tab)
+                numberKeyDown |= (GetAsyncKeyState('1' + tab) & 0x8000) != 0 ||
+                                 (GetAsyncKeyState(VK_NUMPAD1 + tab) & 0x8000) != 0;
+            if (!numberKeyDown)
+                --s_holdFrames;
+        }
+
         const ImGuiIO& io = ImGui::GetIO();
-        if (!ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) ||
-            io.WantTextInput || ImGui::IsAnyItemActive() || s_rebind.active ||
-            io.KeyCtrl || io.KeyAlt || io.KeySuper)
+        if (s_holdFrames > 0 ||
+            !ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) ||
+            io.WantTextInput || ImGui::IsAnyItemActive() ||
+            io.KeyCtrl || io.KeyAlt || io.KeyShift || io.KeySuper)
             return;
 
         for (int tab = kTabPlugins; tab <= kTabTheme; ++tab)
@@ -1743,10 +1762,8 @@ namespace UI::ModLoaderWindow
         {
             ImGui::SetTooltip(
                 "Move around the loader and plugin windows without the mouse: Tab and\n"
-                "Shift+Tab or the arrow keys pick a widget, Space or Enter uses it, and\n"
-                "Esc closes the window.\n\n"
-                "Only while a window is open. In the loader window, 1-5 also open the\n"
-                "Plugins, Config, Settings, Logging and Theme pages.");
+                "Shift+Tab or the arrow keys pick a widget, and Space or Enter uses it.\n"
+                "Only while a window is open.");
         }
 
         ImGui::Spacing();

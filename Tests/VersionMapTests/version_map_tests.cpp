@@ -891,7 +891,9 @@ int main()
 						Check(plan == Plan::WaitForMenu, "restart: MENU in a world waits for the main menu");
 				}
 		Check(CrashRestart::Decide(settings(M, M), false, 0, true) == Plan::RestartNow, "restart: MENU at the main menu restarts");
-		Check(CrashRestart::Decide(settings(A, A), false, 0, false) == Plan::Disabled, "restart: the setting off wins");
+		Check(CrashRestart::Decide(settings(A, A), false, 0, false) == Plan::Disabled, "restart: the setting off stops a restart");
+		Check(CrashRestart::Decide(settings(R, A), false, 0, false) == Plan::NeedsGameRestart && CrashRestart::Decide(settings(A, R), false, 9, true) == Plan::NeedsGameRestart,
+			"restart: RESTART says restart the game, whatever the setting and the count");
 
 		// The limiter: three restarts per plugin per session, then it gives up; counted by name.
 		CrashRestart::Scheduler s;
@@ -902,7 +904,7 @@ int main()
 		}
 		Check(s.Restarts("BetterDrone") == 3, "limiter: three counted");
 		Check(CrashRestart::Decide(settings(A, A), true, s.Restarts("BetterDrone"), true) == Plan::GaveUp, "limiter: the fourth crash gives up");
-		Check(CrashRestart::Decide(settings(R, R), true, s.Restarts("BetterDrone"), true) == Plan::GaveUp, "limiter: gives up whatever the setting");
+		Check(CrashRestart::Decide(settings(M, M), true, s.Restarts("BetterDrone"), true) == Plan::GaveUp, "limiter: gives up for MENU too");
 		Check(s.Restarts("Codex") == 0, "limiter: per plugin");
 		Check(CrashRestart::Announcement(Plan::GaveUp, "BetterDrone", "tick callback").find("stays off until the game restarts") != std::string::npos,
 			"limiter: the give-up text");

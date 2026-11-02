@@ -397,6 +397,7 @@ the whole API and you can hot-reload it while the game runs.
 | The *game's* log is flooding on a dedicated server | Hundreds of `LogTemp` / `LogSkinnedMeshComp` warnings a second come from the game itself, not the mod loader. Server builds turn those two categories down to errors automatically; edit `GameLogCategories` under `[Logging]` in `ModLoader\modloader.ini` to change the list, or blank it to leave the game log alone. `-LogCmds=` has no effect on this build. |
 | Game stops responding to input | Turn on *ModLoader Debug Values* in the **Settings** tab — it names the plugin holding input open. |
 | Game freezes ("Not Responding") | Look near the end of `ModLoader\Logs\ModLoader.log` for a `[PluginWatchdog]` line. A plugin's tick or overlay draw callback (a panel or widget) still running after 5 seconds is named there, e.g. `SomePlugin.dll widget render has been running for 5016 ms`. Disable that plugin and report it to its author. |
+| `ModLoader.log` has `its own pattern matches N times on this exe` for a plugin | The plugin loads, because the version map's row decides where its function is. But its own AOB pattern is not unique on this game build, and a loader without the map's row for that build (a stock loader, or a build the map does not list yet) refuses a plugin whose pattern matches 0 or 2 or more places. Tell the plugin's author to make the pattern unique. <sup>[✦](#msantoro12)</sup> |
 | A plugin shows **Crashed** | It faulted in one of its callbacks and was switched off; the game kept running. `ModLoader.log` has the fault and a stack. Press **RELOAD** to run it again, and report the log lines to its author. |
 | The game crashes | The mod loader's own dialog has **Copy Details** and buttons for `ModLoader.log` and `StarRupture.log`. Include them in a bug report. |
 | Players dropped during a long map load | See [Net timeouts](#net-timeouts). Both ends need the mod loader. |
@@ -416,6 +417,12 @@ On a client build with `[AutoUpdate] Enabled` on, the loader can also fetch a ne
 file, so a new game build can be supported without a loader update. A server build never does.
 How the map is chosen, how the feed is fetched, signed and cached, how CI publishes it and what
 each failure looks like is in [VersionMap.md](VersionMap.md).
+
+When the map's row decides where a plugin's function is, the loader still checks the plugin's own
+AOB pattern against the running exe, once, and logs a warning if it matches 0 or 2 or more places.
+The plugin still loads. The warning is there so a pattern that only works because the map covers
+for it is caught on a development setup, not by the first player on a loader without the map.
+<sup>[✦](#msantoro12)</sup>
 
 ## Net timeouts
 
@@ -495,7 +502,7 @@ Other files, all under `ModLoader\`:
 | `modloader_imgui.ini` | Window and HUD positions |
 | `Logs\Proxy.log`, `Logs\AutoUpdate.log` | The `dwmapi.dll` proxy and the startup updater. Ten runs kept, as for `ModLoader.log` |
 | `update_state.ini` | Versions the auto-updater has installed. Not for editing |
-| `scan_cache.ini` | Pattern scan results for the current game version |
+| `scan_cache.ini` | Pattern scan results for the current game exe, kept per ProductVersion, PE timestamp and image size. A file from an older loader is discarded and rebuilt on the first launch <sup>[✦](#msantoro12)</sup> |
 | `Preload\.state` | Marks a preload plugin that did not finish loading |
 
 ---

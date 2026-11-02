@@ -15,6 +15,8 @@
 namespace TestDoubles
 {
 	std::map<std::string, uintptr_t> g_rvas;
+	std::map<std::string, size_t>    g_counts;
+	std::map<std::string, int>       g_resolveCalls;
 	std::vector<std::wstring>        g_log;
 }
 
@@ -66,6 +68,15 @@ namespace ScanValidation
 	Result Resolve(const Request& request)
 	{
 		Result r;
+		++TestDoubles::g_resolveCalls[request.pattern];
+		const auto many = TestDoubles::g_counts.find(request.pattern);
+		if (many != TestDoubles::g_counts.end())
+		{
+			r.outcome    = Outcome::MultipleMatches;
+			r.matchCount = many->second;
+			r.detail     = "pattern is not unique";
+			return r;
+		}
 		const auto it = TestDoubles::g_rvas.find(request.pattern);
 		if (it == TestDoubles::g_rvas.end())
 		{

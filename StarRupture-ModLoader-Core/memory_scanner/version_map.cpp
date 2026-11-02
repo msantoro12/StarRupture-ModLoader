@@ -12,6 +12,7 @@
 #include <cstdio>
 #include <cstring>
 #include <memory>
+#include <mutex>
 #include <set>
 #include <tuple>
 #include <unordered_map>
@@ -104,6 +105,35 @@ namespace VersionMap
 		void LogPick(const char* owner, const std::string& key, const std::string& how)
 		{
 			ModLoaderLogger::LogInfo(L"[Map] %S: %S: %S", owner ? owner : "?", key.c_str(), how.c_str());
+		}
+
+		// A map row decides which address a plugin gets, so its own pattern is
+		// never needed to load. It still has to be unique: a loader without the
+		// map (or a build with no row) scans it and refuses a plugin whose
+		// pattern matches 0 or 2+ places. Resolve the plugin's own pattern once
+		// per process, through scan_cache, and say so when it would be refused.
+		// `known` is the result when the caller has already resolved it.
+		void WarnIfOwnPatternNotUnique(const char* owner, const ScanValidation::Request& request,
+			const ScanValidation::Result* known = nullptr)
+		{
+			if (request.pattern.empty() || (owner && strcmp(owner, "ModLoader") == 0))
+				return;
+
+			static std::mutex  lock;
+			static std::set<std::string> checked;
+			{
+				std::lock_guard<std::mutex> guard(lock);
+				if (!checked.insert(request.pattern).second)
+					return;
+			}
+
+			const ScanValidation::Result own = known ? *known : ScanValidation::Resolve(request);
+			if (own.outcome != ScanValidation::Outcome::NoMatch && own.outcome != ScanValidation::Outcome::MultipleMatches)
+				return;
+
+			ModLoaderLogger::LogWarn(L"[Map] %S: %S: its own pattern matches %zu time%S on this exe, and a pattern must match exactly once; "
+				L"the map row is carrying it, but a loader without the row refuses this plugin. Make the pattern unique.",
+				owner ? owner : "?", request.name.c_str(), own.matchCount, own.matchCount == 1 ? "" : "s");
 		}
 	}
 
@@ -415,11 +445,8 @@ namespace VersionMap
 		const Scanner::ImageInfo image = Scanner::GetImageInfo(module);
 		if (image.valid)
 		{
-			const auto* base = reinterpret_cast<const uint8_t*>(image.base);
-			const auto* dos  = reinterpret_cast<const IMAGE_DOS_HEADER*>(base);
-			const auto* nt   = reinterpret_cast<const IMAGE_NT_HEADERS64*>(base + dos->e_lfanew);
-			e.imageStamp = nt->FileHeader.TimeDateStamp;
-			e.imageSize  = nt->OptionalHeader.SizeOfImage;
+			e.imageStamp = image.stamp;
+			e.imageSize  = static_cast<uint32_t>(image.size);
 		}
 		return e;
 	}
@@ -575,6 +602,7 @@ namespace VersionMap
 				how += ", the " + RowLabel(*exactOwn) + " agrees";
 			}
 			LogPick(owner, request.name, how);
+			WarnIfOwnPatternNotUnique(owner, request);
 			return r;
 		}
 
@@ -609,6 +637,7 @@ namespace VersionMap
 			if (r.Succeeded() && r.address - image.base == cached.offset)
 			{
 				LogPick(owner, request.name, lead + t.label + " (agreed on an earlier launch)");
+				WarnIfOwnPatternNotUnique(owner, request);
 				return r;
 			}
 		}
@@ -642,6 +671,8 @@ namespace VersionMap
 				ScanCache::Store(gameVersion, cacheKey, entry);
 			}
 			LogPick(owner, request.name, lead + agreed + (agreed.find(',') == std::string::npos ? " resolves" : " agree"));
+			if (!request.pattern.empty())   // tried[0] is the own pattern, already resolved
+				WarnIfOwnPatternNotUnique(owner, request, &tried[0].result);
 			return tried[winner].result;
 		}
 

@@ -4,6 +4,7 @@
 #include "game_menu_registry.h"
 #include "game_menu.h"
 #include "logging/logger.h"
+#include "plugins/plugin_guard.h"
 
 #include <mutex>
 #include <string>
@@ -364,7 +365,7 @@ namespace GameMenu::Registry
 
 		try
 		{
-			callback(userData);
+			PluginGuard::Invoke(callback, "game-menu callback", userData);
 		}
 		catch (const std::exception& e)
 		{

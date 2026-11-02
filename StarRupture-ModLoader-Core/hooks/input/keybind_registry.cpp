@@ -4,6 +4,7 @@
 #include "UI/imgui_backend.h"
 #include "logging/logger.h"
 #include "plugins/plugin_manager.h"
+#include "plugins/plugin_guard.h"
 
 #include <windows.h>
 #include <mutex>
@@ -244,6 +245,20 @@ namespace Hooks::Input
 		s_blockingMap.clear();
 		s_initialized = false;
 		ModLoaderLogger::LogInfo(L"[KeybindRegistry] Shutdown - all keybinds cleared");
+	}
+
+	// Drops every keybind whose callback lives in `module`: a plugin being
+	// unloaded, including a bind a live rebind patched in place that the
+	// plugin's own unregister could not find. Before FreeLibrary.
+	void ForgetModule(HMODULE module)
+	{
+		std::lock_guard<std::mutex> lock(s_mutex);
+		const size_t dropped =
+			PluginGuard::ForgetModule(s_callbacks, module, [](const CallbackEntry& e) { return e.callback; }) +
+			PluginGuard::ForgetModule(s_namedCombos, module, [](const NamedComboEntry& e) { return e.callback; }) +
+			PluginGuard::ForgetModule(s_comboCallbacks, module, [](const ComboCallbackEntry& e) { return e.callback; });
+		if (dropped)
+			ModLoaderLogger::LogDebug(L"[KeybindRegistry] Dropped %zu keybind(s) of an unloading plugin", dropped);
 	}
 
 	// -----------------------------------------------------------------------
@@ -957,7 +972,7 @@ namespace Hooks::Input
 		{
 			if (cb)
 			{
-				try { cb(key, event); }
+				try { PluginGuard::Invoke(cb, "keybind callback", key, event); }
 				catch (...)
 				{
 				}
@@ -1030,11 +1045,11 @@ namespace Hooks::Input
 
 		for (auto cb : namedToCall)
 		{
-			if (cb) try { cb(key, event); } catch (...) {}
+			if (cb) try { PluginGuard::Invoke(cb, "keybind callback", key, event); } catch (...) {}
 		}
 		for (auto cb : advToCall)
 		{
-			if (cb) try { cb(key, mods, event); } catch (...) {}
+			if (cb) try { PluginGuard::Invoke(cb, "keybind callback", key, mods, event); } catch (...) {}
 		}
 	}
 

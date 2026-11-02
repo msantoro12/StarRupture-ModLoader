@@ -1,6 +1,7 @@
 #include "hooks_interface.h"
 #include "hooks_common.h"
 #include "logging/logger.h"
+#include "plugins/plugin_guard.h"
 #include "network_channel/network_channel.h"
 #include "hooks/memory/engine_allocator.h"
 #include "utils/game_thread_dispatch.h"
@@ -455,7 +456,9 @@ namespace ModLoaderLogger
 	static void HooksPostToGameThread(PluginGameThreadCallback fn, void* context)
 	{
 		if (!fn) return;
-		GameThreadDispatch::PostVoid([fn, context]() { fn(context); });
+		// Guarded too: a task queued just before its plugin was unloaded runs
+		// into an unmapped address, which the guard contains.
+		GameThreadDispatch::PostVoid([fn, context]() { PluginGuard::Invoke(fn, "game-thread task", context); });
 	}
 
 	static void HooksRegisterActorBeginPlayCallback(void (*callback)(void*))
@@ -1920,5 +1923,33 @@ namespace ModLoaderLogger
 			g_pluginHooks.ImGuiTextures = UI::ImGuiBackend::GetTextureAPI();
 #endif
 		return &g_pluginHooks;
+	}
+
+	void ForgetPluginCallbacks(HMODULE module)
+	{
+		if (!module) return;
+		Hooks::WorldBeginPlay::ForgetModule(module);
+		Hooks::WorldEndPlay::ForgetModule(module);
+		Hooks::EngineInit::ForgetModule(module);
+		Hooks::EngineShutdown::ForgetModule(module);
+		Hooks::SaveLoaded::ForgetModule(module);
+		Hooks::ExperienceLoadComplete::ForgetModule(module);
+		Hooks::EngineTick::ForgetModule(module);
+		Hooks::ActorBeginPlay::ForgetModule(module);
+		Hooks::CraftingFinished::ForgetModule(module);
+		Hooks::PlayerJoined::ForgetModule(module);
+		Hooks::PlayerLeft::ForgetModule(module);
+		Hooks::MassSpawnerActivate::ForgetModule(module);
+		Hooks::MassSpawnerDeactivate::ForgetModule(module);
+		Hooks::MassDoSpawning::ForgetModule(module);
+		Hooks::DelegateHook::ForgetModule(module);
+		NetworkChannel::ForgetModule(module);
+#ifdef MODLOADER_SERVER_BUILD
+		Hooks::HttpServer::ForgetModule(module);
+#endif
+#ifdef MODLOADER_CLIENT_BUILD
+		Hooks::HUDPostRender::ForgetModule(module);
+		Hooks::Input::ForgetModule(module);
+#endif
 	}
 }

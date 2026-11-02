@@ -45,6 +45,13 @@ namespace PluginManager
         // reloadBlock covers RELOAD of a loaded plugin and LOAD of an unloaded one.
         char unloadBlock[112];
         char reloadBlock[112];
+
+        // True when one of its callbacks crashed and the loader switched it off
+        // (plugins/plugin_guard.h): still mapped and still listed as loaded, but
+        // nothing calls into it until it is unloaded or reloaded. crashReason
+        // says how, e.g. "0xC0000005 in tick callback".
+        bool isCrashed;
+        char crashReason[96];
     };
 
     // Initialize the plugin manager

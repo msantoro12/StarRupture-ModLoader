@@ -487,15 +487,21 @@ namespace ModConsole
             if (s.isWrongTarget)        state = "Wrong target";
             else if (s.hookScanFailed)  state = "Hooks failed";
             else if (s.isOutOfDate)     state = s.needsModLoaderUpdate ? "Needs loader" : "Needs update";
+            else if (s.isCrashed)       state = "Crashed";
             else if (s.isLoaded)        state = loadedState;
 
-            out.Printf(s.isWrongTarget || s.isOutOfDate || s.hookScanFailed ? LineKind::Error : LineKind::Output,
+            const bool crashed = s.isCrashed && !s.isWrongTarget && !s.hookScanFailed && !s.isOutOfDate;
+            out.Printf(s.isWrongTarget || s.isOutOfDate || s.hookScanFailed || crashed ? LineKind::Error : LineKind::Output,
                        "%-3d %-26s %-12s %-14s %s",
                        i,
                        s.name[0]     ? s.name    : "?",
                        s.version[0]  ? s.version : "?",
                        state,
                        s.fileName[0] ? s.fileName : "?");
+
+            // Switched off after a fault in one of its callbacks: what and where.
+            if (crashed)
+                out.Notice("      crashed: %s -- reload or unload it", s.crashReason);
 
             // A running plugin the loader will not unload or reload right now,
             // or an unloaded one it will not load, and why.

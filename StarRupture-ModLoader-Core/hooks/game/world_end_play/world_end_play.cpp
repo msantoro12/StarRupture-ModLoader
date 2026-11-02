@@ -1,6 +1,7 @@
 #include "pch.h"
 #include "world_end_play.h"
 #include "logging/logger.h"
+#include "plugins/plugin_guard.h"
 #include "memory_scanner/scanner.h"
 #include "../scan_patterns.h"
 #include "plugins/reload_policy.h"
@@ -23,11 +24,13 @@ namespace Hooks::WorldEndPlay
 	static std::vector<PluginWorldEndPlayCallback> g_afterCallbacks;
 
 	// SEH wrapper — must be in its own function with no C++ objects to satisfy C2712.
+	// A plugin's callback is contained (and its plugin switched off) by
+	// PluginGuard; this outer one still catches a fault in the loader's own.
 	static void InvokeCallbackSEH(PluginWorldEndPlayCallback cb, SDK::UWorld* world, const char* name, size_t idx, const wchar_t* phase)
 	{
 		__try
 		{
-			cb(world, name);
+			PluginGuard::Invoke(cb, "world end-play callback", world, name);
 		}
 		__except (EXCEPTION_EXECUTE_HANDLER)
 		{
@@ -223,5 +226,15 @@ namespace Hooks::WorldEndPlay
 	uintptr_t GetOriginalPtr()
 	{
 		return reinterpret_cast<uintptr_t>(g_original);
+	}
+
+	// Drops every callback that lives in `module`: a plugin being unloaded,
+	// whatever it did not unregister itself. Game thread, before FreeLibrary.
+	void ForgetModule(HMODULE module)
+	{
+		const size_t dropped = PluginGuard::ForgetModule(g_beforeCallbacks, module)
+		                      + PluginGuard::ForgetModule(g_afterCallbacks, module);
+		if (dropped)
+			ModLoaderLogger::LogDebug(L"[WorldEndPlay] Dropped %zu callback(s) of an unloading plugin", dropped);
 	}
 }

@@ -143,11 +143,11 @@ is available.
   - A toast in the bottom right corner names the plugin and the callback, fades after about 7
     seconds, and stacks when several plugins crash. About 3 seconds later the loader reloads the
     plugin on its own, the same as **RELOAD**, if its [load and unload settings](#load-and-unload-settings)
-    allow it: **Any time** restarts at once, **Main menu only** waits until you are at the main menu,
+    allow it: **Any time** restarts after the short wait, **Main menu only** waits until you are at the main menu,
     and a plugin that needs a game restart stays off (the toast says so). Each plugin restarts
     automatically at most 3 times a session; a fourth crash leaves it off until the game restarts.
     Every crash, planned restart, restart and give-up is in `ModLoader.log`. On a dedicated server
-    there is no toast and plugins always restart. Nothing restarts once the game starts to exit.
+    there is no toast and no setting: restarts are always on, under the same rules. Nothing restarts once the game starts to exit.
     <sup>[✦](#msantoro12)</sup>
 - **Return to the main menu to reload this plugin**, **This plugin requires a game restart**, **Unload
   not supported** and **Unload blocked: ...** take the place of the buttons the loader would refuse.

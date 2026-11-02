@@ -41,14 +41,15 @@ namespace CrashRestart
 
 	// The same rules as ReloadPolicy::ReloadRefusal for a loaded plugin, with no
 	// busy reason (the plugin manager ignores it once a plugin has crashed).
+	// RESTART comes first: no setting and no count can make RELOAD possible.
 	inline Plan Decide(const ReloadPolicy::Settings& s, bool worldRunning, int restartsSoFar, bool enabled)
 	{
+		if (s.unload == PluginReload::RESTART || s.load == PluginReload::RESTART)
+			return Plan::NeedsGameRestart;
 		if (!enabled)
 			return Plan::Disabled;
 		if (restartsSoFar >= kMaxRestarts)
 			return Plan::GaveUp;
-		if (s.unload == PluginReload::RESTART || s.load == PluginReload::RESTART)
-			return Plan::NeedsGameRestart;
 		if (worldRunning && (s.unload == PluginReload::MENU || s.load == PluginReload::MENU))
 			return Plan::WaitForMenu;
 		return Plan::RestartNow;
@@ -118,7 +119,7 @@ namespace CrashRestart
 			m_pending.store(true, std::memory_order_release);
 		}
 
-		// One relaxed load: the pump's cost on a tick with nothing to do.
+		// One atomic load: the pump's cost on a tick with nothing to do.
 		bool HasWork() const { return m_pending.load(std::memory_order_acquire); }
 
 		// Game thread. Removes and returns the entries to act on now: every New

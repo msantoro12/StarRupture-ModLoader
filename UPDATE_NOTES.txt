@@ -19,3 +19,6 @@ Plugin interface v73: a plugin can mark itself busy, and the loader then refuses
 Reload, unload and load say why they were refused, in the plugin list and on the console
 A plugin that crashes in one of its callbacks is switched off and shown as Crashed; the game keeps running, and RELOAD brings the plugin back
 A crash in game or mod loader code under a plugin callback still crashes the game, and the log names the plugin and callback it happened under
+LOAD NEW moved up beside the window title
+Keys 1 to 5 open the Plugins, Config, Settings, Logging and Theme tabs, and the tab tooltips show the number
+Tab, the arrow keys and Space or Enter work in the loader and plugin windows while one is open, and Settings can turn that off

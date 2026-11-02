@@ -102,6 +102,7 @@
   </ItemGroup>
   <ItemGroup Label="Loader sources under test">
     <ClCompile Include="$(CoreDir)hooks\input\keybind_registry.cpp" />
+    <ClCompile Include="$(CoreDir)plugins\plugin_guard.cpp" />
     <ClCompile Include="$(CoreDir)utils\game_thread_dispatch.cpp" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

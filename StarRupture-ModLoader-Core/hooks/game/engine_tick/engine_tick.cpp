@@ -3,6 +3,7 @@
 #include "tick_profiler.h"
 #include "stack_sampler.h"
 #include "logging/logger.h"
+#include "plugins/plugin_guard.h"
 #include "memory_scanner/scanner.h"
 #include "../scan_patterns.h"
 #include "../world_begin_play/world_begin_play.h"
@@ -127,7 +128,7 @@ namespace Hooks::EngineTick
 				try
 				{
 					PluginWatchdog::Scope watch(reinterpret_cast<const void*>(g_pluginCallbacks[i]), "tick callback");
-					g_pluginCallbacks[i](deltaSeconds);
+					PluginGuard::Invoke(g_pluginCallbacks[i], "tick callback", deltaSeconds);
 				}
 				catch (...)
 				{
@@ -335,5 +336,14 @@ namespace Hooks::EngineTick
 	uintptr_t GetOriginalPtr()
 	{
 		return reinterpret_cast<uintptr_t>(g_original);
+	}
+
+	// Drops every callback that lives in `module`: a plugin being unloaded,
+	// whatever it did not unregister itself. Game thread, before FreeLibrary.
+	void ForgetModule(HMODULE module)
+	{
+		const size_t dropped = PluginGuard::ForgetModule(g_pluginCallbacks, module);
+		if (dropped)
+			ModLoaderLogger::LogDebug(L"[EngineTick] Dropped %zu callback(s) of an unloading plugin", dropped);
 	}
 }

@@ -3,6 +3,7 @@
 
 #include "hooks/hooks_common.h"
 #include "logging/logger.h"
+#include "plugins/plugin_guard.h"
 #include "memory_scanner/scanner.h"
 #include "hooks/memory/engine_allocator.h"
 #include "hooks/game/scan_patterns.h"
@@ -167,7 +168,10 @@ namespace Hooks::HttpServer
 	static HttpRequestAction InvokeFilterSEH(PluginHttpRequestFilterCallback cb,
 		const PluginHttpRequest* req)
 	{
-		__try { return cb(req); }
+		// PluginGuard switches the plugin off on a fault in its filter; the
+		// outer __try still catches anything else, as before.
+		HttpRequestAction action = HttpRequestAction::Approve;
+		__try { PluginGuard::InvokeInto(&action, cb, "HTTP request filter", req); return action; }
 		__except (EXCEPTION_EXECUTE_HANDLER) { return HttpRequestAction::Approve; }
 	}
 
@@ -909,7 +913,7 @@ namespace Hooks::HttpServer
 	static bool InvokeRawRouteCallbackSEH(PluginHttpRouteCallback cb,
 		const PluginHttpRequest* req, PluginHttpResponse* resp)
 	{
-		__try { cb(req, resp); return true; }
+		__try { return PluginGuard::Invoke(cb, "HTTP route", req, resp); }
 		__except (EXCEPTION_EXECUTE_HANDLER) { return false; }
 	}
 
@@ -1362,6 +1366,23 @@ namespace Hooks::HttpServer
 			g_rawRoutes.erase(it, g_rawRoutes.end());
 			ModLoaderLogger::LogInfo(L"[HttpServer] Raw route unregistered: %S", prefix.c_str());
 		}
+	}
+
+	// Drops every raw route and request filter whose callback lives in
+	// `module`: a plugin being unloaded. Before FreeLibrary.
+	void ForgetModule(HMODULE module)
+	{
+		size_t dropped = 0;
+		{
+			std::lock_guard lock(g_rawRoutesMutex);
+			dropped += PluginGuard::ForgetModule(g_rawRoutes, module, [](const RawRouteEntry& r) { return r.callback; });
+		}
+		{
+			std::lock_guard lock(g_filtersMutex);
+			dropped += PluginGuard::ForgetModule(g_filters, module);
+		}
+		if (dropped)
+			ModLoaderLogger::LogDebug(L"[HttpServer] Dropped %zu route(s)/filter(s) of an unloading plugin", dropped);
 	}
 
 } // namespace Hooks::HttpServer

@@ -4,10 +4,12 @@
 #ifdef MODLOADER_CLIENT_BUILD
 
 #include "imgui/imgui.h"
+#include "imgui/imgui_internal.h"   // ImGuiErrorRecoveryState
 #include "theme.h"
 #include "plugin_call_tracker.h"
 #include "plugins/plugin_manager.h"
 #include "plugins/plugin_watchdog.h"
+#include "plugins/plugin_guard.h"
 #include "logging/logger.h"
 #include <mutex>
 #include <list>
@@ -91,7 +93,7 @@ namespace UI::PluginPanelRegistry
 
             PluginCallTracker::Scope call(s_calls, lock, reinterpret_cast<const void*>(cb.callback), cb.owner);
             PluginWatchdog::Scope watch(reinterpret_cast<const void*>(cb.callback), "panel-closed callback");
-            cb.callback(handle);
+            PluginGuard::Invoke(cb.callback, "panel-closed callback", handle);
         }
     }
 
@@ -200,7 +202,7 @@ namespace UI::PluginPanelRegistry
                     toCall.push_back(e.callback);
         }
         for (auto cb : toCall)
-            cb(section, key, newValue);
+            PluginGuard::Invoke(cb, "config-changed callback", section, key, newValue);
     }
 
     // Returns the PanelEntry* if the handle is a known registered panel, otherwise null.
@@ -531,6 +533,8 @@ namespace UI::PluginPanelRegistry
             if (!live || !live->isOpen)
                 continue;
             const PanelEntry panel = *live;
+            if (PluginGuard::IsOff(reinterpret_cast<const void*>(panel.desc->renderFn)))
+                continue;   // its plugin crashed and is switched off
 
             bool open = true;
             {
@@ -551,7 +555,12 @@ namespace UI::PluginPanelRegistry
                 if (UI::Theme::BeginChamferedWindow(panel.desc->windowTitle, panel.desc->windowTitle,
                                                      &open, subtitle))
                 {
-                    panel.desc->renderFn(imgui);
+                    // A render that crashes leaves whatever it had begun or
+                    // pushed open; put ImGui back as it was before it ran.
+                    ImGuiErrorRecoveryState before;
+                    ImGui::ErrorRecoveryStoreState(&before);
+                    if (!PluginGuard::Invoke(panel.desc->renderFn, "panel render", imgui))
+                        ImGui::ErrorRecoveryTryToRecoverState(&before);
                     UI::Theme::EndChamferedWindow();
                 }
             }

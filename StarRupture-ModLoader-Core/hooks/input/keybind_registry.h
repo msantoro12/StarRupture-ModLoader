@@ -20,6 +20,9 @@ namespace Hooks::Input
 	// Shutdown: clear all registered callbacks.
 	void Shutdown();
 
+	// Drops every keybind whose callback lives in `module` (a plugin being unloaded).
+	void ForgetModule(HMODULE module);
+
 	// --- Callback registration (by enum) ---
 	void RegisterKeybind(EModKey key, EModKeyEvent event, PluginKeybindCallback callback);
 	void UnregisterKeybind(EModKey key, EModKeyEvent event, PluginKeybindCallback callback);

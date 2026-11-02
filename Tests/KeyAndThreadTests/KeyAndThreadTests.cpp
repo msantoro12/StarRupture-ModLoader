@@ -474,6 +474,41 @@ static void GameThreadAfterTick()
     CHECK(GameThreadDispatch::IsGameThread());
 }
 
+// A plugin being unloaded: ForgetModule drops every keybind whose callback is
+// in its module, from all three lists, and leaves the rest.
+static std::atomic<int> g_kPressed{ 0 };
+static void OnK(EModKey, EModKeyEvent) { ++g_kPressed; }
+static void OnKCombo(EModKey, EModKeyModifiers, EModKeyEvent) { ++g_kPressed; }
+
+static void ForgetModuleDropsItsKeybinds()
+{
+    Reset();
+    Hooks::Input::RegisterKeybind(EModKey::K, EModKeyEvent::Pressed, OnK);
+    Hooks::Input::RegisterKeybindByName("Ctrl+K", EModKeyEvent::Pressed, OnK);
+    Hooks::Input::RegisterKeybindCombo(EModKey::K, EModKeyMod_None, EModKeyEvent::Pressed, OnKCombo);
+    Press('K');
+    Release('K');
+    CHECK(g_kPressed.load() >= 1);
+
+    // Another module's ForgetModule leaves them.
+    Hooks::Input::ForgetModule(GetModuleHandleW(L"kernel32.dll"));
+    const int before = g_kPressed.load();
+    Press('K');
+    Release('K');
+    CHECK(g_kPressed.load() > before);
+
+    Hooks::Input::ForgetModule(GetModuleHandleW(nullptr));
+    const int after = g_kPressed.load();
+    Press('K');
+    Release('K');
+    CHECK(g_kPressed.load() == after);
+    SetKeyDown(VK_CONTROL, true);
+    Press('K');
+    Release('K');
+    SetKeyDown(VK_CONTROL, false);
+    CHECK(g_kPressed.load() == after);
+}
+
 int main()
 {
     RunTest("IsGameThread: false on every thread before the first tick", GameThreadBeforeFirstTick);
@@ -497,6 +532,7 @@ int main()
     RunTest("IsKeyHeld: a key nobody watches skips the scan", UnwatchedKeySkipsTheScan);
     RunTest("IsKeyHeld: allocates nothing", AllocatesNothing);
     RunTest("IsKeyHeld: any thread", AnyThread);
+    RunTest("ForgetModule: an unloading plugin's keybinds go", ForgetModuleDropsItsKeybinds);
 
     printf("\n%d checks, %d failed\n", g_checks, g_failed);
     return g_failed == 0 ? 0 : 1;

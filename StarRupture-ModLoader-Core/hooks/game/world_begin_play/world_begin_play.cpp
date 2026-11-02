@@ -2,6 +2,7 @@
 #include "core/sdk_globals.h"
 #include "world_begin_play.h"
 #include "logging/logger.h"
+#include "plugins/plugin_guard.h"
 #include "memory_scanner/scanner.h"
 #include "../ufunction_resolve.h"
 #include "../scan_patterns.h"
@@ -108,7 +109,7 @@ namespace Hooks::WorldBeginPlay
 				{
 					ModLoaderLogger::LogTrace(L"[WorldBeginPlay] Calling any-world callback #%zu (%S) for world '%S'",
 					                          i + 1, Hooks::GetCallerModuleName((void*)g_anyWorldCallbacks[i]).c_str(), worldName.c_str());
-					g_anyWorldCallbacks[i](inWorld, worldName.c_str());
+					PluginGuard::Invoke(g_anyWorldCallbacks[i], "any-world begin-play callback", inWorld, worldName.c_str());
 					ModLoaderLogger::LogTrace(L"[WorldBeginPlay] Finished any-world callback #%zu", i + 1);
 				}
 				catch (const std::exception& e)
@@ -153,7 +154,7 @@ namespace Hooks::WorldBeginPlay
 
 				try
 				{
-					g_pluginCallbacks[i](inWorld);
+					PluginGuard::Invoke(g_pluginCallbacks[i], "world begin-play callback", inWorld);
 				}
 				catch (const std::exception& e)
 				{
@@ -252,7 +253,7 @@ namespace Hooks::WorldBeginPlay
 		if (g_chimeraHasFired && g_lastChimeraWorld && !PluginManager::IsStartupComplete())
 		{
 			ModLoaderLogger::LogDebug(L"[WorldBeginPlay] Late-registration replay: firing ChimeraMain callback immediately");
-			try { callback(g_lastChimeraWorld); }
+			try { PluginGuard::Invoke(callback, "world begin-play callback", g_lastChimeraWorld); }
 			catch (...) { ModLoaderLogger::LogError(L"[WorldBeginPlay] Exception in late-registration ChimeraMain callback"); }
 		}
 		else if (g_chimeraHasFired && PluginManager::IsStartupComplete())
@@ -300,7 +301,7 @@ namespace Hooks::WorldBeginPlay
 		{
 			ModLoaderLogger::LogDebug(L"[WorldBeginPlay] Late-registration replay: firing any-world callback immediately for '%S'",
 			                          g_lastAnyWorldName.c_str());
-			try { callback(g_lastAnyWorld, g_lastAnyWorldName.c_str()); }
+			try { PluginGuard::Invoke(callback, "any-world begin-play callback", g_lastAnyWorld, g_lastAnyWorldName.c_str()); }
 			catch (...) { ModLoaderLogger::LogError(L"[WorldBeginPlay] Exception in late-registration any-world callback"); }
 		}
 		else if (g_anyWorldHasFired && PluginManager::IsStartupComplete())
@@ -323,5 +324,15 @@ namespace Hooks::WorldBeginPlay
 	uintptr_t GetOriginalPtr()
 	{
 		return reinterpret_cast<uintptr_t>(g_original);
+	}
+
+	// Drops every callback that lives in `module`: a plugin being unloaded,
+	// whatever it did not unregister itself. Game thread, before FreeLibrary.
+	void ForgetModule(HMODULE module)
+	{
+		const size_t dropped = PluginGuard::ForgetModule(g_pluginCallbacks, module)
+		                      + PluginGuard::ForgetModule(g_anyWorldCallbacks, module);
+		if (dropped)
+			ModLoaderLogger::LogDebug(L"[WorldBeginPlay] Dropped %zu callback(s) of an unloading plugin", dropped);
 	}
 }

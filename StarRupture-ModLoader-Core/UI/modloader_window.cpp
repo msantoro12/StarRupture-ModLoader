@@ -462,6 +462,13 @@ namespace UI::ModLoaderWindow
                     ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.3f, 1.0f), "Hooks Failed");
                 else if (s.isOutOfDate)
                     ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.1f, 1.0f), "Needs Update");
+                else if (s.isCrashed)
+                {
+                    ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.3f, 1.0f), "Crashed");
+                    if (ImGui::IsItemHovered())
+                        ImGui::SetTooltip("Crashed: %s\nThe loader calls none of its callbacks until it is reloaded or unloaded.",
+                                          s.crashReason);
+                }
                 else if (s.isLoaded)
                 {
                     ImGui::TextColored(ImVec4(0.4f, 1.0f, 0.4f, 1.0f), "Loaded");

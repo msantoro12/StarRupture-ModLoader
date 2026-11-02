@@ -4,9 +4,11 @@
 #ifdef MODLOADER_CLIENT_BUILD
 
 #include "imgui/imgui.h"
+#include "imgui/imgui_internal.h"   // ImGuiErrorRecoveryState
 #include "plugin_call_tracker.h"
 #include "logging/logger.h"
 #include "plugins/plugin_watchdog.h"
+#include "plugins/plugin_guard.h"
 #include "../core/client_ui.h"
 #include <mutex>
 #include <list>
@@ -155,6 +157,8 @@ namespace UI::PluginWidgetRegistry
             if (!live || live->serial != ref.serial || !live->isVisible)
                 continue;
             const WidgetEntry entry = *live;
+            if (PluginGuard::IsOff(reinterpret_cast<const void*>(entry.desc->renderFn)))
+                continue;   // its plugin crashed and is switched off
 
             // Called without the lock, so the widget can call back into this
             // registry; tracked so an unload waits for it. Relocks on scope exit.
@@ -182,7 +186,11 @@ namespace UI::PluginWidgetRegistry
 
             if (ImGui::Begin(entry.desc->name, nullptr, flags))
             {
-                entry.desc->renderFn(imgui);
+                // Same recovery as a panel's: a crashed render leaves ImGui as it was.
+                ImGuiErrorRecoveryState before;
+                ImGui::ErrorRecoveryStoreState(&before);
+                if (!PluginGuard::Invoke(entry.desc->renderFn, "widget render", imgui))
+                    ImGui::ErrorRecoveryTryToRecoverState(&before);
             }
             ImGui::End();
         }

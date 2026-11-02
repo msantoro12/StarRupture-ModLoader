@@ -14,6 +14,7 @@
 #include "console/console_commands.h"
 #include "logging/logger.h"
 #include "plugins/plugin_interface.h"
+#include "plugins/plugin_guard.h"
 
 namespace PluginConsole
 {
@@ -150,10 +151,13 @@ namespace PluginConsole
         for (const std::string& a : args)
             argv.push_back(a.c_str());
 
-        handler(argv.empty() ? nullptr : argv.data(),
-                static_cast<int>(argv.size()),
-                static_cast<PluginConsoleSink>(&out),
-                ctx->userData);
+        if (!PluginGuard::Invoke(handler, "console command",
+                                 argv.empty() ? nullptr : argv.data(),
+                                 static_cast<int>(argv.size()),
+                                 static_cast<PluginConsoleSink>(&out),
+                                 ctx->userData))
+            out.Error("'%s' did not run: plugin '%s' crashed and is switched off. Reload it to use it again.",
+                      args.empty() ? ctx->name.c_str() : args[0].c_str(), ctx->owner.c_str());
     }
 
     // -----------------------------------------------------------------------
@@ -181,7 +185,8 @@ namespace PluginConsole
                 return;
             }
 
-            m_onLine(static_cast<PluginConsoleLineKind>(static_cast<int>(kind)), text, m_userData);
+            PluginGuard::Invoke(m_onLine, "console output callback",
+                                static_cast<PluginConsoleLineKind>(static_cast<int>(kind)), text, m_userData);
         }
 
     private:
@@ -334,7 +339,7 @@ namespace PluginConsole
                                          ownerName.c_str());
                 return;
             }
-            onComplete(userData);
+            PluginGuard::Invoke(onComplete, "console completion callback", userData);
         };
     }
 

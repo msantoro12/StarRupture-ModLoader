@@ -10,6 +10,7 @@
 #include "config/config_manager.h"
 #include "memory_scanner/hook_scanner_interface.h"
 #include "plugins/plugin_hook_report.h"
+#include "plugins/plugin_guard.h"
 #include "plugins/reload_policy.h"
 #include "hooks/hooks_interface.h"
 #include "memory_scanner/version_map.h"
@@ -24,6 +25,7 @@
 #include <string>
 #include <cstring>
 #include <atomic>
+#include <mutex>
 #include <dbghelp.h>
 
 #pragma comment(lib, "dbghelp.lib")
@@ -107,11 +109,15 @@ namespace PluginManager
 	// appends "  -> <module>+0x<offset>" entries to outBuffer, one per line.
 	// No PDBs are shipped with Release builds, so frames are reported as
 	// module+RVA -- match these against a local PDB/map file for the same build.
-	static void AppendStackTrace(wchar_t* outBuffer, size_t outBufferLen)
+	// dbghelp is single-threaded, and a guarded callback can crash on the
+	// render thread while the game thread logs another, so one walk at a time.
+	static void AppendStackTrace(const CONTEXT& context, wchar_t* outBuffer, size_t outBufferLen)
 	{
+		static std::mutex s_dbghelpLock;
+		std::lock_guard<std::mutex> lock(s_dbghelpLock);
 		EnsureSymInitialized();
 
-		CONTEXT ctx = g_lastPluginCrash.context;
+		CONTEXT ctx = context;
 		STACKFRAME64 frame = {};
 		frame.AddrPC.Offset    = ctx.Rip;
 		frame.AddrPC.Mode      = AddrModeFlat;
@@ -160,7 +166,7 @@ namespace PluginManager
 		ResolveModuleAndOffset(g_lastPluginCrash.addr, faultModuleName, MAX_PATH, &faultOffset);
 
 		wchar_t stackTrace[2048] = {};
-		AppendStackTrace(stackTrace, std::size(stackTrace));
+		AppendStackTrace(g_lastPluginCrash.context, stackTrace, std::size(stackTrace));
 
 		ModLoaderLogger::LogError(
 			L"[PluginManager] Plugin '%S' CRASHED during %s -- code=0x%08X  fault=0x%llX  (+0x%llX from plugin DLL base)"
@@ -226,7 +232,7 @@ namespace PluginManager
 		ResolveModuleAndOffset(g_lastPluginCrash.addr, faultModuleName, MAX_PATH, &faultOffset);
 
 		wchar_t stackTrace[2048] = {};
-		AppendStackTrace(stackTrace, std::size(stackTrace));
+		AppendStackTrace(g_lastPluginCrash.context, stackTrace, std::size(stackTrace));
 
 		ModLoaderLogger::LogError(
 			L"[PluginManager] Plugin DLL '%s' CRASHED during %s -- code=0x%08X  fault=0x%llX"
@@ -239,6 +245,37 @@ namespace PluginManager
 			stackTrace);
 	}
 
+
+	// PluginGuard's reporter: one of a running plugin's callbacks crashed, and
+	// the guard has switched the plugin off. Called once per plugin load, on the
+	// thread that crashed. Takes no plugin-manager lock: the render thread can
+	// get here while the game thread holds g_pluginLock and waits for it.
+	static void ReportGuardedCrash(const PluginGuard::Report& r)
+	{
+		const uintptr_t base   = reinterpret_cast<uintptr_t>(r.module);
+		const uintptr_t offset = r.faultAddress >= base ? r.faultAddress - base : 0;
+
+		wchar_t faultModuleName[MAX_PATH];
+		uintptr_t faultOffset = 0;
+		ResolveModuleAndOffset(r.faultAddress, faultModuleName, MAX_PATH, &faultOffset);
+
+		wchar_t stackTrace[2048] = {};
+		AppendStackTrace(*r.context, stackTrace, std::size(stackTrace));
+
+		ModLoaderLogger::LogError(
+			L"[PluginManager] Plugin '%S' CRASHED in its %S -- code=0x%08X  fault=0x%llX  (+0x%llX from plugin DLL base)"
+			L"  faultModule=%s+0x%llX  stack:%s",
+			r.pluginName, r.callback, r.code,
+			static_cast<unsigned long long>(r.faultAddress),
+			static_cast<unsigned long long>(offset),
+			faultModuleName,
+			static_cast<unsigned long long>(faultOffset),
+			stackTrace);
+		ModLoaderLogger::LogError(
+			L"[PluginManager] '%S' is switched off: the loader calls none of its callbacks until it is unloaded or reloaded. "
+			L"Detours it placed on game functions keep running.",
+			r.pluginName);
+	}
 
 	// Structure to hold loaded plugin information
 	struct LoadedPlugin
@@ -531,6 +568,7 @@ namespace PluginManager
 	{
 		InitializeCriticalSection(&g_pluginLock);
 		g_initCompleteEvent  = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+		PluginGuard::SetReporter(ReportGuardedCrash);
 		g_managerInitialized = true;
 		ModLoaderLogger::LogMessage(L"Plugin manager initialized");
 	}
@@ -767,6 +805,7 @@ namespace PluginManager
 		plugin.self.config  = ModLoaderLogger::GetPluginConfig();
 		plugin.self.hooks   = nullptr;   // populated below, after the scan phase
 		ReloadPolicy::SetBusyReason(&plugin.self, nullptr);   // a new instance starts not busy
+		PluginGuard::Track(plugin.hModule, plugin.cachedName.c_str());   // its callbacks are guarded from here on
 
 		const bool resolved = RunLoadHooksPhase(plugin);
 		const int interfaceVersion = plugin.info ? plugin.info->interfaceVersion : 0;
@@ -777,7 +816,10 @@ namespace PluginManager
 			// plugin resident is how a stale detour outlives its module.
 			plugin.hookScanFailed = true;
 			if (plugin.hModule)
+			{
+				PluginGuard::Untrack(plugin.hModule);
 				FreeLibrary(plugin.hModule);
+			}
 			ForgetEntryPoints(plugin);
 			ModLoaderLogger::LogError(
 				L"Plugin '%S' was NOT loaded: one or more of its hooks could not be resolved.",
@@ -915,6 +957,40 @@ namespace PluginManager
 #endif
 	}
 
+	// Everything a plugin registered that points into its module: called after
+	// PluginShutdown (and WaitOutPluginRenders), before FreeLibrary. Whatever
+	// the plugin did not unregister itself, or unregistered from the wrong
+	// list, would otherwise be called into freed memory -- or, once another
+	// DLL is mapped at the same address, into the middle of its code.
+	static void ForgetRegistrations(LoadedPlugin& p)
+	{
+		// The schema the config manager cached lives inside this module.
+		ModLoaderLogger::ForgetPluginSchema(p.cachedName.c_str());
+
+		// A console command or a game-menu row this plugin registered is a
+		// handler address inside the module about to be unmapped, and the
+		// console front-ends and the game's own menu would go on listing it and
+		// happily call it. Pak mounts are NOT unmounted here -- see
+		// pak_registry.h -- but their callbacks into this module go.
+		PluginConsole::ForgetPlugin(p.cachedName.c_str());
+		PakRegistry::ForgetPlugin(p.cachedName.c_str());
+
+		// Every game-event, tick, input, network and HTTP callback.
+		ModLoaderLogger::ForgetPluginCallbacks(p.hModule);
+#ifdef MODLOADER_CLIENT_BUILD
+		// A panel or widget it registered and did not unregister: the
+		// registries keep its descriptor and renderFn, both inside the module.
+		UI::PluginPanelRegistry::ForgetModule(p.hModule);
+		UI::PluginWidgetRegistry::ForgetModule(p.hModule);
+		GameMenu::Registry::ForgetPlugin(p.cachedName.c_str());
+		Hooks::MouseWheel::ForgetModule(p.hModule);
+		// So is an OnConfigChanged callback. The slot (and with it &p.self) is
+		// kept across an unload, so a callback the plugin did not unregister
+		// itself would still match this plugin and be called into freed memory.
+		UI::PluginPanelRegistry::ForgetConfigCallbacks(&p.self);
+#endif
+	}
+
 	void UnloadAllPlugins()
 	{
 		ModLoaderLogger::LogMessage(L"Unloading all plugins...");
@@ -932,26 +1008,15 @@ namespace PluginManager
 			}
 			const bool idle = WaitOutPluginRenders(plugin->hModule, plugin->cachedName.c_str(), L"Unload");
 
-			// Before FreeLibrary: a console command or game-menu row it registered
-			// carries a handler address inside the module about to be unmapped.
-			// Pak mounts stay mounted (orphaned); only their callbacks go.
-			PluginConsole::ForgetPlugin(plugin->cachedName.c_str());
-			PakRegistry::ForgetPlugin(plugin->cachedName.c_str());
-#ifdef MODLOADER_CLIENT_BUILD
-			// Panels, widgets and panel-closed callbacks too: renderFn is in this module.
-			UI::PluginPanelRegistry::ForgetModule(plugin->hModule);
-			UI::PluginWidgetRegistry::ForgetModule(plugin->hModule);
-			GameMenu::Registry::ForgetPlugin(plugin->cachedName.c_str());
-			Hooks::MouseWheel::ForgetModule(plugin->hModule);
-			// An OnConfigChanged callback is an address in this module too.
-			UI::PluginPanelRegistry::ForgetConfigCallbacks(&plugin->self);
-#endif
+			// Before FreeLibrary: everything it registered points into the module.
+			ForgetRegistrations(*plugin);
 
 			if (!idle)
 				continue;   // left mapped, not freed under the overlay
 
 			if (plugin->hModule)
 			{
+				PluginGuard::Untrack(plugin->hModule);
 				FreeLibrary(plugin->hModule);
 				plugin->hModule = nullptr;
 				plugin->info    = nullptr;
@@ -1026,6 +1091,12 @@ namespace PluginManager
 				const std::string reloadWhy = ReloadPolicy::ReloadRefusal(p.reload, busy, p.isInitialized, world);
 				strncpy_s(out[i].unloadBlock, unloadWhy.c_str(), _TRUNCATE);
 				strncpy_s(out[i].reloadBlock, reloadWhy.c_str(), _TRUNCATE);
+
+				PluginGuard::Fault fault;
+				out[i].isCrashed      = p.hModule && PluginGuard::GetFault(p.hModule, &fault);
+				out[i].crashReason[0] = '\0';
+				if (out[i].isCrashed)
+					sprintf_s(out[i].crashReason, "0x%08X in %s", fault.code, fault.callback ? fault.callback : "a callback");
 			}
 		}
 		LeaveCriticalSection(&g_pluginLock);
@@ -1061,30 +1132,9 @@ namespace PluginManager
 		ReloadPolicy::SetBusyReason(&p.self, nullptr);
 		const bool idle = WaitOutPluginRenders(p.hModule, p.cachedName.c_str(), action);
 
-		// Before FreeLibrary, not after: the schema the config manager cached lives
-		// inside this module, so the moment it is unmapped that pointer is a read
-		// into freed memory.
-		ModLoaderLogger::ForgetPluginSchema(p.cachedName.c_str());
-
-		// Same reason: a console command or a game-menu row this plugin
-		// registered is a handler address inside the module about to be
-		// unmapped, and the console front-ends and the game's own menu would go
-		// on listing it and happily call it. Pak mounts are NOT unmounted
-		// here -- see pak_registry.h -- but their callbacks into this module go.
-		PluginConsole::ForgetPlugin(p.cachedName.c_str());
-		PakRegistry::ForgetPlugin(p.cachedName.c_str());
-#ifdef MODLOADER_CLIENT_BUILD
-		// Same for a panel or widget it registered and did not unregister: the
-		// registries keep its descriptor and renderFn, both inside the module about to go.
-		UI::PluginPanelRegistry::ForgetModule(p.hModule);
-		UI::PluginWidgetRegistry::ForgetModule(p.hModule);
-		GameMenu::Registry::ForgetPlugin(p.cachedName.c_str());
-		Hooks::MouseWheel::ForgetModule(p.hModule);
-		// So is an OnConfigChanged callback. The slot (and with it &p.self) is
-		// kept across an unload, so a callback the plugin did not unregister
-		// itself would still match this plugin and be called into freed memory.
-		UI::PluginPanelRegistry::ForgetConfigCallbacks(&p.self);
-#endif
+		// Before FreeLibrary, not after: the moment the module is unmapped, every
+		// pointer into it is a read or a call into freed memory.
+		ForgetRegistrations(p);
 
 		if (!idle)
 		{
@@ -1092,6 +1142,7 @@ namespace PluginManager
 			return false;
 		}
 
+		PluginGuard::Untrack(p.hModule);
 		FreeLibrary(p.hModule);
 		p.hModule = nullptr;
 		p.info    = nullptr;
@@ -1169,19 +1220,9 @@ namespace PluginManager
 		{
 			const bool idle = WaitOutPluginRenders(p.hModule, p.cachedName.c_str(), L"Reload");
 
-			// Same reason as UnloadPlugin: the cached schema, any registered
-			// console commands and any game-menu rows point into this module.
-			// InitPluginRecord below re-registers whatever the new build asks for.
-			ModLoaderLogger::ForgetPluginSchema(p.cachedName.c_str());
-			PluginConsole::ForgetPlugin(p.cachedName.c_str());
-			PakRegistry::ForgetPlugin(p.cachedName.c_str());
-#ifdef MODLOADER_CLIENT_BUILD
-			UI::PluginPanelRegistry::ForgetModule(p.hModule);
-			UI::PluginWidgetRegistry::ForgetModule(p.hModule);
-			GameMenu::Registry::ForgetPlugin(p.cachedName.c_str());
-			Hooks::MouseWheel::ForgetModule(p.hModule);
-			UI::PluginPanelRegistry::ForgetConfigCallbacks(&p.self);
-#endif
+			// Same reason as UnloadPlugin. InitPluginRecord below re-registers
+			// whatever the new build asks for.
+			ForgetRegistrations(p);
 
 			if (!idle)
 			{
@@ -1190,6 +1231,7 @@ namespace PluginManager
 				return false;
 			}
 
+			PluginGuard::Untrack(p.hModule);
 			FreeLibrary(p.hModule);
 			p.hModule = nullptr;
 			p.info    = nullptr;

@@ -11,6 +11,8 @@ namespace SDK
     class ACrCrafter;
     class AGameStateBase;
     class UCrCraftingComponent;
+    class UEngine;
+    class UGameViewportClient;
     class ULineBatchComponent;
     class UNetDriver;
     class UWorld;
@@ -71,11 +73,19 @@ namespace SdkGlobals
     const PluginSdkGlobals* ForPlugins();
 
     // The current world, for the loader's own code; use it in place of
-    // SDK::UWorld::GetWorld(). The SDK reads Offsets::GWorld, an address that
-    // holds only on the build the SDK was dumped for (VersionMap::kBuiltCL).
-    // On any other build this reads the engine's GWorld that ResolveAndApply
-    // found, and gives null when it found none. The server build, which runs
-    // on kBuiltCL only, keeps the SDK's getter.
+    // SDK::UWorld::GetWorld(). It is the game viewport's world
+    // (UEngine::GameViewport->World), not the engine's GWorld global: a
+    // world built off to the side (a plugin's preview or capture world) can
+    // leave GWorld pointing at it, while the viewport shows the world being
+    // played. Both are kept by the game's world context, so on travel they go
+    // null together.
+    //
+    // The two members are per-build fields (below): compiled on
+    // VersionMap::kBuiltCL, read from the game's reflection on any other
+    // build. GWorld only while there is no engine or no viewport (before the
+    // engine is up; a dedicated server has no viewport), or when a member
+    // did not resolve: Offsets::GWorld on kBuiltCL, else the GWorld that
+    // ResolveAndApply found (null when none).
     SDK::UWorld* GetWorld();
 
     // True when the SDK walks objects and names through the GObjects and

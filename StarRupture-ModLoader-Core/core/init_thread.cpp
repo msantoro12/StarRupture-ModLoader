@@ -39,8 +39,9 @@
 // thread parked in the engine-init hook. That park ends on its own after a
 // timeout, so plugin loads are refused and the preload plugins shut down
 // before the dialog waits on the player. The loader's hooks stay in; the
-// world they read comes from SdkGlobals::GetWorld, which on a build other
-// than the SDK's own reads the resolved GWorld, not Offsets::GWorld.
+// world they read comes from SdkGlobals::GetWorld, which with no per-build
+// fields resolved (they are not, after a safe-off) reads GWorld: on a build
+// other than the SDK's own the resolved one, not Offsets::GWorld.
 static void EnterLayoutSafeOff(const LayoutCheck::Result& layout)
 {
     PluginManager::RefusePluginLoads();

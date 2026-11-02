@@ -379,6 +379,12 @@ Still unregister panels, widgets and callbacks in `PluginShutdown`, though the l
 [removes them on unload](#plugins-tab). Check the thread before touching game objects there: it runs
 on the game thread from **RELOAD** and also at process exit.
 
+The current world, for the loader and for `PluginSdkRuntime::GetWorld()` in the SDK, is the world
+in the game's viewport, not the engine's `GWorld` global. A plugin that builds a world of its own
+(a preview or capture world) can leave `GWorld` pointing at that world, and plugins reading it then
+wait for a world that never comes. The world-start events pass the world that began play.
+<sup>[✦](#msantoro12)</sup>
+
 ### Preload plugins
 
 A **preload plugin** is a DLL in `ModLoader\Preload\` that runs *before the game executable's

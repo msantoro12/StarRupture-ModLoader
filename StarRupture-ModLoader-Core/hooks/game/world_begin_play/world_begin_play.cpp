@@ -1,5 +1,4 @@
 #include "pch.h"
-#include "core/sdk_globals.h"
 #include "world_begin_play.h"
 #include "logging/logger.h"
 #include "plugins/plugin_guard.h"
@@ -16,11 +15,12 @@
 
 namespace Hooks::WorldBeginPlay
 {
-	// UCrSessionWorldLoaderSubsystem::OnWorldBeginPlay()
-	// x64 __fastcall member function: RCX = this (subsystem) only.
-	// There is NO UWorld* parameter -- the subsystem fetches the world internally.
-	// The world is retrieved via SdkGlobals::GetWorld() after the original runs.
-	using OnWorldBeginPlay_t = void(__fastcall*)(void* subsystemThis);
+	// UWorld::BeginPlay()
+	// x64 __fastcall member function: RCX = this, the world beginning play.
+	// That world is the one reported, not a global getter's: another world
+	// alive at the time (a plugin's preview or capture world) must not be
+	// taken for it.
+	using OnWorldBeginPlay_t = void(__fastcall*)(SDK::UWorld* world);
 
 	static Hook g_hook;
 	static OnWorldBeginPlay_t g_original = nullptr;
@@ -39,23 +39,23 @@ namespace Hooks::WorldBeginPlay
 	static SDK::UWorld*    g_lastAnyWorld     = nullptr;
 	static std::string     g_lastAnyWorldName;
 
-	static void __fastcall Detour(void* subsystemThis)
+	static void __fastcall Detour(SDK::UWorld* world)
 	{
 		// Capture return address before any other calls alter the stack frame.
 		void* const callerAddr = _ReturnAddress();
 
 		long callNum = InterlockedIncrement(&g_callCount);
 
-		ModLoaderLogger::LogDebug(L"[WorldBeginPlay] World begin play detected (#%ld) subsystem=%p Thread=%lu",
-		                          callNum, subsystemThis, GetCurrentThreadId());
+		ModLoaderLogger::LogDebug(L"[WorldBeginPlay] World begin play detected (#%ld) world=%p Thread=%lu",
+		                          callNum, world, GetCurrentThreadId());
 		ModLoaderLogger::LogTrace(L"[WorldBeginPlay]   Called from: %S",
 		                          Hooks::GetCallerModuleName(callerAddr).c_str());
 
 		// Call original first so the world is fully initialised before we read from it.
-		ModLoaderLogger::LogDebug(L"[WorldBeginPlay]   Calling original OnWorldBeginPlay...");
+		ModLoaderLogger::LogDebug(L"[WorldBeginPlay]   Calling original UWorld::BeginPlay...");
 		if (g_original)
 		{
-			g_original(subsystemThis);
+			g_original(world);
 			ModLoaderLogger::LogDebug(L"[WorldBeginPlay]   Original returned");
 		}
 		else
@@ -63,8 +63,8 @@ namespace Hooks::WorldBeginPlay
 			ModLoaderLogger::LogError(L"[WorldBeginPlay] Original function pointer is null!");
 		}
 
-		// Fetch the world via the engine's own getter now that the original has run.
-		auto* inWorld = static_cast<SDK::UWorld*>(SdkGlobals::GetWorld());
+		// The world this BeginPlay was for, read now that the original has run.
+		SDK::UWorld* const inWorld = world;
 		std::string worldName;
 		if (inWorld)
 		{
@@ -74,7 +74,7 @@ namespace Hooks::WorldBeginPlay
 		}
 		else
 		{
-			ModLoaderLogger::LogWarn(L"[WorldBeginPlay]   GetWorld() returned null after original ran");
+			ModLoaderLogger::LogWarn(L"[WorldBeginPlay]   BeginPlay was called with no world");
 		}
 
 		// Whether a gameplay world is running, for the plugins' load and unload settings.

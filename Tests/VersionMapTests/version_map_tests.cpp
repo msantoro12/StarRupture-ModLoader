@@ -206,6 +206,7 @@ int main()
 		loaderRow.gameCL  = kRunning.cl;
 		loaderRow.fromMap = true;
 		loaderRow.pattern = "AA 01";
+		TestDoubles::g_log.clear();
 		r = VersionMap::Select("ModLoader", Ask("Test::MapOnly", Kind::FunctionStart, "D5 01"), { loaderRow }, kRunning);
 		Check(!Logged(L"its own pattern matches") && TestDoubles::g_resolveCalls["D5 01"] == 0,
 			"own pattern: the loader's own rows are not checked");
@@ -376,6 +377,7 @@ int main()
 		q = Key("OwnCheck", Ask("Test::Chain", Kind::FunctionStart, "D4 01"));
 		Check(At(q, 0x9100) && Logged(L"[Map] OwnCheck: Test::Chain: its own pattern matches 2 times"),
 			"own pattern: no row for this build, the latest row decides and the ambiguous own pattern is reported");
+		Check(TestDoubles::g_resolveCalls["D4 01"] == 1, "own pattern: the agreement path reuses its own resolve for the check");
 
 		// 4. Nothing resolves: a miss, which the caller turns into a feature off or a refusal.
 		q = Key("VmapProbe", Ask("Test::Missed", Kind::FunctionStart));

@@ -86,8 +86,13 @@ resolves, the pattern is not needed to load, so the loader checks it on the side
 per session, through `scan_cache.ini`, with the same rule as any scan. If it matches 0 or 2 or more
 places the loader logs one warning, `[Map] <plugin>: <key>: its own pattern matches <n> times on this
 exe ...`, and still uses the row. Without that check a pattern that is ambiguous would pass here and
-be refused on a loader that has no row for the build, since the pattern is then the only locator.
-The loader's own registry patterns are not checked this way; CI already holds them to the same rule.
+be refused wherever no row resolves the key (a loader with no map, a dedicated server, a build none
+of the rows resolve on), since the pattern is then the only locator. A pattern that matches 0 times
+gets its own wording: it is stale for this build, and the row is carrying it. The count of a pattern
+that is not unique is kept in `scan_cache.ini` under the exe, so a later launch repeats the warning
+without scanning again. One line per pattern text: two plugins that share a pattern get one line,
+naming the first. The loader's own registry patterns are not checked this way; CI already holds
+them to the same rule.
 
 **AMBIGUOUS.** Two locators for the same build that resolve to different addresses. The loader
 picks neither, fails the request, and the log lists each locator and where it landed
@@ -341,7 +346,7 @@ What a player sees, and what the log says (`ModLoader\Logs\ModLoader.log`).
 | The feed has the build, but a row is `absent` for something a plugin needs | That plugin's request fails. If it belongs to a declared feature, that feature is off; otherwise the plugin is refused, with the reason in the failure window. Other plugins and the game run. |
 | The feed has the build but misses a required loader entry | That CL is dropped from the feed, and the build is refused as above. |
 | A plugin built for another build does not declare `PLUGIN_MAP_MIGRATED` | **Incompatible**: "Needs an update to run on CL-...". It loads on its own build. |
-| A plugin's own pattern matches 0 or 2 or more places, but a row resolves the key | The plugin loads on the row. `ModLoader.log` has one `[Map]` warning naming the plugin, the key and the count. Without the row it would be refused, so the author should make the pattern unique. |
+| A plugin's own pattern matches 0 or 2 or more places, but a row resolves the key | The plugin loads on the row. `ModLoader.log` has one `[Map]` warning naming the plugin, the key and the count. Where no row resolves the key it would be refused, so the author should make the pattern unique (or update it, for 0). |
 | Two keys for one request disagree (AMBIGUOUS) | The request fails, with the locators listed: a declared feature turns off, any other key refuses the plugin. |
 | A game class a plugin reads moved | That plugin's own field request, or its `SR_SIZE_CHECK`, fails and the plugin alone is affected (a declared feature off, else refused), with the reason in the failure window. The loader's layout check covers the loader's own classes only. |
 

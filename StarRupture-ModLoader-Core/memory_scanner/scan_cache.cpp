@@ -72,7 +72,7 @@ namespace
 
         if (hasSections && !hasCurrentVersion)
         {
-            ModLoaderLogger::LogInfo(L"[ScanCache] Game build changed (cache has no section for '%ls') -- discarding stale scan cache",
+            ModLoaderLogger::LogInfo(L"[ScanCache] No section for '%ls' (another game build, or a cache an older loader wrote) -- discarding the scan cache",
                 section.c_str());
 
             if (!DeleteFileW(cachePath.c_str()))

@@ -36,8 +36,8 @@
 //     use, so a stale or hand-edited cache can never produce a wrong address --
 //     at worst it falls back to a full scan.
 //   * A cached matchCount of 1 is accepted after that byte re-validation (the
-//     image is identical for a given game version, so a count recorded for that
-//     version is as valid as the offset).
+//     image is identical for a given exe, so a count recorded for that exe is
+//     as valid as the offset).
 //   * A cached matchCount that is anything OTHER than 1 -- including 0/unknown
 //     -- forces a full re-scan. A refusal verdict is therefore never based on
 //     the cache; only a pass can be, and only after the bytes were checked.
@@ -45,7 +45,10 @@
 // Keys that start with "vmap " are not patterns: VersionMap (version_map.cpp)
 // stores the locator its agreement rule picked there. In those entries
 // matchCount is 1 + that locator's index and offset is the RVA it gave;
-// the pattern path never reads them.
+// the pattern path never reads them. Keys that start with "own " are the
+// match count of a plugin's own pattern that is not unique: matchCount is 1 +
+// that count (offset 0), which VersionMap reads to repeat its warning without
+// a second scan.
 namespace ScanCache
 {
     // The INI section a build's entries live under: the ProductVersion, then

@@ -384,8 +384,9 @@ namespace ScanValidation
 		}
 
 		// Builds the match list for a failed resolve. Runs a second, full pass --
-		// affordable precisely because it only happens when the launch is already
-		// going to refuse something.
+		// affordable because it only happens when the launch is already going to
+		// refuse something, or once per exe for a plugin's own pattern that a
+		// version map row covers (VersionMap keeps that count).
 		std::string EnumerateMatchDetail(HMODULE module, const std::string& pattern,
 			const PatchOverlay::Snapshot& overlay, size_t& outTotal)
 		{
@@ -468,7 +469,7 @@ namespace ScanValidation
 		// --- Find it, and find out whether it is alone ------------------------
 		//
 		// Cache fast path applies only to the main module: scan_cache.ini is
-		// keyed on the game version and stores offsets from the main module
+		// keyed on the game exe and stores offsets from the main module
 		// base. A cached count of exactly 1 is the only count that can be
 		// trusted here -- see scan_cache.h.
 		const bool     isMainModule = (module == GetModuleHandleW(nullptr));

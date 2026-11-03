@@ -1,4 +1,4 @@
-Plugin windows can opt in to being clicked and dragged over the Escape menu
+Plugin windows can opt in to being clicked and dragged over the Escape menu and over any game screen that shows the mouse cursor
 Plugins can tell when the Escape menu or a loader window is open
 Plugins Updated window now lists what changed in each plugin
 Loader update prompt shows what is new

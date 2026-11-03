@@ -207,9 +207,10 @@ namespace UI::Overlay
         // Note: no NoMove / NoSavedSettings -- the box is draggable and its
         // position is persisted to modloader_imgui.ini between sessions.
 
-        // Click-through over the pause menu, so the menu under it keeps its
-        // clicks; it is dragged with the F2 cursor.
-        if (ShouldSharePauseMenuMouseNow())
+        // Click-through over the pause menu and the game's other cursor
+        // screens, so the screen under it keeps its clicks; it is dragged
+        // with the F2 cursor.
+        if (ShouldShareGameMouseNow())
             flags |= ImGuiWindowFlags_NoMouseInputs;
 
         if (ImGui::Begin("Info##hud_box", nullptr, flags))

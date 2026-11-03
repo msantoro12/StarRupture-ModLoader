@@ -106,6 +106,7 @@ namespace Hooks::GameMenu
 
 		// What Tick last saw, for readers on any thread.
 		std::atomic<bool>     g_pauseMenuOpen{ false };
+		std::atomic<bool>     g_gameCursorShown{ false };
 
 		// Renders a row list as hex for the log.  Sentinels are the values at
 		// or above kSentinelBase, so a glance at the line says which positions
@@ -802,6 +803,16 @@ namespace Hooks::GameMenu
 	bool IsPauseMenuOpen()
 	{
 		return g_pauseMenuOpen.load(std::memory_order_relaxed);
+	}
+
+	void SetGameCursorShown(bool shown)
+	{
+		g_gameCursorShown.store(shown, std::memory_order_relaxed);
+	}
+
+	bool IsGameCursorShown()
+	{
+		return g_gameCursorShown.load(std::memory_order_relaxed);
 	}
 }
 

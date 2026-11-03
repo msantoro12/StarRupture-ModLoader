@@ -50,7 +50,7 @@ namespace UI::Theme
 
 // plugin_widget_registry.cpp asks this whether widgets share the pause
 // menu's mouse; no test opens the pause menu.
-bool ShouldSharePauseMenuMouseNow()
+bool ShouldShareGameMouseNow()
 {
     return false;
 }

@@ -60,13 +60,15 @@ bool ShouldPassthroughInputNow()
     return UI::PluginPanelRegistry::AnyInputPassthroughRequested();
 }
 
-bool ShouldSharePauseMenuMouseNow()
+bool ShouldShareGameMouseNow()
 {
-    // The pause menu shows the game's own cursor, and the ImGui host feeds
-    // ImGui the mouse there unless exclusive capture owns it. Only windows
-    // that opted in take it; everything else is drawn click-through, so the
-    // menu under it keeps its clicks.
-    return !ShouldCaptureInputNow() && Hooks::GameMenu::IsPauseMenuOpen();
+    // The pause menu and the game's other cursor screens (machine menus, the
+    // recipe station, the inventory) show the game's own cursor, and the ImGui
+    // host feeds ImGui the mouse there unless exclusive capture owns it. Only
+    // windows that opted in take it; everything else is drawn click-through,
+    // so the screen under it keeps its clicks.
+    return !ShouldCaptureInputNow() &&
+        (Hooks::GameMenu::IsPauseMenuOpen() || Hooks::GameMenu::IsGameCursorShown());
 }
 
 void InitClientUI()
@@ -188,7 +190,7 @@ void InitClientUI()
         {
             return Hooks::MouseWheel::Dispatch(msg, wParam, lParam, uiCapturing);
         };
-        cbs.IsPauseMenuOpen = []() -> bool { return Hooks::GameMenu::IsPauseMenuOpen(); };
+        cbs.IsGameMouseShared = []() -> bool { return ShouldShareGameMouseNow(); };
         cbs.GetFontFamily = []() -> const char*
         {
             return UI::GlobalSettings::GetFontFamily();
@@ -250,10 +252,14 @@ void InitClientUI()
         SDK::UWorld* currentWorld = SdkGlobals::GetWorld();
         if (!currentWorld)
         {
+            Hooks::GameMenu::SetGameCursorShown(false);
             UI::GlobalSettings::SetPlayerPosition(0, 0, 0, false);
             return;
         }
         SDK::APlayerController* pc = SDK::UGameplayStatics::GetPlayerController(currentWorld, 0);
+        // Whether a game screen has the mouse cursor up, for the ImGui host's
+        // mouse sharing (ShouldShareGameMouseNow).
+        Hooks::GameMenu::SetGameCursorShown(pc && pc->bShowMouseCursor);
         if (!pc)
         {
             UI::GlobalSettings::SetPlayerPosition(0, 0, 0, false);

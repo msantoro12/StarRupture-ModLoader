@@ -143,10 +143,10 @@ namespace UI::PluginWidgetRegistry
             ImGuiWindowFlags_NoFocusOnAppearing |
             ImGuiWindowFlags_NoNav;
 
-        // Over the pause menu ImGui has the game's cursor, so a widget that
-        // did not ask for it is click-through there and the menu under it
-        // keeps its clicks.
-        const bool menuMouse = ShouldSharePauseMenuMouseNow();
+        // Over the pause menu and the game's other cursor screens ImGui has
+        // the game's cursor, so a widget that did not ask for it is
+        // click-through there and the screen under it keeps its clicks.
+        const bool menuMouse = ShouldShareGameMouseNow();
 
         for (const WidgetRef& ref : toRender)
         {

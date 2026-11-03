@@ -94,6 +94,14 @@ namespace Hooks::GameMenu
 	// What the last Tick saw.  Safe from any thread.  False when the pause
 	// hook is not installed.
 	bool IsPauseMenuOpen();
+
+	// Whether the local player controller has the mouse cursor up (any game
+	// screen that shows one: the pause menu, machine menus, the inventory).
+	// Set once per tick on the game thread by the caller that already looks up
+	// the controller; false when there is no world or controller.  Safe from
+	// any thread.
+	void SetGameCursorShown(bool shown);
+	bool IsGameCursorShown();
 }
 
 #endif // MODLOADER_CLIENT_BUILD

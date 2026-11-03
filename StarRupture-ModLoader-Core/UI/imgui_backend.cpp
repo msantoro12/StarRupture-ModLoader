@@ -312,14 +312,15 @@ static LRESULT CALLBACK HookedWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM
 
 	const bool capturing = exclusive || cooperative;
 
-	// The game's pause menu shows the game's own cursor, so ImGui can be fed
-	// the mouse without owning it: windows over the menu that opted in (see
-	// ShouldSharePauseMenuMouseNow; the rest are drawn click-through) can be
+	// The pause menu and the game's other cursor screens (machine menus, the
+	// inventory) show the game's own cursor, so ImGui can be fed the mouse
+	// without owning it: windows over the screen that opted in (see
+	// ShouldShareGameMouseNow; the rest are drawn click-through) can be
 	// hovered, clicked and dragged, and only the clicks that land on them are
-	// kept from the menu. The keyboard stays with the game, so Escape still
+	// kept from the screen. The keyboard stays with the game, so Escape still
 	// closes the menu. Exclusive capture overrides it.
 	const bool menuCursor = !exclusive &&
-		(g_callbacks.IsPauseMenuOpen ? g_callbacks.IsPauseMenuOpen() : false);
+		(g_callbacks.IsGameMouseShared ? g_callbacks.IsGameMouseShared() : false);
 
 	// Only feed mouse messages into ImGui while it actually owns the cursor
 	// (i.e. the simulated mouse is shown) or the pause menu shows the game's.
@@ -1268,7 +1269,7 @@ static void BuildImGuiFrame()
 	// mouse, as it does after F2 closes, so the parked position may not
 	// last; the button release is what ends the drag.
 	const bool menuCursor = !uiOpen &&
-		(g_callbacks.IsPauseMenuOpen ? g_callbacks.IsPauseMenuOpen() : false);
+		(g_callbacks.IsGameMouseShared ? g_callbacks.IsGameMouseShared() : false);
 	if (g_prevMenuCursor && !menuCursor && !uiOpen)
 	{
 		frameIO.AddMousePosEvent(-FLT_MAX, -FLT_MAX);

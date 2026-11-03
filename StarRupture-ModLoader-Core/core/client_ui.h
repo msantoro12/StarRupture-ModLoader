@@ -14,7 +14,8 @@ void ShutdownClientUI();
 bool ShouldCaptureInputNow();
 bool ShouldPassthroughInputNow();
 
-// True while the pause menu is open and nothing has exclusive capture: ImGui
+// True while the game shows its own cursor (the pause menu is open, or a game
+// screen has put the mouse cursor up) and nothing has exclusive capture: ImGui
 // gets the mouse, and only windows that opted in may take it.
-bool ShouldSharePauseMenuMouseNow();
+bool ShouldShareGameMouseNow();
 #endif

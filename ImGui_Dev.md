@@ -257,7 +257,9 @@ static const PluginWidgetDesc k_myWidget = {
 
 A widget without hints is auto-sized; one with hints is not unless it asks, hence the `1 << 6`.
 
-A click on an opted-in widget is kept from the menu; a click anywhere else reaches the menu. While
+The same holds over every other game screen that has the mouse cursor up: the loader reads
+`bShowMouseCursor` on the local player controller once per game tick. A click on an opted-in
+widget is kept from the menu; a click anywhere else reaches the menu. While
 one of its popups is open, ImGui keeps the first click outside it to close the popup. The keyboard
 stays with the game, so Escape still closes the menu. The flag applies to the widget's own window:
 a child window inside a widget that did not opt in (`BeginChild`, a scrolling table) is an ImGui

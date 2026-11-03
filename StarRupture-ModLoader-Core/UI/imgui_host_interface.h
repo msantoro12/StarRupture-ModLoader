@@ -60,10 +60,11 @@ struct ImGuiRenderCallbacks
     // consumed it and the game must not see it (never while uiCapturing).
     bool    (*DispatchMouseWheel)(UINT msg, WPARAM wParam, LPARAM lParam, bool uiCapturing);
 
-    // True while the game's pause menu is the active screen. The game shows
-    // its own cursor then, so ImGui is fed the mouse and keeps only the
-    // messages it wants; the keyboard stays with the game.
-    bool    (*IsPauseMenuOpen)();
+    // True while the game shows its own cursor (the pause menu, or any game
+    // screen with the mouse cursor up) and nothing has exclusive capture. ImGui
+    // is fed the mouse then and keeps only the messages it wants; the keyboard
+    // stays with the game.
+    bool    (*IsGameMouseShared)();
 };
 
 // The two fences that order one overlay draw, recorded at Slate's present

@@ -232,10 +232,11 @@ if (hooks->Input)
 The widget window position and size are saved to `modloader_imgui.ini` automatically, so the
 player's chosen position persists between sessions.
 
-### 6. Over the pause menu (v71)
+### 6. Over the pause menu and other cursor screens (v71)
 
-While the game's pause menu is open and no ModLoader window has the cursor, the game shows its
-own cursor. Widgets are click-through there by default, so the menu buttons under them keep
+While the game's pause menu is open, or any other game screen is showing the mouse cursor (the
+main menu, machine menus, the recipe station, the inventory), and no ModLoader window has the
+cursor, the game shows its own cursor. Widgets are click-through there by default, so the menu buttons under them keep
 working. To let players hover, click and drag a widget over the menu, opt in with
 `PluginWindowFlags_PauseMenuMouseInputs` in its window hints:
 

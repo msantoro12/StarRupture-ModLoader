@@ -2246,8 +2246,8 @@ struct IPluginImGuiTextures
 #define PluginWindowFlags_NoSavedSettings   (1 << 8)
 #define PluginWindowFlags_NoMouseInputs     (1 << 9)
 // v71, loader-only (ImGui never sees it): the widget takes the mouse while
-// the game's pause menu is open and no window has exclusive capture. Without
-// it the widget's window is click-through there; its child windows are not.
+// the pause menu is open or a game screen shows the cursor, and no window has
+// exclusive capture. Without it the window is click-through; child windows are not.
 #define PluginWindowFlags_PauseMenuMouseInputs (1 << 30)
 
 // Optional size/position hints for RegisterWidget windows.

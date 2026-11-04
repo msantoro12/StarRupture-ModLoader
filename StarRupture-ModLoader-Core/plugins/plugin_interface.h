@@ -3320,7 +3320,7 @@ struct IPluginGameMenu
 	//
 	// IN_GAMEPLAY, PAUSE_MENU and CURSOR_UP are kept all the time. The menu
 	// bits (ANY_MENU and the ones after it) are read from the game only while
-	// a plugin has a RegisterOnUIStateChanged callback, or has called
+	// a plugin has a RegisterOnUIStateChanged callback for one of them, or has called
 	// GetUIState in the last two seconds; otherwise they are 0. So the first
 	// call after nobody has asked for a while starts that read, and its menu
 	// bits are 0 until the next game tick. A plugin that needs them from the

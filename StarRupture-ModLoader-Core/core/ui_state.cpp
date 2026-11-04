@@ -38,7 +38,18 @@ namespace UIState
 		// Read without the lock on every tick and every query.
 		std::atomic<uint64_t> s_state{ 0 };
 		std::atomic<size_t>   s_count{ 0 };
+		std::atomic<uint64_t> s_wantedMenuBits{ 0 };  // menu bits any registration asks for
 		std::atomic<uint64_t> s_lastQueryMs{ 0 };   // 0: never asked
+
+		// After any change to s_entries, under s_mutex.
+		void Recount()
+		{
+			uint64_t wanted = 0;
+			for (const Entry& e : s_entries)
+				wanted |= e.mask;
+			s_count.store(s_entries.size(), std::memory_order_relaxed);
+			s_wantedMenuBits.store(wanted & kMenuBits, std::memory_order_relaxed);
+		}
 
 		bool StillRegistered(uint64_t id)
 		{
@@ -63,10 +74,11 @@ namespace UIState
 
 	bool MenuReadWantedAt(uint64_t nowMs)
 	{
-		if (s_count.load(std::memory_order_relaxed) > 0)
+		if (s_wantedMenuBits.load(std::memory_order_relaxed) != 0)
 			return true;
+		// A query from another thread can be stamped later than nowMs.
 		const uint64_t last = s_lastQueryMs.load(std::memory_order_relaxed);
-		return last != 0 && nowMs - last < kQueryKeepAliveMs;
+		return last != 0 && (nowMs < last || nowMs - last < kQueryKeepAliveMs);
 	}
 
 	bool MenuReadWanted()
@@ -94,7 +106,7 @@ namespace UIState
 			}
 		}
 		s_entries.push_back({ s_nextId++, mask, callback, userData, 0 });
-		s_count.store(s_entries.size(), std::memory_order_relaxed);
+		Recount();
 		ModLoaderLogger::LogDebug(L"[UIState] Registered callback %p for 0x%llX (%zu total)",
 		                          reinterpret_cast<const void*>(callback),
 		                          static_cast<unsigned long long>(mask), s_entries.size());
@@ -110,7 +122,7 @@ namespace UIState
 			if (it->callback == callback && it->userData == userData)
 			{
 				s_entries.erase(it);
-				s_count.store(s_entries.size(), std::memory_order_relaxed);
+				Recount();
 				ModLoaderLogger::LogDebug(L"[UIState] Unregistered callback %p (%zu left)",
 				                          reinterpret_cast<const void*>(callback), s_entries.size());
 				return;
@@ -146,7 +158,12 @@ namespace UIState
 			// One removed by an earlier callback this tick is not called.
 			if (calls.size() > 1 && !StillRegistered(c.id))
 				continue;
-			PluginGuard::Invoke(c.callback, "UI state callback", c.oldState, state, c.userData);
+			try { PluginGuard::Invoke(c.callback, "UI state callback", c.oldState, state, c.userData); }
+			catch (...)
+			{
+				ModLoaderLogger::LogError(L"[UIState] UI state callback %p threw",
+				                          reinterpret_cast<const void*>(c.callback));
+			}
 		}
 	}
 
@@ -157,7 +174,7 @@ namespace UIState
 		std::lock_guard<std::mutex> lock(s_mutex);
 		const size_t dropped = PluginGuard::ForgetModule(s_entries, module,
 			[](const Entry& e) { return e.callback; });
-		s_count.store(s_entries.size(), std::memory_order_relaxed);
+		Recount();
 		if (dropped)
 			ModLoaderLogger::LogDebug(L"[UIState] Dropped %zu UI state callback(s) of an unloading plugin", dropped);
 	}

@@ -366,7 +366,7 @@ choice from a list, with an optional range), plus any state it saves by itself; 
 | Guide | Covers |
 |---|---|
 | [Console.md](Console.md) | Console commands, running command lines from code (v63; `ExecuteWithEngine` v69). All builds |
-| [GameMenu.md](GameMenu.md) | Rows in the main and pause menus (v64), whether the pause menu is open (v71). Client |
+| [GameMenu.md](GameMenu.md) | Rows in the main and pause menus (v64), whether the pause menu is open (v71), the game's UI state and its change callback (v74). Client |
 | [HttpServer.md](HttpServer.md) | HTTP from the game server's listener (v22). Server |
 | [ImGui_Dev.md](ImGui_Dev.md) | Panels, always-on widgets, config-change notifications, keybinds, mouse wheel (v70), widgets that opt in to the mouse over the pause menu and other cursor screens and keys while typing (v71), sizing a popup (v74) and the full ImGui function table. Client |
 | [MaterialIcons.md](MaterialIcons.md) | The 2188 bundled icons |
@@ -409,6 +409,14 @@ and set both axes.
 
 A plugin that declares v74 needs a mod loader that supports it; an older loader shows it as needing a
 mod loader update. One that must also run on a v73 loader declares 73 and does not call them.
+<sup>[✦](#msantoro12)</sup>
+
+The loader keeps the game's UI state for plugins (interface v74): whether a gameplay world is
+running, the pause menu, the game's mouse cursor, any menu, and the map, inventory, build menu and
+station screens. `GameMenu->GetUIState()` reads it from any thread; `RegisterOnUIStateChanged`
+calls you on the game thread when a bit you asked for changes. Ignore bits you do not know: later
+loaders may add some. See [GameMenu.md](GameMenu.md). The menu classes follow BetterDrone's
+menu-layer read and the class list in Kian369's MiniMap.
 <sup>[✦](#msantoro12)</sup>
 
 ### Preload plugins

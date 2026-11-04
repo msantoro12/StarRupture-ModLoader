@@ -673,15 +673,14 @@ static void UIStateForgetModule()
     UIState::ForgetModule(GetModuleHandleW(nullptr));
     UIState::Publish(0);
     CHECK(g_uiCalls.size() == 1);
-    CHECK(!UIState::MenuReadWantedAt(1000000000ull));
     ResetUI();
 }
 
 static void UIStateMenuReadDemand()
 {
     ResetUI();
-    // Far from any earlier query in this run.
-    const uint64_t t = 4000000000ull;
+    // Well after any earlier query in this run.
+    const uint64_t t = GetTickCount64() + 1000000000ull;
     CHECK(!UIState::MenuReadWantedAt(t));
 
     // A query keeps the read running for kQueryKeepAliveMs.
@@ -695,6 +694,30 @@ static void UIStateMenuReadDemand()
     CHECK(UIState::MenuReadWantedAt(t + 60000));
     UIState::Unregister(&OnUI, Tag(1));
     CHECK(!UIState::MenuReadWantedAt(t + 60000));
+
+    // One for the cheap bits only does not start it.
+    UIState::Register(PLUGIN_UI_CURSOR_UP | PLUGIN_UI_PAUSE_MENU, &OnUI, Tag(2));
+    CHECK(!UIState::MenuReadWantedAt(t + 60000));
+    ResetUI();
+}
+
+static void OnUIThrows(uint64_t, uint64_t, void*)
+{
+    throw 1;
+}
+
+static void UIStateThrowingCallback()
+{
+    ResetUI();
+    UIState::Register(~0ull, &OnUIThrows, Tag(1));
+    UIState::Register(~0ull, &OnUI, Tag(2));
+
+    // The next one is still called, this tick and the next.
+    UIState::Publish(PLUGIN_UI_IN_GAMEPLAY);
+    CHECK(g_uiCalls.size() == 1);
+    UIState::Publish(0);
+    CHECK(g_uiCalls.size() == 2);
+    UIState::Unregister(&OnUIThrows, Tag(1));
     ResetUI();
 }
 
@@ -729,6 +752,7 @@ int main()
     RunTest("UIState: unregister inside a callback", UIStateUnregisterInsideCallback);
     RunTest("UIState: an unloading plugin's callbacks go", UIStateForgetModule);
     RunTest("UIState: menu read runs only on demand", UIStateMenuReadDemand);
+    RunTest("UIState: a throwing callback does not stop the rest", UIStateThrowingCallback);
 
     printf("\n%d checks, %d failed\n", g_checks, g_failed);
     return g_failed == 0 ? 0 : 1;

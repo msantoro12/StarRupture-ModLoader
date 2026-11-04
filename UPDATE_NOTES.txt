@@ -1,3 +1,5 @@
+Plugin interface v74: plugins can ask the loader for the game's UI state (in gameplay, pause menu, cursor up, any menu, map, inventory, build menu, station screens) or be called when it changes, instead of detecting it themselves; the menu classes follow BetterDrone's menu-layer read and MiniMap's class list (Kian369)
+The loader decides what a gameplay or main-menu world is in one place
 Plugin windows can opt in to being clicked and dragged over the Escape menu and over any game screen that shows the mouse cursor
 Plugins can tell when the Escape menu or a loader window is open
 Plugins Updated window now lists what changed in each plugin

@@ -24,6 +24,7 @@
 namespace UIState
 {
 	// The bits read from the menu layer, which are 0 while nobody wants them.
+	// A registration asks for the read only if its mask has one of these.
 	inline constexpr uint64_t kMenuBits = PLUGIN_UI_ANY_MENU | PLUGIN_UI_MAP | PLUGIN_UI_INVENTORY
 		| PLUGIN_UI_BUILD_MENU | PLUGIN_UI_STATION_MENU;
 
@@ -38,8 +39,8 @@ namespace UIState
 	void Register(uint64_t mask, PluginUIStateCallback callback, void* userData);
 	void Unregister(PluginUIStateCallback callback, void* userData);
 
-	// True while a callback is registered or Get was called in the last
-	// kQueryKeepAliveMs. Game thread, once per tick.
+	// True while a registration's mask has a menu bit, or Get was called in
+	// the last kQueryKeepAliveMs. Game thread, once per tick.
 	bool MenuReadWanted();
 
 	// Stores the tick's state and calls every callback whose bits changed.

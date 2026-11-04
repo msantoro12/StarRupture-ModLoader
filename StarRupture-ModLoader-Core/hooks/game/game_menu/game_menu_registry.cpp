@@ -5,6 +5,7 @@
 #include "game_menu.h"
 #include "logging/logger.h"
 #include "plugins/plugin_guard.h"
+#include "core/ui_state.h"
 
 #include <mutex>
 #include <string>
@@ -242,7 +243,10 @@ namespace GameMenu::Registry
 			IfaceRemoveEntry,
 			IfaceRemoveAllEntries,
 			IfaceIsAvailable,
-			IfaceIsPauseMenuOpen   // v71
+			IfaceIsPauseMenuOpen,  // v71
+			UIState::Get,          // v74
+			UIState::Register,
+			UIState::Unregister
 		};
 	}
 

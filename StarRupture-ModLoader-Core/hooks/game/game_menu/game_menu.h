@@ -72,6 +72,8 @@
 // user can already open with a key is not worth refusing to boot over.
 // ---------------------------------------------------------------------------
 
+namespace SDK { class APlayerController; }
+
 namespace Hooks::GameMenu
 {
 	// Resolve and install both menus' hooks.  Must be called after engine init
@@ -102,6 +104,12 @@ namespace Hooks::GameMenu
 	// any thread.
 	void SetGameCursorShown(bool shown);
 	bool IsGameCursorShown();
+
+	// The menu-layer bits of the plugins' UI state (PluginUIState: ANY_MENU,
+	// and MAP, INVENTORY, BUILD_MENU or STATION_MENU when the screen is one of
+	// those) for this controller's local player, read from the game's CommonUI
+	// menu layer. 0 when no screen is active there. Game thread only.
+	uint64_t ReadMenuLayer(SDK::APlayerController* pc);
 }
 
 #endif // MODLOADER_CLIENT_BUILD

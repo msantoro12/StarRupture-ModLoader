@@ -539,6 +539,7 @@
     <ClInclude Include="core\engine_sync.h" />
     <ClInclude Include="core\hook_management.h" />
     <ClInclude Include="core\client_ui.h" />
+    <ClInclude Include="core\ui_state.h" />
     <ClInclude Include="core\shutdown.h" />
     <ClInclude Include="core\init_phases.h" />
     <ClInclude Include="core\init_thread.h" />
@@ -576,6 +577,9 @@
     <ClCompile Include="core\engine_sync.cpp" />
     <ClCompile Include="core\hook_management.cpp" />
     <ClCompile Include="core\client_ui.cpp">
+      <ExcludedFromBuild Condition="'$(Configuration)' != 'Client Debug' And '$(Configuration)' != 'Client Release' And '$(Configuration)' != 'Local SDK Client Debug' And '$(Configuration)' != 'Local SDK Client Release'">true</ExcludedFromBuild>
+    </ClCompile>
+    <ClCompile Include="core\ui_state.cpp">
       <ExcludedFromBuild Condition="'$(Configuration)' != 'Client Debug' And '$(Configuration)' != 'Client Release' And '$(Configuration)' != 'Local SDK Client Debug' And '$(Configuration)' != 'Local SDK Client Release'">true</ExcludedFromBuild>
     </ClCompile>
     <ClCompile Include="core\shutdown.cpp" />

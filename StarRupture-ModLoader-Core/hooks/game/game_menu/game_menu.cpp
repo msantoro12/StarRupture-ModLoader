@@ -11,7 +11,11 @@
 #include "../text_localization/text_key.h"
 #include "../text_localization/text_localization.h"
 
+#include "plugins/plugin_interface.h"
+
 #include "ChimeraUI_classes.hpp"
+#include "CommonGame_classes.hpp"
+#include "CommonUI_classes.hpp"
 #include "ChimeraUI_parameters.hpp"
 
 #include <atomic>
@@ -808,6 +812,82 @@ namespace Hooks::GameMenu
 	void SetGameCursorShown(bool shown)
 	{
 		g_gameCursorShown.store(shown, std::memory_order_relaxed);
+	}
+
+	namespace
+	{
+		// The layer UCrUIManagerSubsystem opens the map, the inventory, the
+		// build menu and every building window on; the HUD pushes its escape
+		// menu there too. The HUD itself sits on another layer.
+		constexpr const char* kMenuLayerTag = "UI.Layer.Menu";
+
+		// The tag's FName comparison index once a layer has matched it by
+		// string, so later ticks compare an int. 0 until then.
+		int32_t g_menuLayerTagIndex = 0;
+
+		bool IsMenuLayerTag(const SDK::FName& tag)
+		{
+			if (g_menuLayerTagIndex != 0)
+				return tag.ComparisonIndex == g_menuLayerTagIndex && tag.Number == 0;
+			if (tag.ToString() != kMenuLayerTag)
+				return false;
+			g_menuLayerTagIndex = tag.ComparisonIndex;
+			return true;
+		}
+
+		// The local player's menu layer, or null. Valid for the current tick only.
+		SDK::UCommonActivatableWidgetContainerBase* FindMenuLayer(SDK::APlayerController* pc)
+		{
+			auto* ui = static_cast<SDK::UGameUIManagerSubsystem*>(
+				SDK::USubsystemBlueprintLibrary::GetGameInstanceSubsystem(pc, SDK::UCrUIManagerSubsystem::StaticClass()));
+			SDK::UGameUIPolicy* policy = ui ? ui->CurrentPolicy : nullptr;
+			if (!policy)
+				return nullptr;
+
+			for (int32_t i = 0; i < policy->RootViewportLayouts.Num(); ++i)
+			{
+				const SDK::FRootViewportLayoutInfo& info = policy->RootViewportLayouts[i];
+				if (!info.RootLayout || info.LocalPlayer != pc->Player)
+					continue;
+
+				// Not const: the SDK's const TMap indexer does not compile.
+				auto& layers = info.RootLayout->Layers;
+				for (int32_t l = 0; l < layers.NumAllocated(); ++l)
+				{
+					if (!layers.IsValidIndex(l))
+						continue;
+					SDK::UCommonActivatableWidgetContainerBase* stack = layers[l].Value();
+					if (stack && IsMenuLayerTag(layers[l].Key().TagName))
+						return stack;
+				}
+			}
+			return nullptr;
+		}
+	}
+
+	uint64_t ReadMenuLayer(SDK::APlayerController* pc)
+	{
+		if (!pc)
+			return 0;
+		SDK::UCommonActivatableWidgetContainerBase* layer = FindMenuLayer(pc);
+		// DisplayedWidget is what the stack's GetActiveWidget returns; one
+		// that is closing is no longer active.
+		SDK::UCommonActivatableWidget* top = layer ? layer->DisplayedWidget : nullptr;
+		if (!top || !top->bIsActive)
+			return 0;
+
+		uint64_t bits = PLUGIN_UI_ANY_MENU;
+		if (top->IsA(SDK::UCrUW_MapMenu::StaticClass()))
+			bits |= PLUGIN_UI_MAP;
+		else if (top->IsA(SDK::UCrUW_InventoryScreen::StaticClass()))
+			bits |= PLUGIN_UI_INVENTORY;
+		else if (top->IsA(SDK::UCrUW_BuildingMenu::StaticClass()))
+			bits |= PLUGIN_UI_BUILD_MENU;
+		else if (top->IsA(SDK::UCrUW_ResearchTerminalPanel::StaticClass())
+		      || top->IsA(SDK::UCrUW_UpgradeStationPanel::StaticClass())
+		      || top->IsA(SDK::UCrUW_ArmoryPanel::StaticClass()))
+			bits |= PLUGIN_UI_STATION_MENU;
+		return bits;
 	}
 
 	bool IsGameCursorShown()

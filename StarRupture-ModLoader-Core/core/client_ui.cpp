@@ -1,6 +1,7 @@
 #ifdef MODLOADER_CLIENT_BUILD
 
 #include "client_ui.h"
+#include "ui_state.h"
 #include "core/sdk_globals.h"
 #include "startup_utils.h"
 #include "Engine_classes.hpp"
@@ -14,6 +15,7 @@
 #include "../hooks/input/input_hook.h"
 #include "../hooks/input/keybind_registry.h"
 #include "../hooks/input/mouse_wheel_registry.h"
+#include "../plugins/reload_policy.h"
 #include "../UI/global_settings.h"
 #include "../UI/hook_failure_window.h"
 #include "../UI/imgui_backend.h"
@@ -225,7 +227,7 @@ void InitClientUI()
 
     static auto s_onWorldReady = [](SDK::UWorld* /*world*/, const char* worldName)
     {
-        const bool isMainMenu = worldName && strstr(worldName, "Map_MainMenu") != nullptr;
+        const bool isMainMenu = ReloadPolicy::IsMainMenuWorldName(worldName);
         UI::Overlay::SetVisible(isMainMenu);
         UI::GlobalSettings::SetWorldName(worldName ? worldName : "");
 
@@ -250,16 +252,21 @@ void InitClientUI()
         // outlive the world it points to between EndPlay and the next
         // world's BeginPlay.
         SDK::UWorld* currentWorld = SdkGlobals::GetWorld();
-        if (!currentWorld)
-        {
-            Hooks::GameMenu::SetGameCursorShown(false);
-            UI::GlobalSettings::SetPlayerPosition(0, 0, 0, false);
-            return;
-        }
-        SDK::APlayerController* pc = SDK::UGameplayStatics::GetPlayerController(currentWorld, 0);
+        SDK::APlayerController* pc = currentWorld
+            ? SDK::UGameplayStatics::GetPlayerController(currentWorld, 0) : nullptr;
         // Whether a game screen has the mouse cursor up, for the ImGui host's
         // mouse sharing (ShouldShareGameMouseNow).
         Hooks::GameMenu::SetGameCursorShown(pc && pc->bShowMouseCursor);
+
+        // The plugins' UI state (IPluginGameMenu::GetUIState) as of this tick.
+        // The menu layer is read only while a plugin wants it.
+        uint64_t uiState = 0;
+        if (ReloadPolicy::GameplayWorldRunning())  uiState |= PLUGIN_UI_IN_GAMEPLAY;
+        if (Hooks::GameMenu::IsPauseMenuOpen())    uiState |= PLUGIN_UI_PAUSE_MENU;
+        if (Hooks::GameMenu::IsGameCursorShown())  uiState |= PLUGIN_UI_CURSOR_UP;
+        if (pc && UIState::MenuReadWanted())       uiState |= Hooks::GameMenu::ReadMenuLayer(pc);
+        UIState::Publish(uiState);
+
         if (!pc)
         {
             UI::GlobalSettings::SetPlayerPosition(0, 0, 0, false);

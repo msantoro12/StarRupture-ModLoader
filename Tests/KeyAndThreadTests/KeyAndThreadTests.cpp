@@ -9,6 +9,7 @@
 #include "hooks/input/keybind_registry.h"
 #include "utils/game_thread_dispatch.h"
 #include "test_doubles.h"
+#include "core/ui_state.h"
 
 #include <windows.h>
 #include <atomic>
@@ -16,6 +17,7 @@
 #include <cstdlib>
 #include <new>
 #include <thread>
+#include <vector>
 
 static int g_checks = 0;
 static int g_failed = 0;
@@ -550,6 +552,152 @@ static void ForgetModuleDropsItsGameThreadTasks()
     CHECK(ranA == 2);
 }
 
+// ---------------------------------------------------------------------------
+// UI state (v74): the registry behind GetUIState and RegisterOnUIStateChanged.
+// ui_state.cpp is the loader's own file; Publish stands in for the tick.
+// ---------------------------------------------------------------------------
+
+struct UICall { uint64_t oldState, newState; int tag; };
+static std::vector<UICall> g_uiCalls;
+
+static void OnUI(uint64_t oldState, uint64_t newState, void* userData)
+{
+    g_uiCalls.push_back({ oldState, newState, static_cast<int>(reinterpret_cast<intptr_t>(userData)) });
+}
+
+static void* Tag(int n) { return reinterpret_cast<void*>(static_cast<intptr_t>(n)); }
+
+// Unregisters the tags the UI tests use and clears the state.
+static void ResetUI()
+{
+    for (int n = 0; n < 4; ++n)
+        UIState::Unregister(&OnUI, Tag(n));
+    UIState::Publish(0);
+    g_uiCalls.clear();
+}
+
+static void UIStateMaskAndOncePerChange()
+{
+    ResetUI();
+    UIState::Register(PLUGIN_UI_MAP, &OnUI, Tag(1));
+
+    // A bit outside the mask changes: not called.
+    UIState::Publish(PLUGIN_UI_IN_GAMEPLAY | PLUGIN_UI_CURSOR_UP);
+    CHECK(g_uiCalls.empty());
+
+    // The map opens: called once, with the whole state either side.
+    const uint64_t mapOpen = PLUGIN_UI_IN_GAMEPLAY | PLUGIN_UI_CURSOR_UP | PLUGIN_UI_ANY_MENU | PLUGIN_UI_MAP;
+    UIState::Publish(mapOpen);
+    UIState::Publish(mapOpen);
+    UIState::Publish(mapOpen);
+    CHECK(g_uiCalls.size() == 1);
+    CHECK(g_uiCalls[0].oldState == (PLUGIN_UI_IN_GAMEPLAY | PLUGIN_UI_CURSOR_UP));
+    CHECK(g_uiCalls[0].newState == mapOpen);
+    CHECK(UIState::Get() == mapOpen);
+
+    // It closes: called once more.
+    UIState::Publish(PLUGIN_UI_IN_GAMEPLAY);
+    CHECK(g_uiCalls.size() == 2);
+    CHECK(g_uiCalls[1].oldState == mapOpen);
+    ResetUI();
+}
+
+static void UIStateFirstComparisonIsAgainstZero()
+{
+    ResetUI();
+    UIState::Publish(PLUGIN_UI_IN_GAMEPLAY);
+
+    // Registered while already in gameplay: the next tick reports it.
+    UIState::Register(PLUGIN_UI_IN_GAMEPLAY, &OnUI, Tag(1));
+    UIState::Publish(PLUGIN_UI_IN_GAMEPLAY);
+    CHECK(g_uiCalls.size() == 1);
+    CHECK(g_uiCalls[0].oldState == 0);
+    CHECK(g_uiCalls[0].newState == PLUGIN_UI_IN_GAMEPLAY);
+
+    // A bit the mask leaves out is never reported, even the first time.
+    UIState::Register(PLUGIN_UI_PAUSE_MENU, &OnUI, Tag(2));
+    UIState::Publish(PLUGIN_UI_IN_GAMEPLAY);
+    CHECK(g_uiCalls.size() == 1);
+    ResetUI();
+}
+
+static void UIStateDuplicateIgnored()
+{
+    ResetUI();
+    UIState::Register(~0ull, &OnUI, Tag(1));
+    UIState::Register(~0ull, &OnUI, Tag(1));
+    UIState::Publish(PLUGIN_UI_PAUSE_MENU);
+    CHECK(g_uiCalls.size() == 1);
+
+    // The same callback with other userData is its own registration.
+    UIState::Register(~0ull, &OnUI, Tag(2));
+    UIState::Publish(PLUGIN_UI_CURSOR_UP);
+    CHECK(g_uiCalls.size() == 3);
+    ResetUI();
+}
+
+static void OnUIUnregistersBoth(uint64_t oldState, uint64_t newState, void* userData)
+{
+    OnUI(oldState, newState, userData);
+    UIState::Unregister(&OnUIUnregistersBoth, Tag(1));
+    UIState::Unregister(&OnUI, Tag(2));
+}
+
+static void UIStateUnregisterInsideCallback()
+{
+    ResetUI();
+    UIState::Register(~0ull, &OnUIUnregistersBoth, Tag(1));
+    UIState::Register(~0ull, &OnUI, Tag(2));
+
+    // The first callback removes itself and the second: the second is not
+    // called this tick, and neither is called again.
+    UIState::Publish(PLUGIN_UI_CURSOR_UP);
+    CHECK(g_uiCalls.size() == 1);
+    CHECK(g_uiCalls[0].tag == 1);
+    UIState::Publish(0);
+    CHECK(g_uiCalls.size() == 1);
+    ResetUI();
+}
+
+static void UIStateForgetModule()
+{
+    ResetUI();
+    UIState::Register(~0ull, &OnUI, Tag(1));
+
+    // Another module's unload leaves it.
+    UIState::ForgetModule(GetModuleHandleW(L"kernel32.dll"));
+    UIState::Publish(PLUGIN_UI_IN_GAMEPLAY);
+    CHECK(g_uiCalls.size() == 1);
+
+    // Its own module's unload drops it.
+    UIState::ForgetModule(GetModuleHandleW(nullptr));
+    UIState::Publish(0);
+    CHECK(g_uiCalls.size() == 1);
+    CHECK(!UIState::MenuReadWantedAt(1000000000ull));
+    ResetUI();
+}
+
+static void UIStateMenuReadDemand()
+{
+    ResetUI();
+    // Far from any earlier query in this run.
+    const uint64_t t = 4000000000ull;
+    CHECK(!UIState::MenuReadWantedAt(t));
+
+    // A query keeps the read running for kQueryKeepAliveMs.
+    UIState::GetAt(t);
+    CHECK(UIState::MenuReadWantedAt(t));
+    CHECK(UIState::MenuReadWantedAt(t + UIState::kQueryKeepAliveMs - 1));
+    CHECK(!UIState::MenuReadWantedAt(t + UIState::kQueryKeepAliveMs));
+
+    // A registration keeps it running for as long as it lasts.
+    UIState::Register(PLUGIN_UI_MAP, &OnUI, Tag(1));
+    CHECK(UIState::MenuReadWantedAt(t + 60000));
+    UIState::Unregister(&OnUI, Tag(1));
+    CHECK(!UIState::MenuReadWantedAt(t + 60000));
+    ResetUI();
+}
+
 int main()
 {
     RunTest("IsGameThread: false on every thread before the first tick", GameThreadBeforeFirstTick);
@@ -575,6 +723,12 @@ int main()
     RunTest("IsKeyHeld: any thread", AnyThread);
     RunTest("ForgetModule: an unloading plugin's keybinds go", ForgetModuleDropsItsKeybinds);
     RunTest("ForgetModule: an unloading plugin's game-thread tasks go", ForgetModuleDropsItsGameThreadTasks);
+    RunTest("UIState: mask filter, once per change", UIStateMaskAndOncePerChange);
+    RunTest("UIState: first comparison is against 0", UIStateFirstComparisonIsAgainstZero);
+    RunTest("UIState: duplicate registration ignored", UIStateDuplicateIgnored);
+    RunTest("UIState: unregister inside a callback", UIStateUnregisterInsideCallback);
+    RunTest("UIState: an unloading plugin's callbacks go", UIStateForgetModule);
+    RunTest("UIState: menu read runs only on demand", UIStateMenuReadDemand);
 
     printf("\n%d checks, %d failed\n", g_checks, g_failed);
     return g_failed == 0 ? 0 : 1;

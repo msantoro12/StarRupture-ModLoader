@@ -802,6 +802,17 @@
 //      instead of letting it call past the end of the table. A plugin that
 //      must also run on a v73 loader declares 73 and does not call them.
 //
+//      Also in v74: the game's UI state, kept by the loader so a plugin does
+//      not detect it itself. Added PluginUIState (bits for in gameplay, the
+//      pause menu, the game cursor, any menu, the map, the inventory, the
+//      build menu and the station screens), PluginUIStateCallback and
+//      IPluginGameMenu::GetUIState, RegisterOnUIStateChanged and
+//      UnregisterOnUIStateChanged. Appended at the BOTTOM of IPluginGameMenu
+//      after IsPauseMenuOpen, so nothing a v70-v73 plugin reads by offset
+//      moved and MIN stays at 70. The state is 64 bits wide so a later loader
+//      can add bits without a new interface version; a plugin ignores bits it
+//      does not know.
+//
 #define PLUGIN_INTERFACE_VERSION_MIN 70
 #define PLUGIN_INTERFACE_VERSION_MAX 74
 #define PLUGIN_INTERFACE_VERSION 74
@@ -3226,6 +3237,51 @@ struct PluginGameMenuEntryDesc
 	void*                  userData;   // passed straight back to onClick
 };
 
+// v74. The game's UI state: bits of the uint64_t that GetUIState returns and
+// RegisterOnUIStateChanged reports. More than one is set at a time: the map
+// open in gameplay reads IN_GAMEPLAY | CURSOR_UP | ANY_MENU | MAP. A later
+// loader may add bits without a new interface version, so ignore bits you do
+// not know and never compare the whole state with a fixed value.
+enum PluginUIState : uint64_t
+{
+	// A gameplay world (ChimeraMain) has begun play and not ended. False at
+	// startup, on the splash and in the main menu.
+	PLUGIN_UI_IN_GAMEPLAY  = 1ull << 0,
+
+	// The game's pause menu (the Escape screen) is active, as IsPauseMenuOpen
+	// reports it.
+	PLUGIN_UI_PAUSE_MENU   = 1ull << 1,
+
+	// The game shows its own mouse cursor (the player controller's
+	// bShowMouseCursor): the menus, the pause menu and the machine screens.
+	PLUGIN_UI_CURSOR_UP    = 1ull << 2,
+
+	// A screen is active on the game's menu layer: the map, the inventory,
+	// the build menu, a machine or station screen, the pause menu and the
+	// rest. The bits below name some of them; a screen without a bit of its
+	// own shows as ANY_MENU alone.
+	PLUGIN_UI_ANY_MENU     = 1ull << 3,
+
+	// The active menu-layer screen is the map.
+	PLUGIN_UI_MAP          = 1ull << 4,
+
+	// The active menu-layer screen is the player's inventory.
+	PLUGIN_UI_INVENTORY    = 1ull << 5,
+
+	// The active menu-layer screen is the build menu.
+	PLUGIN_UI_BUILD_MENU   = 1ull << 6,
+
+	// The active menu-layer screen is a station's own: the corporate
+	// terminal, the development station or the equipment upgrade station.
+	// Other machines' screens show as ANY_MENU only.
+	PLUGIN_UI_STATION_MENU = 1ull << 7,
+};
+
+// Called on the GAME THREAD when a bit you registered for changes. oldState
+// and newState are the whole state (every bit, not only yours) before and
+// after the change.
+typedef void (*PluginUIStateCallback)(uint64_t oldState, uint64_t newState, void* userData);
+
 struct IPluginGameMenu
 {
 	// Add a row. The loader copies every string in desc, so they need not
@@ -3256,9 +3312,40 @@ struct IPluginGameMenu
 	// once per game tick, so it lags by up to a frame. Safe from any thread.
 	// Always false when the pause hook did not install.
 	bool (*IsPauseMenuOpen)();
+
+	// --- v74 ---
+	// The game's UI state as PluginUIState bits. Safe from any thread: one
+	// atomic read of the state as of the last game tick, so it lags by up to
+	// a frame.
+	//
+	// IN_GAMEPLAY, PAUSE_MENU and CURSOR_UP are kept all the time. The menu
+	// bits (ANY_MENU and the ones after it) are read from the game only while
+	// a plugin has a RegisterOnUIStateChanged callback, or has called
+	// GetUIState in the last two seconds; otherwise they are 0. So the first
+	// call after nobody has asked for a while starts that read, and its menu
+	// bits are 0 until the next game tick. A plugin that needs them from the
+	// first frame registers a callback instead.
+	uint64_t (*GetUIState)();
+
+	// Calls callback on the GAME THREAD whenever a bit in mask changes (pass
+	// ~0ull for every bit), with the whole state before and after the change.
+	// The first comparison is against 0: on the first game tick after you
+	// register, you are called if a bit in mask is already set. Register in
+	// PluginInit with the bits you care about; any thread. The same callback
+	// and userData pair registered twice is ignored. The loader drops your
+	// registrations when your plugin unloads or reloads, but call
+	// UnregisterOnUIStateChanged in PluginShutdown anyway.
+	void (*RegisterOnUIStateChanged)(uint64_t mask, PluginUIStateCallback callback, void* userData);
+
+	// Removes a registration, matched by callback and userData. Any thread,
+	// including from inside the callback.
+	void (*UnregisterOnUIStateChanged)(PluginUIStateCallback callback, void* userData);
 };
 
-static_assert(offsetof(IPluginGameMenu, IsPauseMenuOpen) == 32, "v71 starts where v70 ended");
+static_assert(offsetof(IPluginGameMenu, IsPauseMenuOpen)            == 32, "v71 starts where v70 ended");
+static_assert(offsetof(IPluginGameMenu, GetUIState)                 == 40, "v74 starts where v71 ended");
+static_assert(offsetof(IPluginGameMenu, RegisterOnUIStateChanged)   == 48, "v74 layout");
+static_assert(offsetof(IPluginGameMenu, UnregisterOnUIStateChanged) == 56, "v74 layout");
 
 // ---------------------------------------------------------------------------
 // Pak mounting and asset loading (v67) -- all builds

@@ -450,10 +450,11 @@ static void Test_CallbackPurgedOnUnload()
 
 // The test above proves the purge works; this one proves the loader calls it.
 // plugin_manager.cpp cannot be linked into a console program (it is the plugin
-// loader), so its three paths that unmap a plugin -- unload all, unload one,
-// reload -- are read as source. Each must call ForgetConfigCallbacks, and call
-// it before FreeLibrary, since afterwards the callback's address is freed
-// memory. Delete any one call and this fails.
+// loader), so its paths that unmap a plugin -- unload all, unload one,
+// reload -- are read as source. Each must call ForgetRegistrations before
+// FreeLibrary, since afterwards the callback's address is freed memory, and
+// ForgetRegistrations must call ForgetConfigCallbacks. Delete any one call and
+// this fails.
 static std::string StripLineComments(const std::string& src)
 {
     std::string out;
@@ -473,9 +474,12 @@ static std::string StripLineComments(const std::string& src)
 
 // Text of the function whose definition starts with signature, up to its
 // closing brace (a tab-indented "}" line; the functions sit in a namespace).
+// A forward declaration (the signature then ';') is not the definition.
 static std::string FunctionBody(const std::string& src, const char* signature)
 {
-    const size_t start = src.find(signature);
+    size_t start = src.find(signature);
+    while (start != std::string::npos && src.compare(start + strlen(signature), 1, ";") == 0)
+        start = src.find(signature, start + 1);
     if (start == std::string::npos) return "";
     const size_t end = src.find("\n\t}", start);
     return end == std::string::npos ? "" : src.substr(start, end - start);
@@ -499,7 +503,7 @@ static void Test_UnloadPathsPurgeCallbacks()
     const char* const kPaths[] =
     {
         "void UnloadAllPlugins()",
-        "bool UnloadPlugin(int index, std::string* refusal)",
+        "static bool ShutDownAndFree(LoadedPlugin& p, const wchar_t* action)",
         "bool ReloadPlugin(int index, std::string* refusal)",
     };
     for (const char* signature : kPaths)
@@ -508,12 +512,18 @@ static void Test_UnloadPathsPurgeCallbacks()
         const std::string body = FunctionBody(src, signature);
         CHECK(!body.empty());
 
-        const size_t forget = body.find("ForgetConfigCallbacks(");
+        const size_t forget = body.find("ForgetRegistrations(");
         const size_t free   = body.find("FreeLibrary(");
         CHECK(forget != std::string::npos);
         CHECK(free != std::string::npos);
         CHECK(forget < free);
     }
+
+    // UNLOAD frees through ShutDownAndFree, checked above.
+    CHECK(FunctionBody(src, "bool UnloadPlugin(int index, std::string* refusal)").find("ShutDownAndFree(") != std::string::npos);
+
+    // ForgetRegistrations drops the plugin's OnConfigChanged callbacks.
+    CHECK(FunctionBody(src, "static void ForgetRegistrations(LoadedPlugin& p)").find("ForgetConfigCallbacks(") != std::string::npos);
 }
 
 // Choice entries carry their choices in description after the first '|'.

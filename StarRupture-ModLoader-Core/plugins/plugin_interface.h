@@ -2147,7 +2147,10 @@ struct IModLoaderImGui
 	// ImGui::SetNextWindowSize. condition is a PluginCond_* value: _Always
 	// forces the size every frame, _FirstUseEver sizes it once and lets the
 	// player resize it, _Appearing sizes it each time it opens. 0 reads as
-	// _Always. A window with PluginWindowFlags_AlwaysAutoResize ignores it.
+	// _Always. It overrides PluginWindowFlags_AlwaysAutoResize on each axis it
+	// sets; pass 0 for an axis to keep that axis auto-fitted, e.g.
+	// SetNextWindowSize(540, 0, PluginCond_Always) is a fixed width with an
+	// auto height.
 	void (*SetNextWindowSize)(float width, float height, int condition);
 
 	// ImGui::SetNextWindowSizeConstraints, plain minimum and maximum (no

@@ -402,6 +402,11 @@ if (imgui->BeginPopupModal("Confirm##myplugin", nullptr,
 }
 ```
 
+For a fixed width with an auto height, call `SetNextWindowSize(540.0f, 0.0f, PluginCond_Always)` before
+`BeginPopupModal`: it overrides `PluginWindowFlags_AlwaysAutoResize` on the axis it sets, and a 0 keeps
+that axis auto-fitted. To give a window a fixed size instead, leave out `PluginWindowFlags_AlwaysAutoResize`
+and set both axes.
+
 A plugin that declares v74 needs a mod loader that supports it; an older loader shows it as needing a
 mod loader update. One that must also run on a v73 loader declares 73 and does not call them.
 <sup>[✦](#msantoro12)</sup>

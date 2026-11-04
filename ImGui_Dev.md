@@ -460,7 +460,9 @@ if (imgui->BeginPopupModal("Confirm##myplugin", nullptr,
 ```
 
 To give a window a fixed size instead, leave out `PluginWindowFlags_AlwaysAutoResize` and call
-`SetNextWindowSize(w, h, PluginCond_Always)`. These calls need interface v74. A loader older than
+`SetNextWindowSize(w, h, PluginCond_Always)`. To fix only the width and keep the height auto-fitted, pass
+0 for the height: `SetNextWindowSize(540.0f, 0.0f, PluginCond_Always)` overrides
+`PluginWindowFlags_AlwaysAutoResize` on the axis it sets only. These calls need interface v74. A loader older than
 that refuses a plugin that declares v74 and shows it as needing a newer mod loader, so a plugin
 that has to run on a v73 loader declares 73 and leaves them out (see
 `PLUGIN_INTERFACE_VERSION` in `plugin_interface.h`).

@@ -246,7 +246,7 @@ static const PluginWindowHints k_myHints = {
     -1.0f, -1.0f,   // pos_x, pos_y: no placement
     0.0f, 0.0f,     // pivot
     0, 0,           // size_cond, pos_cond
-    PluginWindowFlags_PauseMenuMouseInputs | (1 << 6)   // 1 << 6: ImGuiWindowFlags_AlwaysAutoResize
+    PluginWindowFlags_PauseMenuMouseInputs | PluginWindowFlags_AlwaysAutoResize
 };
 
 static const PluginWidgetDesc k_myWidget = {
@@ -256,7 +256,7 @@ static const PluginWidgetDesc k_myWidget = {
 };
 ```
 
-A widget without hints is auto-sized; one with hints is not unless it asks, hence the `1 << 6`.
+A widget without hints is auto-sized; one with hints is not unless it asks, hence `PluginWindowFlags_AlwaysAutoResize` (v74; before that, `1 << 6`).
 
 The same holds over every other game screen that has the mouse cursor up: the loader reads
 `bShowMouseCursor` on the local player controller once per game tick. A click on an opted-in
@@ -430,6 +430,41 @@ Use the sided modifier codes (`VK_LSHIFT`, `VK_RCONTROL`, ...). `VK_SHIFT`, `VK_
 `VK_MENU` and the `VK_OEM_*` keys other than `VK_OEM_COMMA` and `VK_OEM_PERIOD` always report
 false, and `VK_RETURN` is the main Enter key only.
 
+### Sizing a popup (v74)
+
+A modal opened with `BeginPopupModal` and no size of its own shrinks to fit its first frame, which
+can be a strip a few pixels wide, and ImGui then saves that size. Two calls size the window that
+opens next; call them right before `BeginPopupModal` (or a panel's own `Begin`), from your render
+callback. There is no call to place it: ImGui centres a modal on the screen itself.
+
+| Call | Description |
+|------|-------------|
+| `SetNextWindowSize(w, h, cond)` | Set the next window's size |
+| `SetNextWindowSizeConstraints(min_w, min_h, max_w, max_h)` | Clamp it between a minimum and a maximum (no callback); `FLT_MAX` for no limit. A minimum width keeps an auto-sized window from collapsing |
+
+`cond` is one of `PluginCond_Always`, `PluginCond_Once`, `PluginCond_FirstUseEver` or
+`PluginCond_Appearing`. The recommended popup is as wide as its text needs but never narrower than a
+minimum, and its size is not saved to the ini (`PluginWindowFlags_NoSavedSettings`), so a bad size
+cannot stick; ImGui centres it:
+
+```cpp
+// Open it once, from a button: imgui->OpenPopup("Confirm##myplugin");
+imgui->SetNextWindowSizeConstraints(360.0f, 0.0f, FLT_MAX, FLT_MAX);   // minimum width; needs <cfloat>
+if (imgui->BeginPopupModal("Confirm##myplugin", nullptr,
+        PluginWindowFlags_AlwaysAutoResize | PluginWindowFlags_NoSavedSettings))
+{
+    imgui->TextWrapped("A long message that wraps inside the minimum width.");
+    if (imgui->Button("OK")) imgui->CloseCurrentPopup();
+    imgui->EndPopup();
+}
+```
+
+To give a window a fixed size instead, leave out `PluginWindowFlags_AlwaysAutoResize` and call
+`SetNextWindowSize(w, h, PluginCond_Always)`. These calls need interface v74. A loader older than
+that refuses a plugin that declares v74 and shows it as needing a newer mod loader, so a plugin
+that has to run on a v73 loader declares 73 and leaves them out (see
+`PLUGIN_INTERFACE_VERSION` in `plugin_interface.h`).
+
 ---
 
 ## IModLoaderImGui — Full API Reference
@@ -560,6 +595,8 @@ imgui->ColorEdit4("Color", col4);   // RGBA
 | `IsItemHovered()` | True if the mouse is over the previous widget |
 | `SetNextItemWidth(w)` | Override width of the next widget; pass `-1` to fill remaining space |
 | `IsKeyPressed(vk, repeat)` | (v71) True on the frame a Win32 virtual key goes down; `repeat` adds the held-key repeats |
+| `SetNextWindowSize(w, h, cond)` | (v74) Size the next window; see [Sizing a popup](#sizing-a-popup-v74) |
+| `SetNextWindowSizeConstraints(min_w, min_h, max_w, max_h)` | (v74) Minimum and maximum size of the next window |
 
 ---
 

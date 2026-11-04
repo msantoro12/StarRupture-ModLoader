@@ -30,3 +30,4 @@ The Pause Frame Generation While Windows Are Open setting is removed
 A crashed plugin shows a toast in the bottom right corner and restarts by itself about 3 seconds later, up to 3 times a session; Settings can turn that off
 Plugins Updated lists plugins with identical update notes on one line and shows the notes once
 Plugins and the mod loader find the world being played even while another plugin has a preview world of its own open
+Plugin interface v74: plugins can size and limit their popup windows, so a popup no longer collapses into a narrow strip

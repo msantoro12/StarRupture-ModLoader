@@ -2145,6 +2145,12 @@ namespace ImGuiWrappers
 		return key != ImGuiKey_None && ImGui::IsKeyPressed(key, repeat);
 	}
 
+	// v74 -- size the next window.
+	static void SetNextWindowSize(float w, float h, int cond)
+	{ ImGui::SetNextWindowSize(ImVec2(w, h), (ImGuiCond)cond); }
+	static void SetNextWindowSizeConstraints(float min_w, float min_h, float max_w, float max_h)
+	{ ImGui::SetNextWindowSizeConstraints(ImVec2(min_w, min_h), ImVec2(max_w, max_h)); }
+
 	// v35 child windows (original placement)
 	static bool BeginChild(const char* id, float sx, float sy, bool border)
 	{
@@ -3489,6 +3495,10 @@ static void PopulateImGuiAPI()
 	g_imguiAPI.GetMouseWheel = ImGuiWrappers::GetMouseWheel;
 	g_imguiAPI.GetMouseWheelH = ImGuiWrappers::GetMouseWheelH;
 	g_imguiAPI.IsKeyPressed = ImGuiWrappers::IsKeyPressed;
+
+	// v74
+	g_imguiAPI.SetNextWindowSize = ImGuiWrappers::SetNextWindowSize;
+	g_imguiAPI.SetNextWindowSizeConstraints = ImGuiWrappers::SetNextWindowSizeConstraints;
 }
 
 // ---------------------------------------------------------------------------

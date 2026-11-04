@@ -368,7 +368,7 @@ choice from a list, with an optional range), plus any state it saves by itself; 
 | [Console.md](Console.md) | Console commands, running command lines from code (v63; `ExecuteWithEngine` v69). All builds |
 | [GameMenu.md](GameMenu.md) | Rows in the main and pause menus (v64), whether the pause menu is open (v71). Client |
 | [HttpServer.md](HttpServer.md) | HTTP from the game server's listener (v22). Server |
-| [ImGui_Dev.md](ImGui_Dev.md) | Panels, always-on widgets, config-change notifications, keybinds, mouse wheel (v70), widgets that opt in to the mouse over the pause menu and other cursor screens and keys while typing (v71) and the full ImGui function table. Client |
+| [ImGui_Dev.md](ImGui_Dev.md) | Panels, always-on widgets, config-change notifications, keybinds, mouse wheel (v70), widgets that opt in to the mouse over the pause menu and other cursor screens and keys while typing (v71), sizing a popup (v74) and the full ImGui function table. Client |
 | [MaterialIcons.md](MaterialIcons.md) | The 2188 bundled icons |
 | [Networking.md](Networking.md) | Messages between server and clients, `hooks->Network`. Client and server |
 | [PakLoading.md](PakLoading.md) | Mounting `.pak` files, spawning their assets (v67). All builds |
@@ -383,6 +383,27 @@ The current world, for the loader and for `PluginSdkRuntime::GetWorld()` in the 
 in the game's viewport, not the engine's `GWorld` global. A plugin that builds a world of its own
 (a preview or capture world) can leave `GWorld` pointing at that world, and plugins reading it then
 wait for a world that never comes. The world-start events pass the world that began play.
+<sup>[✦](#msantoro12)</sup>
+
+A popup a plugin opens with `BeginPopupModal` no longer has to collapse into a narrow strip (interface
+v74): `SetNextWindowSize` and `SetNextWindowSizeConstraints` size the window that opens next, with
+named `PluginCond_*` conditions and `PluginWindowFlags_AlwaysAutoResize`. The recommended popup is
+auto-sized with a minimum width and not saved to the ini; ImGui centres a modal on the screen itself:
+
+```cpp
+// Open it once, from a button: imgui->OpenPopup("Confirm##myplugin");
+imgui->SetNextWindowSizeConstraints(360.0f, 0.0f, FLT_MAX, FLT_MAX);   // minimum width; needs <cfloat>
+if (imgui->BeginPopupModal("Confirm##myplugin", nullptr,
+        PluginWindowFlags_AlwaysAutoResize | PluginWindowFlags_NoSavedSettings))
+{
+    imgui->TextWrapped("A long message that wraps inside the minimum width.");
+    if (imgui->Button("OK")) imgui->CloseCurrentPopup();
+    imgui->EndPopup();
+}
+```
+
+A plugin that declares v74 needs a mod loader that supports it; an older loader shows it as needing a
+mod loader update. One that must also run on a v73 loader declares 73 and does not call them.
 <sup>[✦](#msantoro12)</sup>
 
 ### Preload plugins

@@ -785,9 +785,26 @@
 //      applied to game shutdown. See PluginDevelopment.md, "Load and unload
 //      settings".
 //
+// v74 (2026-11-03): Size the next ImGui window. Added
+//      IModLoaderImGui::SetNextWindowSize and SetNextWindowSizeConstraints
+//      (direct wrappers of the ImGui calls), so a plugin can size and bound a
+//      popup before BeginPopupModal. Without them a modal that has no
+//      AlwaysAutoResize flag opens as a strip a few pixels wide and ImGui
+//      saves that size. Also added the named constants
+//      PluginWindowFlags_AlwaysAutoResize and PluginCond_Always / _Once /
+//      _FirstUseEver / _Appearing, so a plugin needs no ImGui header and no raw
+//      numbers for them (PluginWindowFlags_NoSavedSettings already existed).
+//      The two calls are appended at the BOTTOM of IModLoaderImGui, so
+//      nothing a v70-v73 plugin reads by offset moved and MIN stays at 70. It
+//      is a version of its own because v73 loaders already exist without them
+//      and the table has no size field a plugin could check: a v73 loader
+//      refuses a v74 plugin and shows it as needing a newer mod loader,
+//      instead of letting it call past the end of the table. A plugin that
+//      must also run on a v73 loader declares 73 and does not call them.
+//
 #define PLUGIN_INTERFACE_VERSION_MIN 70
-#define PLUGIN_INTERFACE_VERSION_MAX 73
-#define PLUGIN_INTERFACE_VERSION 73
+#define PLUGIN_INTERFACE_VERSION_MAX 74
+#define PLUGIN_INTERFACE_VERSION 74
 
 enum class PluginLogLevel { Trace = 0, Debug = 1, Info = 2, Warn = 3, Error = 4 };
 enum class ConfigValueType { String, Integer, Float, Boolean, Keybind, Choice /* v71 */, Hidden /* v71 */ };
@@ -2120,9 +2137,28 @@ struct IModLoaderImGui
 	// your render callback, gated on your window being focused, or it fires
 	// for keys meant for the game.
 	bool (*IsKeyPressed)(int vk, bool repeat);
+
+	// --- v74 ---
+	// Each of these applies to the next window opened after it (BeginPopupModal
+	// or a panel's own Begin) and to that window only; call them right before
+	// the call that opens it, from your render callback. ImGui centres a modal
+	// on the screen by itself, so there is no call to place it.
+	//
+	// ImGui::SetNextWindowSize. condition is a PluginCond_* value: _Always
+	// forces the size every frame, _FirstUseEver sizes it once and lets the
+	// player resize it, _Appearing sizes it each time it opens. 0 reads as
+	// _Always. A window with PluginWindowFlags_AlwaysAutoResize ignores it.
+	void (*SetNextWindowSize)(float width, float height, int condition);
+
+	// ImGui::SetNextWindowSizeConstraints, plain minimum and maximum (no
+	// callback). A minimum width keeps an auto-sized window from collapsing to
+	// a narrow strip. Pass FLT_MAX for a limit you do not want.
+	void (*SetNextWindowSizeConstraints)(float min_width, float min_height, float max_width, float max_height);
 };
 
 static_assert(offsetof(IModLoaderImGui, IsKeyPressed) == 2024, "v71 starts where v70 ended");
+static_assert(offsetof(IModLoaderImGui, SetNextWindowSize) == 2032, "v74 starts where v73 ended");
+static_assert(offsetof(IModLoaderImGui, SetNextWindowSizeConstraints) == 2040, "v74 appends in order");
 
 typedef void (*PluginImGuiRenderCallback)(IModLoaderImGui* imgui);
 
@@ -2242,9 +2278,17 @@ struct IPluginImGuiTextures
 #define PluginWindowFlags_NoResize          (1 << 1)
 #define PluginWindowFlags_NoMove            (1 << 2)
 #define PluginWindowFlags_NoScrollbar       (1 << 3)
+#define PluginWindowFlags_AlwaysAutoResize  (1 << 6)   // v74 name for the value a plugin always passed raw
 #define PluginWindowFlags_NoBackground      (1 << 7)
 #define PluginWindowFlags_NoSavedSettings   (1 << 8)
 #define PluginWindowFlags_NoMouseInputs     (1 << 9)
+// Condition values for SetNextWindowSize (v74), and for the
+// size_cond / pos_cond of PluginWindowHints. Values mirror ImGuiCond. Pass one
+// value, never a combination (ImGui treats it as a plain enum).
+#define PluginCond_Always         (1 << 0)
+#define PluginCond_Once           (1 << 1)
+#define PluginCond_FirstUseEver   (1 << 2)
+#define PluginCond_Appearing      (1 << 3)
 // v71, loader-only (ImGui never sees it): the widget takes the mouse while
 // the pause menu is open or a game screen shows the cursor, and no window has
 // exclusive capture. Without it the window is click-through; child windows are not.

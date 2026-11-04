@@ -123,7 +123,7 @@ namespace Hooks::WorldBeginPlay
 		}
 
 		// Check if this is the ChimeraMain world
-		bool isChimeraWorld = worldName.find("ChimeraMain") != std::string::npos;
+		bool isChimeraWorld = ReloadPolicy::IsGameplayWorldName(worldName.c_str());
 
 		if (!isChimeraWorld)
 		{

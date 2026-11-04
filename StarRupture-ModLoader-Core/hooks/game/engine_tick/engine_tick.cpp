@@ -5,6 +5,7 @@
 #include "logging/logger.h"
 #include "plugins/plugin_guard.h"
 #include "plugins/plugin_manager.h"
+#include "plugins/reload_policy.h"
 #include "memory_scanner/scanner.h"
 #include "../scan_patterns.h"
 #include "../world_begin_play/world_begin_play.h"
@@ -49,7 +50,7 @@ namespace Hooks::EngineTick
 
 	static void OnAnyWorldBeginPlay(SDK::UWorld* /*world*/, const char* worldName)
 	{
-		const bool nowInChimeraMain = worldName && strstr(worldName, "ChimeraMain") != nullptr;
+		const bool nowInChimeraMain = ReloadPolicy::IsGameplayWorldName(worldName);
 
 		// Only reset when (re-)entering ChimeraMain from some other state, so we
 		// don't wipe the running average on every menu/loading-screen world change

@@ -26,6 +26,7 @@ namespace UI::UpdateNoticeWindow
     static std::vector<UpdatedPlugin> s_updates;
     static bool s_isOpen = false;
     static bool s_shown  = false;   // one-shot: only auto-open once per session
+    static int  s_centerFrames = 0; // frames left to keep the window centered while it sizes itself
 
     void AddUpdatedPlugin(const char* name, const char* oldVersion, const char* newVersion,
                           const char* notes)
@@ -63,6 +64,7 @@ namespace UI::UpdateNoticeWindow
 
         s_isOpen = true;
         s_shown  = true;
+        s_centerFrames = 3;
     }
 
     void Render()
@@ -79,18 +81,23 @@ namespace UI::UpdateNoticeWindow
         // auto-fit (0 = auto on that axis).
         const float width = std::max(640.0f, io.DisplaySize.x * 0.35f);
         ImGui::SetNextWindowSize(ImVec2(width, 0), ImGuiCond_Always);
-        // Notes can make the list taller than the screen; cap the auto-fit
-        // height and let the window scroll past it.
-        ImGui::SetNextWindowSizeConstraints(ImVec2(width, 0), ImVec2(width, io.DisplaySize.y * 0.8f));
-        ImGui::SetNextWindowPos(
-            ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f),
-            ImGuiCond_Appearing,
-            ImVec2(0.5f, 0.5f));
+        // The list child sizes itself to its notes over the first frames, so
+        // centering once on appearing would centre the window at its first
+        // (empty) height. Re-centre for those frames, then leave it movable.
+        if (s_centerFrames > 0)
+        {
+            --s_centerFrames;
+            ImGui::SetNextWindowPos(
+                ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f),
+                ImGuiCond_Always,
+                ImVec2(0.5f, 0.5f));
+        }
 
         if (!UI::Theme::BeginChamferedWindow("Plugin Updates##update_notice",
                                              "PLUGINS UPDATED", &s_isOpen,
                                              nullptr,
-                                             ImGuiWindowFlags_NoResize))
+                                             ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoScrollbar |
+                                             ImGuiWindowFlags_NoScrollWithMouse))
             return;
 
         ImGui::TextUnformatted("The following plugins were updated automatically:");
@@ -98,6 +105,15 @@ namespace UI::UpdateNoticeWindow
         ImGui::Separator();
         ImGui::Spacing();
 
+        // Notes can make the list taller than the screen. Only the list scrolls,
+        // in a child that fits its content up to what is left of 80% of the
+        // screen height once the title, the intro above and the Close button
+        // below are taken out, so those stay in view at any list length.
+        const ImGuiStyle& style = ImGui::GetStyle();
+        const float footerHeight = style.ItemSpacing.y * 3.0f + ImGui::GetFrameHeight() + style.WindowPadding.y;
+        const float maxListHeight = io.DisplaySize.y * 0.8f - ImGui::GetCursorPosY() - footerHeight;
+        ImGui::SetNextWindowSizeConstraints(ImVec2(0.0f, 0.0f), ImVec2(FLT_MAX, maxListHeight));
+        ImGui::BeginChild("##update_notice_list", ImVec2(0.0f, 0.0f), ImGuiChildFlags_AutoResizeY);
         {
             std::lock_guard<std::mutex> lock(s_mutex);
             // Plugins whose notes are word for word the same (a shared "works
@@ -139,6 +155,7 @@ namespace UI::UpdateNoticeWindow
                 ImGui::Unindent();
             }
         }
+        ImGui::EndChild();
 
         ImGui::Spacing();
         ImGui::Separator();
@@ -172,6 +189,7 @@ namespace UI::UpdateNoticeWindow
         }
         s_isOpen = true;
         s_shown  = true;
+        s_centerFrames = 3;
     }
 #endif
 }

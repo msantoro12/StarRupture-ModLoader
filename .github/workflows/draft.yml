@@ -18,7 +18,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           submodules: true
-          fetch-tags: true  # build-versioned-notes.ps1 reads UPDATE_NOTES.txt from earlier tags
+          fetch-depth: 0  # build-versioned-notes.ps1 reads UPDATE_NOTES.txt from earlier tags
 
       - name: Add MSBuild to PATH
         uses: microsoft/setup-msbuild@v2
@@ -163,16 +163,6 @@ jobs:
           # ---------------------------------------------------------------------------
           # 1. Modloader manifests  (central version check -- no plugin list)
           # ---------------------------------------------------------------------------
-          # Player-facing notes: one change per line in UPDATE_NOTES.txt, this
-          # release's lines only (the release body and the changelog use just
-          # these). The loader lists the full text in its "Plugins Updated"
-          # window after the update, from the manifest's "release_notes" field.
-          $notesFile = "$ws\UPDATE_NOTES.txt"
-          $noteLines = @()
-          if (Test-Path $notesFile) {
-            $noteLines = @(Get-Content $notesFile | ForEach-Object { $_.Trim() } | Where-Object { $_ })
-          }
-
           # A player can jump over releases, so "release_notes" holds one section per
           # release, newest first, each under a "## <tag>" header: this release's
           # UPDATE_NOTES.txt on top, then the UPDATE_NOTES.txt of earlier release
@@ -180,13 +170,14 @@ jobs:
           # only the sections newer than the version the player had. The script
           # skips tags with no notes file and says which; it bounds the history
           # to 10 releases and 64 KB.
-          $history = & "$ws\.github\scripts\build-versioned-notes.ps1" -Repo $ws -Version $tag `
-            -ExcludePattern 'PTB|public test|test branch|test build'
-          if ($history.Excluded -gt 0) {
-            Write-Host "::warning title=Release notes filtered::$($history.Excluded) earlier note line(s) mention the test branch and were left out of release_notes."
-          }
+          $history = & "$ws\.github\scripts\build-versioned-notes.ps1" -Repo $ws -Version $tag
           if ($history.Truncated -gt 0) {
             Write-Host "::notice title=Release notes bounded::$($history.Truncated) older release(s) left out of release_notes (limit 10 releases, 64 KB)."
+          }
+          # A checkout without the tags would give a history of one release and
+          # no sign of it: stop before anything is published.
+          if ($history.Included.Count -lt 2) {
+            throw "Release notes history has $($history.Included.Count) release(s) ($($history.Included -join ', ')); the checkout is missing the release tags."
           }
           $releaseNotes = $history.Text
 

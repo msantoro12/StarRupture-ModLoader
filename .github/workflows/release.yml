@@ -43,7 +43,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           submodules: true
-          fetch-tags: true  # build-versioned-notes.ps1 reads UPDATE_NOTES.txt from earlier tags
+          fetch-depth: 0  # build-versioned-notes.ps1 reads UPDATE_NOTES.txt from earlier tags
 
       - name: Add MSBuild to PATH
         uses: microsoft/setup-msbuild@v2
@@ -268,22 +268,26 @@ jobs:
           # only the sections newer than the version the player had. The script
           # skips tags with no notes file and says which; it bounds the history
           # to 10 releases and 64 KB.
-          $history = & "$ws\.github\scripts\build-versioned-notes.ps1" -Repo $ws -Version $tag `
-            -ExcludePattern 'PTB|public test|test branch|test build'
-          if ($history.Excluded -gt 0) {
-            Write-Host "::warning title=Release notes filtered::$($history.Excluded) earlier note line(s) mention the test branch and were left out of release_notes."
-          }
+          $history = & "$ws\.github\scripts\build-versioned-notes.ps1" -Repo $ws -Version $tag
           if ($history.Truncated -gt 0) {
             Write-Host "::notice title=Release notes bounded::$($history.Truncated) older release(s) left out of release_notes (limit 10 releases, 64 KB)."
+          }
+          # A checkout without the tags would give a history of one release and
+          # no sign of it: stop before anything is published.
+          if ($history.Included.Count -lt 2) {
+            throw "Release notes history has $($history.Included.Count) release(s) ($($history.Included -join ', ')); the checkout is missing the release tags."
           }
           $releaseNotes = $history.Text
 
           # The Windows "Update Available" box on older and current loaders prints
           # the manifest's "notes" field in full, so that field carries a short
           # text of its own: UPDATE_NOTES_SHORT.txt, one change per line. It is
-          # never filled from UPDATE_NOTES.txt. If it is missing, empty or too
-          # long, "notes" is left out (the box then shows no change list) and the
-          # run says so.
+          # never filled from UPDATE_NOTES.txt. A release stops here, before
+          # anything is published, when it is missing, empty or too long, or when
+          # it or UPDATE_NOTES.txt is word for word the previous release tag's
+          # copy (text nobody rewrote for this release). A preview run only warns
+          # and leaves "notes" out.
+          $isPreview = "${{ steps.tag.outputs.IS_PREVIEW }}" -eq 'true'
           $maxShortLines = 6
           $maxShortChars = 600
           $shortFile  = "$ws\UPDATE_NOTES_SHORT.txt"
@@ -293,11 +297,29 @@ jobs:
           }
           $shortText = $shortLines -join "`n"
           if ($shortLines.Count -eq 0) {
+            if (-not $isPreview) { throw "UPDATE_NOTES_SHORT.txt is missing or empty." }
             Write-Host "::warning title=Update box notes missing::UPDATE_NOTES_SHORT.txt is missing or empty, so the manifest has no short 'notes' and the Windows update box will list no changes."
             $shortText = ""
           } elseif ($shortLines.Count -gt $maxShortLines -or $shortText.Length -gt $maxShortChars) {
+            if (-not $isPreview) { throw "UPDATE_NOTES_SHORT.txt has $($shortLines.Count) lines and $($shortText.Length) characters (limit $maxShortLines and $maxShortChars)." }
             Write-Host "::warning title=Update box notes too long::UPDATE_NOTES_SHORT.txt has $($shortLines.Count) lines and $($shortText.Length) characters (limit $maxShortLines and $maxShortChars), so the manifest has no short 'notes' and the Windows update box will list no changes."
             $shortText = ""
+          }
+
+          if (-not $isPreview) {
+            $curKey = [version](($tag -replace '^[vV]', '') -replace '-.*$', '')
+            $prevTag = @(git -C $ws tag | Where-Object { $_ -match '^v?\d+\.\d+\.\d+$' } |
+                         Where-Object { [version]($_ -replace '^[vV]', '') -lt $curKey } |
+                         Sort-Object -Descending -Property { [version]($_ -replace '^[vV]', '') } |
+                         Select-Object -First 1)
+            foreach ($name in @('UPDATE_NOTES.txt', 'UPDATE_NOTES_SHORT.txt')) {
+              # A previous tag without the file is not a match.
+              if ($prevTag.Count -eq 0 -or -not (Test-Path "$ws\$name") -or -not (git -C $ws ls-tree --name-only $prevTag[0] -- $name)) { continue }
+              $trim = { param($lines) @($lines | ForEach-Object { $_.Trim([char]0xFEFF, ' ', "`t", "`r") } | Where-Object { $_ }) -join "`n" }
+              if ((& $trim (Get-Content "$ws\$name" -Encoding UTF8)) -ceq (& $trim (git -C $ws show "$($prevTag[0]):$name"))) {
+                throw "$name is the same as at $($prevTag[0]); write the text for $tag before releasing."
+              }
+            }
           }
 
           # The same lines are the Nexus changelog entry for this version.

@@ -23,15 +23,15 @@
   left out, tags are ordered by version number (not by date), tags newer than
   or equal to -Version are left out, and a tag with no notes file or an empty
   one is skipped and listed in the result's Skipped (and in one ::notice::
-  line), never silently. Lines that match -ExcludePattern are dropped and
-  counted in Excluded.
+  line), never silently.
 
-  The checkout must have the tags (actions/checkout with fetch-tags: true).
+  The checkout must have the tags (actions/checkout with fetch-depth: 0). The
+  script throws when the repository has no tags at all and -Tags was not given.
 
 .OUTPUT
   An object with: Text (the release_notes string, "" when nothing at all),
   Included (tags in the text, newest first), Skipped (objects with Tag and
-  Reason), Excluded (dropped line count), Truncated (older tags dropped for
+  Reason), Truncated (older tags dropped for
   the bounds).
 #>
 param(
@@ -41,8 +41,7 @@ param(
   [string[]]$Tags,
   [string]$TagPattern = '^v?\d+\.\d+\.\d+$',
   [int]$MaxVersions = 10,
-  [int]$MaxBytes = 65536,
-  [string]$ExcludePattern = ''
+  [int]$MaxBytes = 65536
 )
 
 $ErrorActionPreference = 'Stop'
@@ -54,12 +53,11 @@ function ConvertTo-VersionKey([string]$tag) {
   return [int64]$m.Groups[1].Value * 1000000000000 + [int64]$m.Groups[2].Value * 1000000 + [int64]$m.Groups[3].Value
 }
 
-function Get-CleanLines([string[]]$raw, [string]$exclude, [ref]$excluded) {
+function Get-CleanLines([string[]]$raw) {
   $out = @()
   foreach ($l in $raw) {
     $t = $l.Trim([char]0xFEFF, ' ', "`t", "`r")
     if (-not $t) { continue }
-    if ($exclude -and $t -match $exclude) { $excluded.Value++; continue }
     $out += $t
   }
   return ,$out
@@ -68,7 +66,6 @@ function Get-CleanLines([string[]]$raw, [string]$exclude, [ref]$excluded) {
 $curKey = ConvertTo-VersionKey $Version
 if ($null -eq $curKey) { throw "Version '$Version' is not a version number" }
 
-$excluded = 0
 $skipped  = @()
 $sections = @()   # each: @{ Tag; Lines }
 
@@ -76,7 +73,7 @@ $sections = @()   # each: @{ Tag; Lines }
 $curPath = Join-Path $Repo $NotesFile
 $curLines = @()
 if (Test-Path $curPath) {
-  $curLines = Get-CleanLines (Get-Content $curPath -Encoding UTF8) $ExcludePattern ([ref]$excluded)
+  $curLines = Get-CleanLines (Get-Content $curPath -Encoding UTF8)
 }
 if ($curLines.Count -gt 0) {
   $sections += @{ Tag = $Version; Lines = $curLines }
@@ -85,7 +82,10 @@ if ($curLines.Count -gt 0) {
 }
 
 # Earlier release tags, newest version first.
-if (-not $Tags) { $Tags = @(git -C $Repo tag) }
+if (-not $Tags) {
+  $Tags = @(git -C $Repo tag)
+  if ($Tags.Count -eq 0) { throw "The repository at '$Repo' has no tags; fetch them (actions/checkout with fetch-depth: 0) or pass -Tags." }
+}
 $release = @($Tags | Where-Object { $_ -match $TagPattern -and $null -ne (ConvertTo-VersionKey $_) } |
              Where-Object { (ConvertTo-VersionKey $_) -lt $curKey } |
              Sort-Object -Descending { ConvertTo-VersionKey $_ })
@@ -95,7 +95,7 @@ foreach ($tag in $release) {
     $skipped += [pscustomobject]@{ Tag = $tag; Reason = "no $NotesFile at this tag" }
     continue
   }
-  $lines = Get-CleanLines (git -C $Repo show "${tag}:${NotesFile}") $ExcludePattern ([ref]$excluded)
+  $lines = Get-CleanLines (git -C $Repo show "${tag}:${NotesFile}")
   if ($lines.Count -eq 0) {
     $skipped += [pscustomobject]@{ Tag = $tag; Reason = "$NotesFile is empty at this tag" }
     continue
@@ -132,6 +132,5 @@ if ($skipped.Count -gt 0) {
   Text      = $text
   Included  = $kept
   Skipped   = $skipped
-  Excluded  = $excluded
   Truncated = $truncated
 }

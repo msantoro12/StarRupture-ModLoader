@@ -1,0 +1,31 @@
+name: Notes history proof
+
+on:
+  push:
+    branches: [proof/notes-history]
+
+jobs:
+  proof:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          repository: AlienXAXS/StarRupture-ModLoader
+          ref: fix/update-notes-window
+          submodules: true
+          fetch-depth: 0
+
+      - name: Build the history
+        shell: pwsh
+        run: |
+          $ws  = $env:GITHUB_WORKSPACE
+          $tag = "v1.23.1"
+          Write-Host "HEAD: $(git -C $ws rev-parse HEAD)"
+          Write-Host "Tags: $(@(git -C $ws tag).Count)"
+          $history = & "$ws\.github\scripts\build-versioned-notes.ps1" -Repo $ws -Version $tag
+          Write-Host "Included: $($history.Included -join ', ')"
+          Write-Host "Skipped: $($history.Skipped.Count)"
+          Write-Host "Truncated: $($history.Truncated)"
+          Write-Host "Bytes: $($history.Text.Length)"
+          if ($history.Included.Count -lt 2) { throw "fewer than two releases" }

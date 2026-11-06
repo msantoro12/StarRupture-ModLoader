@@ -48,6 +48,10 @@ namespace UI::UpdateNoticeWindow
             std::string line = text.substr(pos, end - pos);
             if (!line.empty() && line.back() == '\r')
                 line.pop_back();
+            // Release lines carry their own "- "; the window draws the bullet.
+            // A "## <version>" line is a group header and is kept whole.
+            if (line.compare(0, 3, "## ") != 0 && line.compare(0, 2, "- ") == 0)
+                line.erase(0, 2);
             if (!line.empty())
                 u.notes.push_back(std::move(line));
             pos = end + 1;
@@ -148,6 +152,12 @@ namespace UI::UpdateNoticeWindow
                 ImGui::Indent();
                 for (const std::string& line : u.notes)
                 {
+                    // "## v1.23.0": the version the lines below it belong to.
+                    if (line.compare(0, 3, "## ") == 0)
+                    {
+                        ImGui::TextDisabled("%s", line.c_str() + 3);
+                        continue;
+                    }
                     ImGui::Bullet();
                     ImGui::SameLine();
                     ImGui::TextWrapped("%s", line.c_str());

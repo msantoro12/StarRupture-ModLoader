@@ -145,6 +145,64 @@ static bool WriteLoaderNotesShown(const char* tag)
 	return false;
 }
 
+// The updater's log of the current boot and of the previous one
+// (ModLoader\Logs\AutoUpdate.log and the newest AutoUpdate-<time>.log beside
+// it). They say which version an update came from; see ResolvePreviousVersion.
+// The tail is enough: the lines wanted are written on every boot, and a log
+// is a few KB.
+static std::string ReadLogTail(const std::wstring& path)
+{
+	HANDLE h = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
+	                       OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+	if (h == INVALID_HANDLE_VALUE)
+		return {};
+
+	constexpr DWORD kMaxBytes = 256 * 1024;
+	LARGE_INTEGER size{};
+	std::string text;
+	if (GetFileSizeEx(h, &size))
+	{
+		LARGE_INTEGER from{};
+		from.QuadPart = size.QuadPart > kMaxBytes ? size.QuadPart - kMaxBytes : 0;
+		if (SetFilePointerEx(h, from, nullptr, FILE_BEGIN))
+		{
+			text.resize(kMaxBytes);
+			DWORD got = 0;
+			if (!ReadFile(h, text.data(), kMaxBytes, &got, nullptr))
+				got = 0;
+			text.resize(got);
+		}
+	}
+	CloseHandle(h);
+	return text;
+}
+
+static void ReadUpdaterLogs(std::string& currentLog, std::string& previousLog)
+{
+	wchar_t statePath[MAX_PATH]{};
+	GetUpdateStateIniPath(statePath, MAX_PATH);
+	std::wstring logsDir = statePath;
+	logsDir.resize(logsDir.find_last_of(L'\\'));
+	logsDir += L"\\Logs";
+
+	currentLog = ReadLogTail(logsDir + L"\\AutoUpdate.log");
+
+	// The archives are named by time, so the last name is the newest.
+	std::wstring newest;
+	WIN32_FIND_DATAW fd{};
+	HANDLE find = FindFirstFileW((logsDir + L"\\AutoUpdate-*.log").c_str(), &fd);
+	if (find != INVALID_HANDLE_VALUE)
+	{
+		do
+		{
+			if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) && newest < fd.cFileName)
+				newest = fd.cFileName;
+		} while (FindNextFileW(find, &fd));
+		FindClose(find);
+	}
+	previousLog = newest.empty() ? std::string() : ReadLogTail(logsDir + L"\\" + newest);
+}
+
 // ===========================================================================
 // Section D — Minimal JSON helpers
 // No external library — only handles the flat manifest schema.
@@ -629,6 +687,7 @@ static void ProcessPluginSidecar(const PluginSidecar& sc,
     std::string downloadUrl    = JsonExtractString(json, "download_url");
     std::string pluginName     = JsonExtractString(json, "plugin_name");
     std::string notes          = JsonExtractDecodedString(json, "notes");
+    std::string releaseNotes   = JsonExtractDecodedString(json, "release_notes");
     int ifaceMin = JsonExtractInt(json, "interface_version_min", -1);
     int ifaceMax = JsonExtractInt(json, "interface_version_max", -1);
 
@@ -721,7 +780,9 @@ static void ProcessPluginSidecar(const PluginSidecar& sc,
         UI::UpdateNoticeWindow::AddUpdatedPlugin(displayName,
                                                  decision.installed.c_str(),
                                                  remoteVersion.c_str(),
-                                                 notes.c_str());
+                                                 AutoUpdateVersion::NotesForUpdate(
+                                                     releaseNotes.c_str(), notes.c_str(),
+                                                     decision.installed.c_str(), remoteVersion.c_str()).c_str());
 #endif
     }
     else
@@ -780,10 +841,18 @@ static void ListLoaderNotesOnce(const char* running, const std::string& remoteTa
 	char recorded[256]{};
 	ReadLoaderNotesShown(recorded, sizeof(recorded));
 
+	// The updater that installed this loader was the previous version's, and
+	// wrote nothing for it to find but its log; see ResolvePreviousVersion.
+	std::string currentLog, previousLog;
+	if (!AutoUpdateVersion::ParseVersion(recorded).valid)
+		ReadUpdaterLogs(currentLog, previousLog);
+	const std::string previous = AutoUpdateVersion::ResolvePreviousVersion(
+		recorded, currentLog.c_str(), previousLog.c_str(), running);
+
 	const std::string releaseNotes = JsonExtractDecodedString(manifest, "release_notes");
 	const std::string notes        = JsonExtractDecodedString(manifest, "notes");
 	const AutoUpdateVersion::LoaderNotesDecision d = AutoUpdateVersion::DecideLoaderNotes(
-		running, remoteTag.c_str(), recorded, releaseNotes.c_str(), notes.c_str());
+		running, remoteTag.c_str(), previous.c_str(), releaseNotes.c_str(), notes.c_str());
 	if (!d.show)
 		return;
 
@@ -792,8 +861,9 @@ static void ListLoaderNotesOnce(const char* running, const std::string& remoteTa
 	if (!WriteLoaderNotesShown(remoteTag.c_str()))
 		return;
 
-	LogToFile::Info("[AutoUpdate] Listing the release notes of %s in the Plugins Updated window", remoteTag.c_str());
-	UI::UpdateNoticeWindow::AddUpdatedPlugin("Mod Loader", "", remoteTag.c_str(), d.text.c_str());
+	LogToFile::Info("[AutoUpdate] Listing the release notes of %s (previous version %s) in the Plugins Updated window",
+	                remoteTag.c_str(), previous.empty() ? "unknown" : previous.c_str());
+	UI::UpdateNoticeWindow::AddUpdatedPlugin("Mod Loader", previous.c_str(), remoteTag.c_str(), d.text.c_str());
 }
 #endif
 

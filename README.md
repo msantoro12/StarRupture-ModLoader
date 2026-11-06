@@ -272,15 +272,19 @@ from 1.22.1 sees 1.23.1 and 1.23.0, a player from 1.23.0 sees 1.23.1 only. The m
 ```
 
 The loader's notes come from the manifest it already fetches for the update check: when the
-manifest's version is the version running and its notes have not been listed yet, the loader lists
-the sections newer than the version the player had and records the running version in
-`update_state.ini` (`[AutoUpdate] LoaderNotesShown`). With no connection, or a manifest for another
-version, nothing is listed or recorded and the next launch tries again. The previous version is
-`LoaderNotesShown` when the loader recorded it; the first run after an update has no record,
-because the updater that installed it is the previous version's, so it reads the updater's log
-(`ModLoader\Logs\AutoUpdate.log` for this launch, the newest `AutoUpdate-<time>.log` for a manual
-update). When no source names an older version (a fresh install, no logs) only the running
-version's section is listed. A plugin's manifest can carry the same `release_notes`; the window
+manifest's version is the version running and its notes have not been shown yet, the loader lists
+the sections newer than the version the player had. It records that in `update_state.ini`
+(`[AutoUpdate]`) in two steps: when it lists the notes it writes `LoaderNotesPrevious`, the version
+the player had, and when the window actually opens (at the main menu) it writes `LoaderNotesShown`
+with the running version and removes `LoaderNotesPrevious`. A launch that quits or crashes before
+the main menu therefore leaves the notes, and the history, for the next launch. With no connection,
+or a manifest for another version, nothing is listed or written and the next launch tries again.
+The previous version is, in order: `LoaderNotesPrevious` while the notes wait to be shown (a newer
+release arriving meanwhile lists the unshown one too), `LoaderNotesShown` once they were shown, and
+on the first run after an update, which has neither, the updater's log (the updater that installed
+it is the previous version's): `ModLoader\Logs\AutoUpdate.log` for this launch, the newest
+`AutoUpdate-<time>.log` for a manual update. When no source names an older version (a fresh
+install, no logs) only the running version's section is listed. A plugin's manifest can carry the same `release_notes`; the window
 lists the sections newer than the version the plugin had, and uses `notes` when the field is
 absent. Note lines carry their own `- `; the window draws the bullet.
 
@@ -292,14 +296,17 @@ The release text lives in these files, and the release workflow writes it into t
   release's `UPDATE_NOTES.txt` on top, then the `UPDATE_NOTES.txt` of each earlier release tag,
   newest version first, with nothing to maintain by hand. Tags with no such file (older releases)
   and release candidates are skipped, tags are ordered by version number, and the history stops at
-  10 releases or 64 KB. Lines that mention the test branch are left out. The script takes the
-  repository, the notes file name and the bounds as parameters, so another repository can use it.
+  10 releases or 64 KB. The script takes the repository, the notes file name and the bounds as
+  parameters, so another repository can use it. The workflows check out the full history
+  (`fetch-depth: 0`) so the tags are there, and stop when fewer than two releases are found.
+  A release (not a preview) also stops before anything is published when `UPDATE_NOTES_SHORT.txt` is
+  missing or too long, or when it or `UPDATE_NOTES.txt` is word for word the previous release
+  tag's copy, so text nobody rewrote cannot go out again.
 - `UPDATE_NOTES_SHORT.txt`: the Windows "Update Available" box, shown before a loader update is
   installed, prints the manifest's `notes` field in full, so `notes` is this short text (at most
-  6 lines and 600 characters, one change per line). If it is missing or too long the workflow warns
-  and leaves `notes` out; it never fills it from the full notes. `notes` comes before
-  `release_notes` in the manifest, which older loaders rely on. A manifest with no `release_notes`
-  (older releases) falls back to `notes`.
+  6 lines and 600 characters, one change per line). A release stops if it is missing or too long
+  (a preview only warns and leaves `notes` out); it is never filled from the full notes. A manifest
+  with no `release_notes` (older releases) falls back to `notes`.
 
 <img src="images/popup-plugins-updated.png" width="325" alt="Plugins Updated pop-up listing old and new versions with each plugin's notes">
 

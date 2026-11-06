@@ -259,21 +259,41 @@ Plugins whose notes are word for word the same share one line (the names joined,
 colour) with the notes shown once, and that line leaves out the versions.
 <sup>[✦](#msantoro12)</sup>
 
+The window lists every version newer than the one the player had, grouped by version: a player
+from 1.22.1 sees 1.23.1 and 1.23.0, a player from 1.23.0 sees 1.23.1 only. The manifest's
+`release_notes` field holds one section per release, newest first, each under a `## <tag>` line:
+
+```
+## v1.23.1
+- first change
+
+## v1.23.0
+- another change
+```
+
 The loader's notes come from the manifest it already fetches for the update check: when the
 manifest's version is the version running and its notes have not been listed yet, the loader lists
-them and records the version in `update_state.ini` (`[AutoUpdate] LoaderNotesShown`). With no
-connection, or a manifest for another version, nothing is listed or recorded and the next launch
-tries again. The window shows the version as "installed" because the loader does not know which
-version it came from.
+the sections newer than the version the player had and records the running version in
+`update_state.ini` (`[AutoUpdate] LoaderNotesShown`). With no connection, or a manifest for another
+version, nothing is listed or recorded and the next launch tries again. The previous version is
+`LoaderNotesShown` when the loader recorded it; the first run after an update has no record,
+because the updater that installed it is the previous version's, so it reads the updater's log
+(`ModLoader\Logs\AutoUpdate.log` for this launch, the newest `AutoUpdate-<time>.log` for a manual
+update). When no source names an older version (a fresh install, no logs) only the running
+version's section is listed. A plugin's manifest can carry the same `release_notes`; the window
+lists the sections newer than the version the plugin had, and uses `notes` when the field is
+absent. Note lines carry their own `- `; the window draws the bullet.
 
-Three files hold the release text, and the release workflow writes them into the manifest:
+The release text lives in these files, and the release workflow writes it into the manifest:
 
 - `UPDATE_NOTES.txt`: this release's lines only, one change per line. The GitHub release body and
   the Nexus changelog entry use just these.
-- `UPDATE_NOTES_CARRIED.txt`: the lines of earlier releases, newest first. A player can skip a
-  release, so the manifest's `release_notes` field is `UPDATE_NOTES.txt` followed by this file, and
-  the loader lists all of it. Before the next release, move the lines of the release just shipped
-  from `UPDATE_NOTES.txt` to the top of this file and drop the oldest releases no one is still on.
+- `release_notes` is built from the tags by `.github/scripts/build-versioned-notes.ps1`: this
+  release's `UPDATE_NOTES.txt` on top, then the `UPDATE_NOTES.txt` of each earlier release tag,
+  newest version first, with nothing to maintain by hand. Tags with no such file (older releases)
+  and release candidates are skipped, tags are ordered by version number, and the history stops at
+  10 releases or 64 KB. Lines that mention the test branch are left out. The script takes the
+  repository, the notes file name and the bounds as parameters, so another repository can use it.
 - `UPDATE_NOTES_SHORT.txt`: the Windows "Update Available" box, shown before a loader update is
   installed, prints the manifest's `notes` field in full, so `notes` is this short text (at most
   6 lines and 600 characters, one change per line). If it is missing or too long the workflow warns

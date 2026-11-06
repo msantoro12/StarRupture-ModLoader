@@ -414,6 +414,56 @@ int main()
 		Check(!unknown.download && unknown.installed.empty(), "no version known: nothing is downloaded");
 	}
 
+	// ---- The loader's own release notes ---------------------------------------
+	{
+		using namespace AutoUpdateVersion;
+
+		const char* full  = "- full one\n- full two";
+		const char* brief = "- short";
+
+		// First run of 1.23.1, coming from 1.22.1 or 1.23.0: no record, or a
+		// record of something else the older loaders left in the state file.
+		LoaderNotesDecision d = DecideLoaderNotes("1.23.1", "v1.23.1", "", full, brief);
+		Check(d.show && d.text == full, "notes: the first run shows the release notes");
+		Check(DecideLoaderNotes("1.23.1", "v1.23.1", nullptr, full, brief).show, "notes: a missing record counts as none");
+		Check(DecideLoaderNotes("1.23.1", "v1.23.1", "v1.23.0", full, brief).show, "notes: a record of an older release shows");
+		Check(DecideLoaderNotes("1.23.1", "v1.23.1", "1.22.1-gss.4", full, brief).show, "notes: an older record with a suffix shows");
+
+		// Already shown: the same release, or a later one (a downgrade by hand).
+		Check(!DecideLoaderNotes("1.23.1", "v1.23.1", "v1.23.1", full, brief).show, "notes: shown once, not again");
+		Check(!DecideLoaderNotes("1.23.1", "v1.23.1", "1.23.1", full, brief).show, "notes: the record needs no leading v");
+		Check(!DecideLoaderNotes("1.23.1", "v1.23.1", "v1.24.0", full, brief).show, "notes: a newer record is not shown over");
+
+		// A manifest for another release is not this loader's notes.
+		Check(!DecideLoaderNotes("1.23.1", "v1.23.2", "", full, brief).show, "notes: a newer manifest shows nothing");
+		Check(!DecideLoaderNotes("1.23.1", "v1.23.0", "", full, brief).show, "notes: an older manifest shows nothing");
+
+		// A failed fetch gives no tag, and a dev build has no running version.
+		Check(!DecideLoaderNotes("1.23.1", "", "", full, brief).show, "notes: a failed fetch shows nothing");
+		Check(!DecideLoaderNotes("1.23.1", nullptr, "", full, brief).show, "notes: a null manifest tag shows nothing");
+		Check(!DecideLoaderNotes("", "v1.23.1", "", full, brief).show, "notes: a dev build shows nothing");
+
+		// release_notes missing: notes stand in; neither: nothing to show.
+		d = DecideLoaderNotes("1.23.1", "v1.23.1", "", "", brief);
+		Check(d.show && d.text == brief, "notes: no release_notes falls back to notes");
+		Check(DecideLoaderNotes("1.23.1", "v1.23.1", "", nullptr, brief).show, "notes: a null release_notes falls back to notes");
+		Check(DecideLoaderNotes("1.23.1", "v1.23.1", "", " \n\r\t", brief).text == brief, "notes: blank release_notes falls back to notes");
+		Check(!DecideLoaderNotes("1.23.1", "v1.23.1", "", "", "").show, "notes: no text at all shows nothing");
+		Check(!DecideLoaderNotes("1.23.1", "v1.23.1", "", nullptr, nullptr).show, "notes: no text at all (null) shows nothing");
+
+		// An rc build is the release it becomes, by number.
+		Check(DecideLoaderNotes("1.23.1-rc1", "v1.23.1", "", full, brief).show, "notes: an rc label matches the release");
+		Check(DecideLoaderNotes("1.23.1-gss.5", "v1.23.1", "", full, brief).show, "notes: a gss build matches the release");
+		Check(!DecideLoaderNotes("1.23.1-rc1", "v1.23.1", "v1.23.1", full, brief).show, "notes: an rc that recorded the release is not shown again");
+		Check(!DecideLoaderNotes("1.23.0-rc1", "v1.23.1", "", full, brief).show, "notes: an rc of the older release is not offered the newer notes");
+
+		// Odd state values read as no record.
+		Check(DecideLoaderNotes("1.23.1", "v1.23.1", "garbage", full, brief).show, "notes: an unparseable record shows");
+		Check(DecideLoaderNotes("1.23.1", "v1.23.1", "1", full, brief).show, "notes: a one-part record shows");
+		Check(DecideLoaderNotes("1.23.1", "v1.23.1", "  ", full, brief).show, "notes: a blank record shows");
+		Check(DecideLoaderNotes("1.23.1", "v1.23.1", "-5.-3", full, brief).show, "notes: a signed record shows");
+	}
+
 	// ---- Reading the version out of a DLL image ----------------------------
 	{
 		wchar_t self[MAX_PATH]{};

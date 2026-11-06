@@ -107,4 +107,43 @@ namespace AutoUpdateVersion
         d.download  = !d.installed.empty() && ReleaseIsNewer(remote, d.installed.c_str());
         return d;
     }
+
+    // What the loader does with the release notes of the manifest it fetched.
+    //   running       the version this loader is ("" on a dev build)
+    //   manifestTag   the manifest's build_tag ("" if the fetch failed)
+    //   recorded      the version update_state.ini says notes were last shown for
+    //   releaseNotes  the manifest's "release_notes" ("" if absent)
+    //   notes         the manifest's "notes", used when there are no release_notes
+    // The notes are shown once, for the release that is running: the manifest
+    // names that version by number (a suffix such as -rc1 is ignored) and the
+    // recorded version is missing, does not parse or is older. A newer manifest
+    // is a release this loader is not yet, so nothing is shown or recorded.
+    struct LoaderNotesDecision
+    {
+        bool        show = false;
+        std::string text;
+    };
+
+    inline LoaderNotesDecision DecideLoaderNotes(const char* running, const char* manifestTag, const char* recorded,
+                                                 const char* releaseNotes, const char* notes)
+    {
+        LoaderNotesDecision d;
+        const ParsedVersion now = ParseVersion(running);
+        const ParsedVersion rel = ParseVersion(manifestTag);
+        if (!now.valid || !rel.valid || CompareVersions(rel, now) != 0)
+            return d;
+
+        const ParsedVersion shown = ParseVersion(recorded);
+        if (shown.valid && CompareVersions(shown, now) >= 0)
+            return d;
+
+        const auto hasText = [](const char* t) { return t && t[0] && t[std::strspn(t, " \t\r\n")]; };
+        const char* text = hasText(releaseNotes) ? releaseNotes : (hasText(notes) ? notes : nullptr);
+        if (!text)
+            return d;
+
+        d.show = true;
+        d.text = text;
+        return d;
+    }
 }

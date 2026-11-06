@@ -19,8 +19,6 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <winhttp.h>
-#include <fstream>
-#include <iterator>
 #include <string>
 #include <vector>
 
@@ -116,6 +114,35 @@ static void WriteStoredBuildTag(const char* tag)
 		LogToFile::Warn("[AutoUpdate] Failed to write build tag to update_state.ini (%lu: %s)", err,
 		                FormatWinHttpError(err).c_str());
 	}
+}
+
+// The release the loader last listed its notes for (the manifest's build_tag).
+static void ReadLoaderNotesShown(char* outTag, int maxLen)
+{
+	wchar_t iniPath[MAX_PATH]{};
+	GetUpdateStateIniPath(iniPath, MAX_PATH);
+
+	wchar_t wTag[256]{};
+	GetPrivateProfileStringW(L"AutoUpdate", L"LoaderNotesShown", L"", wTag, 256, iniPath);
+
+	WideCharToMultiByte(CP_UTF8, 0, wTag, -1, outTag, maxLen, nullptr, nullptr);
+}
+
+static bool WriteLoaderNotesShown(const char* tag)
+{
+	wchar_t iniPath[MAX_PATH]{};
+	GetUpdateStateIniPath(iniPath, MAX_PATH);
+
+	wchar_t wTag[256]{};
+	MultiByteToWideChar(CP_UTF8, 0, tag, -1, wTag, 256);
+
+	if (WritePrivateProfileStringW(L"AutoUpdate", L"LoaderNotesShown", wTag, iniPath))
+		return true;
+
+	DWORD err = GetLastError();
+	LogToFile::Warn("[AutoUpdate] Failed to write LoaderNotesShown to update_state.ini (%lu: %s)", err,
+	                FormatWinHttpError(err).c_str());
+	return false;
 }
 
 // ===========================================================================
@@ -703,40 +730,6 @@ static void ProcessPluginSidecar(const PluginSidecar& sc,
     }
 }
 
-// The updater exe leaves the release notes of a loader update it just installed
-// in ModLoader\pending_update_notes.txt (old version, new version, then the
-// notes, one per line). List the loader in the "Plugins Updated" window like a
-// plugin and delete the file so it is shown once.
-static void AddPendingLoaderNotes()
-{
-#ifdef MODLOADER_CLIENT_BUILD
-    wchar_t path[MAX_PATH]{};
-    GetModuleFileNameW(nullptr, path, MAX_PATH);
-    wchar_t* slash = wcsrchr(path, L'\\');
-    if (!slash)
-        return;
-    wcscpy_s(slash + 1, MAX_PATH - static_cast<DWORD>(slash + 1 - path), L"ModLoader\\pending_update_notes.txt");
-
-    std::string oldVersion, newVersion, notes;
-    {
-        std::ifstream in(path, std::ios::binary);
-        if (!in)
-            return;
-        std::getline(in, oldVersion);
-        std::getline(in, newVersion);
-        notes.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
-    }
-    DeleteFileW(path);
-
-    if (!oldVersion.empty() && oldVersion.back() == '\r') oldVersion.pop_back();
-    if (!newVersion.empty() && newVersion.back() == '\r') newVersion.pop_back();
-    if (newVersion.empty())
-        return;
-
-    UI::UpdateNoticeWindow::AddUpdatedPlugin("Mod Loader", oldVersion.c_str(), newVersion.c_str(), notes.c_str());
-#endif
-}
-
 // Scan the Plugins directory for sidecar JSON files and process each one.
 static void RunPerPluginUpdates(const wchar_t* pluginsDir)
 {
@@ -774,6 +767,35 @@ static void RunPerPluginUpdates(const wchar_t* pluginsDir)
 // ===========================================================================
 // Section F — Orchestrator
 // ===========================================================================
+
+#ifdef MODLOADER_CLIENT_BUILD
+// List the loader in the "Plugins Updated" window, once, with the notes of the
+// release it now is. The manifest the update check already fetched names the
+// latest release; when that is the running version and its notes have not been
+// listed yet, they go in the window and the version is recorded in
+// update_state.ini. Nothing is recorded when the fetch failed or the manifest
+// names another version, so a later launch tries again.
+static void ListLoaderNotesOnce(const char* running, const std::string& remoteTag, const std::string& manifest)
+{
+	char recorded[256]{};
+	ReadLoaderNotesShown(recorded, sizeof(recorded));
+
+	const std::string releaseNotes = JsonExtractDecodedString(manifest, "release_notes");
+	const std::string notes        = JsonExtractDecodedString(manifest, "notes");
+	const AutoUpdateVersion::LoaderNotesDecision d = AutoUpdateVersion::DecideLoaderNotes(
+		running, remoteTag.c_str(), recorded, releaseNotes.c_str(), notes.c_str());
+	if (!d.show)
+		return;
+
+	// Record first: if the record cannot be written the notes would come back
+	// on every launch, so they are not listed at all.
+	if (!WriteLoaderNotesShown(remoteTag.c_str()))
+		return;
+
+	LogToFile::Info("[AutoUpdate] Listing the release notes of %s in the Plugins Updated window", remoteTag.c_str());
+	UI::UpdateNoticeWindow::AddUpdatedPlugin("Mod Loader", "", remoteTag.c_str(), d.text.c_str());
+}
+#endif
 
 // Central manifest update pass — checks whether a new modloader release exists
 // and notifies the user if so.  Plugin updates are handled independently via
@@ -822,6 +844,10 @@ static void RunCentralManifestUpdate(const AutoUpdateConfig& cfg)
 	const char* compiledTag = MODLOADER_BUILD_TAG;
 #else
 	const char* compiledTag = "";
+#endif
+
+#ifdef MODLOADER_CLIENT_BUILD
+	ListLoaderNotesOnce(compiledTag, remoteBuildTag, manifest);
 #endif
 
 	// Read stored tag (written by a previous run) and choose the effective local version.
@@ -970,7 +996,6 @@ void ModLoaderLogger::RunAutoUpdate()
 	Splash::SetSubStatus(L"Checking for plugin updates...");
 	Splash::SetSubProgress(0.0f);
 #endif
-	AddPendingLoaderNotes();
 	RunPerPluginUpdates(pluginsDir);
 
 	// The signed version-map feed, for the next launch. The server never asks.

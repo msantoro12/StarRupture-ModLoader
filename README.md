@@ -251,10 +251,19 @@ there only. See [Console commands](#console-commands).
 
 ### Pop-up windows
 
-**Plugins Updated** appears once at the main menu after an automatic plugin update. It lists what
-changed in each plugin when the plugin's release ships notes. Plugins whose notes are word for
+**Plugins Updated** appears once at the main menu after an automatic update. It lists what
+changed in each plugin when the plugin's release ships notes, and the mod loader's own full release
+notes after a loader update. The window is wide enough for the screen, so the notes stay readable
+at 4K. Plugins whose notes are word for
 word the same share one line (the names joined, in the accent colour) with the notes shown once, and
 that line leaves out the versions. <sup>[✦](#msantoro12)</sup>
+
+The Windows "Update Available" box, shown before a loader update is installed, prints the manifest's
+`notes` field, so `notes` is a short text taken from `UPDATE_NOTES_SHORT.txt` (at most 6 lines and
+500 characters, one change per line). The full `UPDATE_NOTES.txt` goes in the manifest's
+`release_notes` field, which the new loader lists in this window. If `UPDATE_NOTES_SHORT.txt` is
+missing or too long the release workflow warns and leaves `notes` out; it never fills it from the
+full notes. A manifest with no `release_notes` (older releases) falls back to `notes`.
 
 <img src="images/popup-plugins-updated.png" width="325" alt="Plugins Updated pop-up listing old and new versions with each plugin's notes">
 

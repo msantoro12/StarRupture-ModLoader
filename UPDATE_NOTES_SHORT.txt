@@ -1,0 +1,1 @@
+The Plugins Updated window is wider and lists the loader's own notes after a loader update

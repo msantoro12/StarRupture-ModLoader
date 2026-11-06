@@ -859,7 +859,13 @@ int RunUpdater(const wchar_t* gameDir)
 
     // Optional "notes" from the manifest: one change per line.
     std::wstring prompt = versions;
+    // "notes" is the short text for this box. "release_notes", when the
+    // manifest has it, is the full text the new loader lists in its "Plugins
+    // Updated" window after the update; an older manifest has only "notes".
     std::string notes = JsonExtractDecodedString(manifest, "notes");
+    std::string releaseNotes = JsonExtractDecodedString(manifest, "release_notes");
+    if (releaseNotes.empty())
+        releaseNotes = notes;
     if (!notes.empty())
         prompt += L"What's new:\n" + Widen(notes) + L"\n\n";
     prompt += L"Install it now?  The game will continue loading with the new "
@@ -896,6 +902,21 @@ int RunUpdater(const wchar_t* gameDir)
         // Record the new tag and clear the declined marker.
         IniWriteString(stateIni, L"AutoUpdate", L"BuildTag", Widen(remoteTag).c_str());
         IniWriteString(stateIni, L"AutoUpdate", L"ProxyDeclinedTag", nullptr);
+
+        // Hand the release notes to the new loader: it reads this file at
+        // startup, lists the update in its "Plugins Updated" window and
+        // deletes it. Line 1 is the old version, line 2 the new one, the rest
+        // the notes.
+        if (!releaseNotes.empty())
+        {
+            const std::string pending = localDisplay + "\n" + remoteTag + "\n" + releaseNotes + "\n";
+            FILE* f = nullptr;
+            if (_wfopen_s(&f, GamePath(L"ModLoader\\pending_update_notes.txt").c_str(), L"wb") == 0 && f)
+            {
+                fwrite(pending.data(), 1, pending.size(), f);
+                fclose(f);
+            }
+        }
 
         MessageBoxW(nullptr,
                     L"The mod loader has been updated successfully.\n\n"

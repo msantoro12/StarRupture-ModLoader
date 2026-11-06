@@ -21,3 +21,4 @@
 - The log no longer warns about three game functions (OnExperienceLoadComplete, PostLogin, Logout) that the loader hooks another way
 - For plugin authors (interface v75): PluginPanelDesc::titleBarFn draws buttons in a panel's title bar, IsPanelCollapsed and SetPanelCollapsed collapse a panel to it, and PluginWindowFlags_MenuMouseWhereUncovered takes the mouse over a game menu only where no menu widget is under the cursor
 - The Plugins Updated window widens with the screen, so its notes no longer wrap into a thin column at 4K
+- The Plugins Updated window lists the mod loader's own full release notes after a loader update; the Windows update box shows a short text from UPDATE_NOTES_SHORT.txt

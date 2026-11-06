@@ -19,6 +19,8 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <winhttp.h>
+#include <fstream>
+#include <iterator>
 #include <string>
 #include <vector>
 
@@ -701,6 +703,40 @@ static void ProcessPluginSidecar(const PluginSidecar& sc,
     }
 }
 
+// The updater exe leaves the release notes of a loader update it just installed
+// in ModLoader\pending_update_notes.txt (old version, new version, then the
+// notes, one per line). List the loader in the "Plugins Updated" window like a
+// plugin and delete the file so it is shown once.
+static void AddPendingLoaderNotes()
+{
+#ifdef MODLOADER_CLIENT_BUILD
+    wchar_t path[MAX_PATH]{};
+    GetModuleFileNameW(nullptr, path, MAX_PATH);
+    wchar_t* slash = wcsrchr(path, L'\\');
+    if (!slash)
+        return;
+    wcscpy_s(slash + 1, MAX_PATH - static_cast<DWORD>(slash + 1 - path), L"ModLoader\\pending_update_notes.txt");
+
+    std::string oldVersion, newVersion, notes;
+    {
+        std::ifstream in(path, std::ios::binary);
+        if (!in)
+            return;
+        std::getline(in, oldVersion);
+        std::getline(in, newVersion);
+        notes.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+    }
+    DeleteFileW(path);
+
+    if (!oldVersion.empty() && oldVersion.back() == '\r') oldVersion.pop_back();
+    if (!newVersion.empty() && newVersion.back() == '\r') newVersion.pop_back();
+    if (newVersion.empty())
+        return;
+
+    UI::UpdateNoticeWindow::AddUpdatedPlugin("Mod Loader", oldVersion.c_str(), newVersion.c_str(), notes.c_str());
+#endif
+}
+
 // Scan the Plugins directory for sidecar JSON files and process each one.
 static void RunPerPluginUpdates(const wchar_t* pluginsDir)
 {
@@ -934,6 +970,7 @@ void ModLoaderLogger::RunAutoUpdate()
 	Splash::SetSubStatus(L"Checking for plugin updates...");
 	Splash::SetSubProgress(0.0f);
 #endif
+	AddPendingLoaderNotes();
 	RunPerPluginUpdates(pluginsDir);
 
 	// The signed version-map feed, for the next launch. The server never asks.

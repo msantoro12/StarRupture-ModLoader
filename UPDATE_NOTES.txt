@@ -20,3 +20,4 @@
 - Build Windows Anywhere, Build Benches Anywhere and the MiniMap find their game functions on every game build the loader knows
 - The log no longer warns about three game functions (OnExperienceLoadComplete, PostLogin, Logout) that the loader hooks another way
 - For plugin authors (interface v75): PluginPanelDesc::titleBarFn draws buttons in a panel's title bar, IsPanelCollapsed and SetPanelCollapsed collapse a panel to it, and PluginWindowFlags_MenuMouseWhereUncovered takes the mouse over a game menu only where no menu widget is under the cursor
+- The Plugins Updated window widens with the screen, so its notes no longer wrap into a thin column at 4K

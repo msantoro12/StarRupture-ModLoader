@@ -5,6 +5,7 @@
 
 #include "imgui/imgui.h"
 #include "theme.h"
+#include <algorithm>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -70,14 +71,17 @@ namespace UI::UpdateNoticeWindow
             return;
 
         ImGuiIO& io = ImGui::GetIO();
-        // Fixed width, auto-fit height (0 = auto on that axis). Width must not
-        // be content-driven: the centered Close button below offsets itself from
-        // the window width, so AlwaysAutoResize would feed back into itself and
-        // grow the window every frame.
-        ImGui::SetNextWindowSize(ImVec2(640, 0), ImGuiCond_Always);
+        // Width follows the screen (35% of it, never under 640) so the notes
+        // stay readable at 4K, where a fixed 640 is a thin column. It is still
+        // fixed for the frame, not content-driven: the centered Close button
+        // below offsets itself from the window width, so AlwaysAutoResize would
+        // feed back into itself and grow the window every frame. Height is
+        // auto-fit (0 = auto on that axis).
+        const float width = std::max(640.0f, io.DisplaySize.x * 0.35f);
+        ImGui::SetNextWindowSize(ImVec2(width, 0), ImGuiCond_Always);
         // Notes can make the list taller than the screen; cap the auto-fit
         // height and let the window scroll past it.
-        ImGui::SetNextWindowSizeConstraints(ImVec2(640, 0), ImVec2(640, io.DisplaySize.y * 0.8f));
+        ImGui::SetNextWindowSizeConstraints(ImVec2(width, 0), ImVec2(width, io.DisplaySize.y * 0.8f));
         ImGui::SetNextWindowPos(
             ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f),
             ImGuiCond_Appearing,

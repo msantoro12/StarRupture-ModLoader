@@ -250,14 +250,25 @@ jobs:
           # ---------------------------------------------------------------------------
           # 1. Modloader manifests  (central version check — no plugin list)
           # ---------------------------------------------------------------------------
-          # Player-facing notes: one change per line in UPDATE_NOTES.txt (the full
-          # text). The loader lists them in its "Plugins Updated" window after
-          # the update, from the manifest's "release_notes" field.
+          # Player-facing notes: one change per line in UPDATE_NOTES.txt, this
+          # release's lines only (the release body and the changelog use just
+          # these). The loader lists the full text in its "Plugins Updated"
+          # window after the update, from the manifest's "release_notes" field.
           $notesFile = "$ws\UPDATE_NOTES.txt"
           $noteLines = @()
           if (Test-Path $notesFile) {
             $noteLines = @(Get-Content $notesFile | ForEach-Object { $_.Trim() } | Where-Object { $_ })
           }
+
+          # A player can jump over releases, so "release_notes" also carries the
+          # lines of the earlier releases kept in UPDATE_NOTES_CARRIED.txt, below
+          # this release's own.
+          $carriedFile = "$ws\UPDATE_NOTES_CARRIED.txt"
+          $carriedLines = @()
+          if (Test-Path $carriedFile) {
+            $carriedLines = @(Get-Content $carriedFile | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+          }
+          $releaseNoteLines = @($noteLines) + @($carriedLines)
 
           # The Windows "Update Available" box on older and current loaders prints
           # the manifest's "notes" field in full, so that field carries a short
@@ -266,7 +277,7 @@ jobs:
           # long, "notes" is left out (the box then shows no change list) and the
           # run says so.
           $maxShortLines = 6
-          $maxShortChars = 500
+          $maxShortChars = 600
           $shortFile  = "$ws\UPDATE_NOTES_SHORT.txt"
           $shortLines = @()
           if (Test-Path $shortFile) {
@@ -291,8 +302,8 @@ jobs:
             if ($shortText) {
               $manifest["notes"] = $shortText
             }
-            if ($noteLines.Count -gt 0) {
-              $manifest["release_notes"] = $noteLines -join "`n"
+            if ($releaseNoteLines.Count -gt 0) {
+              $manifest["release_notes"] = $releaseNoteLines -join "`n"
             }
             $out = "$ws\manifest-$variant.json"
             $manifest | ConvertTo-Json -Depth 1 | Out-File $out -Encoding utf8NoBOM

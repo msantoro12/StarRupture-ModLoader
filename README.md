@@ -252,18 +252,34 @@ there only. See [Console commands](#console-commands).
 ### Pop-up windows
 
 **Plugins Updated** appears once at the main menu after an automatic update. It lists what
-changed in each plugin when the plugin's release ships notes, and the mod loader's own full release
-notes after a loader update. The window is wide enough for the screen, so the notes stay readable
-at 4K. Plugins whose notes are word for
-word the same share one line (the names joined, in the accent colour) with the notes shown once, and
-that line leaves out the versions. <sup>[✦](#msantoro12)</sup>
+changed in each plugin when the plugin's release ships notes, and the mod loader's own release
+notes the first time a new loader version runs. The window is wide enough for the screen, so the
+notes stay readable at 4K, and its title and Close button stay in view when the list is long.
+Plugins whose notes are word for word the same share one line (the names joined, in the accent
+colour) with the notes shown once, and that line leaves out the versions.
+<sup>[✦](#msantoro12)</sup>
 
-The Windows "Update Available" box, shown before a loader update is installed, prints the manifest's
-`notes` field, so `notes` is a short text taken from `UPDATE_NOTES_SHORT.txt` (at most 6 lines and
-500 characters, one change per line). The full `UPDATE_NOTES.txt` goes in the manifest's
-`release_notes` field, which the new loader lists in this window. If `UPDATE_NOTES_SHORT.txt` is
-missing or too long the release workflow warns and leaves `notes` out; it never fills it from the
-full notes. A manifest with no `release_notes` (older releases) falls back to `notes`.
+The loader's notes come from the manifest it already fetches for the update check: when the
+manifest's version is the version running and its notes have not been listed yet, the loader lists
+them and records the version in `update_state.ini` (`[AutoUpdate] LoaderNotesShown`). With no
+connection, or a manifest for another version, nothing is listed or recorded and the next launch
+tries again. The window shows the version as "installed" because the loader does not know which
+version it came from.
+
+Three files hold the release text, and the release workflow writes them into the manifest:
+
+- `UPDATE_NOTES.txt`: this release's lines only, one change per line. The GitHub release body and
+  the Nexus changelog entry use just these.
+- `UPDATE_NOTES_CARRIED.txt`: the lines of earlier releases, newest first. A player can skip a
+  release, so the manifest's `release_notes` field is `UPDATE_NOTES.txt` followed by this file, and
+  the loader lists all of it. Before the next release, move the lines of the release just shipped
+  from `UPDATE_NOTES.txt` to the top of this file and drop the oldest releases no one is still on.
+- `UPDATE_NOTES_SHORT.txt`: the Windows "Update Available" box, shown before a loader update is
+  installed, prints the manifest's `notes` field in full, so `notes` is this short text (at most
+  6 lines and 600 characters, one change per line). If it is missing or too long the workflow warns
+  and leaves `notes` out; it never fills it from the full notes. `notes` comes before
+  `release_notes` in the manifest, which older loaders rely on. A manifest with no `release_notes`
+  (older releases) falls back to `notes`.
 
 <img src="images/popup-plugins-updated.png" width="325" alt="Plugins Updated pop-up listing old and new versions with each plugin's notes">
 

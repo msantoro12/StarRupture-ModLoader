@@ -317,6 +317,10 @@ against a server on 127.0.0.1 that the test starts. The test switch `allowPlainH
   as it was; a body that trickles in is cut off at the wall-clock deadline; `maxBytes` stops a longer
   body and passes one exactly at the limit; an HTTP-to-HTTP redirect is followed.
 - An unroutable host (192.0.2.1) fails inside the deadline plus one timeout.
+- `DecideLoaderNotes` (`auto_update/version_compare.h`): the loader lists its release notes on the first run of a
+  version only: no record, an older or unparseable record; never when already shown, for a newer or older
+  manifest, a failed fetch or a dev build; `notes` stands in for a missing `release_notes`; an rc label matches
+  its release by number.
 
 Not covered here: a request to a real release, and the HTTPS-to-HTTP redirect refusal (that needs a TLS
 server).

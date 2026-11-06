@@ -6,6 +6,7 @@
 #include "imgui/imgui.h"
 #include "theme.h"
 #include <algorithm>
+#include <functional>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -24,6 +25,7 @@ namespace UI::UpdateNoticeWindow
     // while Render/ShowIfPending run on the render / game threads.
     static std::mutex                 s_mutex;
     static std::vector<UpdatedPlugin> s_updates;
+    static std::function<void()>      s_onShown;
     static bool s_isOpen = false;
     static bool s_shown  = false;   // one-shot: only auto-open once per session
     static int  s_centerFrames = 0; // frames left to keep the window centered while it sizes itself
@@ -59,16 +61,29 @@ namespace UI::UpdateNoticeWindow
         s_updates.push_back(std::move(u));
     }
 
+    void SetOnShown(std::function<void()> fn)
+    {
+        std::lock_guard<std::mutex> lock(s_mutex);
+        s_onShown = std::move(fn);
+    }
+
     void ShowIfPending()
     {
         if (s_shown) return;
 
-        std::lock_guard<std::mutex> lock(s_mutex);
-        if (s_updates.empty()) return;
+        std::function<void()> onShown;
+        {
+            std::lock_guard<std::mutex> lock(s_mutex);
+            if (s_updates.empty()) return;
 
-        s_isOpen = true;
-        s_shown  = true;
-        s_centerFrames = 3;
+            s_isOpen = true;
+            s_shown  = true;
+            s_centerFrames = 3;
+            onShown = std::move(s_onShown);
+            s_onShown = nullptr;
+        }
+        if (onShown)
+            onShown();
     }
 
     void Render()

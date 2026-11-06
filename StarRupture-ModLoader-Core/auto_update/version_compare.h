@@ -123,8 +123,9 @@ namespace AutoUpdateVersion
     //
     // The window lists the sections newer than the version the player had.
 
-    // A line "## <version>" with a version that parses. label gets the version
-    // as written.
+    // A line "## <version>": the marker, one version token that parses, and
+    // nothing else ("## 2.0 is great" is a note). label gets the version as
+    // written.
     inline bool ParseNotesHeader(const std::string& line, std::string& label, ParsedVersion& ver)
     {
         const size_t b = line.find_first_not_of(" \t");
@@ -135,6 +136,8 @@ namespace AutoUpdateVersion
             return false;
         const size_t e = line.find_last_not_of(" \t");
         label = line.substr(s0, e - s0 + 1);
+        if (label.find_first_of(" 	") != std::string::npos)
+            return false;
         ver = ParseVersion(label.c_str());
         return ver.valid;
     }
@@ -294,17 +297,29 @@ namespace AutoUpdateVersion
     }
 
     // The version the player had before `running`, best source first:
-    //   1. recorded: what update_state.ini says notes were last listed for
+    //   1. pending: the previous version an earlier launch resolved and kept in
+    //      update_state.ini until the notes were shown, when older than
+    //      `running` (a launch that quit before the window opened loses nothing,
+    //      and a newer release arriving meanwhile lists the unshown ones too).
+    //      A record of `running` or newer comes first: its notes were shown, and
+    //      a pending value left behind by a crash after that is stale;
+    //   2. recorded: what update_state.ini says notes were last shown for
     //      (written by this loader from 1.23.1 on);
-    //   2. the current boot's updater log, when it installed `running`;
-    //   3. the previous boot's updater log (a manual update leaves no line in
+    //   3. the current boot's updater log, when it installed `running`;
+    //   4. the previous boot's updater log (a manual update leaves no line in
     //      the current one), when it names an older version.
     // "" when none of them does (a fresh install, or logs gone): the caller then
     // lists the running version's notes only.
-    inline std::string ResolvePreviousVersion(const char* recorded, const char* currentLog,
+    inline std::string ResolvePreviousVersion(const char* pending, const char* recorded, const char* currentLog,
                                               const char* previousLog, const char* running)
     {
-        if (ParseVersion(recorded).valid)
+        const ParsedVersion pv = ParseVersion(pending);
+        const ParsedVersion rv = ParseVersion(running);
+        const ParsedVersion rec = ParseVersion(recorded);
+        const bool shownAlready = rec.valid && rv.valid && CompareVersions(rec, rv) >= 0;
+        if (!shownAlready && pv.valid && rv.valid && CompareVersions(pv, rv) < 0)
+            return pending;
+        if (rec.valid)
             return recorded;
         std::string a = PreviousFromUpdateLine(currentLog, running);
         if (!a.empty())

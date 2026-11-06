@@ -322,7 +322,9 @@ against a server on 127.0.0.1 that the test starts. The test switch `allowPlainH
   version only when previous is unknown), with odd or missing headers, CRLF, empty sections and rc labels;
   `NotesForUpdate` is the window row for loader and plugin manifests (falls back to `notes` when the field is absent or
   selects nothing); `PreviousFromUpdateLine`, `PreviousFromInstalledLine` and `ResolvePreviousVersion` read the previous
-  loader version from the updater's log; `DecideLoaderNotes` gates it all.
+  loader version from the pending value, the shown record or the updater's log; `DecideLoaderNotes` gates it all.
+  A run of launches (quit before the main menu, two such quits, shown then relaunch, a newer release arriving while
+  one is unshown, a stale pending value) checks that the notes and their history survive until the window opens.
 
 Not covered here: a request to a real release, and the HTTPS-to-HTTP redirect refusal (that needs a TLS
 server).

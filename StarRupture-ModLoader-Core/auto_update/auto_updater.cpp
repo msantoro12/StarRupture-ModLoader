@@ -128,19 +128,35 @@ static void ReadLoaderNotesShown(char* outTag, int maxLen)
 	WideCharToMultiByte(CP_UTF8, 0, wTag, -1, outTag, maxLen, nullptr, nullptr);
 }
 
-static bool WriteLoaderNotesShown(const char* tag)
+// The version the player had before the notes still waiting to be shown, kept
+// from the launch that listed them until the window opens (see
+// ListLoaderNotesOnce). Empty value: listed, previous version unknown.
+static void ReadLoaderNotesPrevious(char* outTag, int maxLen)
 {
 	wchar_t iniPath[MAX_PATH]{};
 	GetUpdateStateIniPath(iniPath, MAX_PATH);
 
 	wchar_t wTag[256]{};
-	MultiByteToWideChar(CP_UTF8, 0, tag, -1, wTag, 256);
+	GetPrivateProfileStringW(L"AutoUpdate", L"LoaderNotesPrevious", L"", wTag, 256, iniPath);
 
-	if (WritePrivateProfileStringW(L"AutoUpdate", L"LoaderNotesShown", wTag, iniPath))
+	WideCharToMultiByte(CP_UTF8, 0, wTag, -1, outTag, maxLen, nullptr, nullptr);
+}
+
+// value == nullptr removes the key.
+static bool WriteLoaderNotesKey(const wchar_t* key, const char* value)
+{
+	wchar_t iniPath[MAX_PATH]{};
+	GetUpdateStateIniPath(iniPath, MAX_PATH);
+
+	wchar_t wValue[256]{};
+	if (value)
+		MultiByteToWideChar(CP_UTF8, 0, value, -1, wValue, 256);
+
+	if (WritePrivateProfileStringW(L"AutoUpdate", key, value ? wValue : nullptr, iniPath))
 		return true;
 
 	DWORD err = GetLastError();
-	LogToFile::Warn("[AutoUpdate] Failed to write LoaderNotesShown to update_state.ini (%lu: %s)", err,
+	LogToFile::Warn("[AutoUpdate] Failed to write %ls to update_state.ini (%lu: %s)", key, err,
 	                FormatWinHttpError(err).c_str());
 	return false;
 }
@@ -833,21 +849,27 @@ static void RunPerPluginUpdates(const wchar_t* pluginsDir)
 // List the loader in the "Plugins Updated" window, once, with the notes of the
 // release it now is. The manifest the update check already fetched names the
 // latest release; when that is the running version and its notes have not been
-// listed yet, they go in the window and the version is recorded in
-// update_state.ini. Nothing is recorded when the fetch failed or the manifest
-// names another version, so a later launch tries again.
+// shown yet, they go in the window. Two keys in update_state.ini carry this
+// across launches: LoaderNotesPrevious, written here with the resolved previous
+// version, and LoaderNotesShown, written when the window actually opens (which
+// also removes LoaderNotesPrevious). A launch that quits or crashes before the
+// main menu therefore leaves the notes, and the history, for the next one.
+// Nothing is written when the fetch failed or the manifest names another
+// version, so a later launch tries again.
 static void ListLoaderNotesOnce(const char* running, const std::string& remoteTag, const std::string& manifest)
 {
+	char pending[256]{};
+	ReadLoaderNotesPrevious(pending, sizeof(pending));
 	char recorded[256]{};
 	ReadLoaderNotesShown(recorded, sizeof(recorded));
 
 	// The updater that installed this loader was the previous version's, and
 	// wrote nothing for it to find but its log; see ResolvePreviousVersion.
 	std::string currentLog, previousLog;
-	if (!AutoUpdateVersion::ParseVersion(recorded).valid)
+	if (!AutoUpdateVersion::ParseVersion(pending).valid && !AutoUpdateVersion::ParseVersion(recorded).valid)
 		ReadUpdaterLogs(currentLog, previousLog);
 	const std::string previous = AutoUpdateVersion::ResolvePreviousVersion(
-		recorded, currentLog.c_str(), previousLog.c_str(), running);
+		pending, recorded, currentLog.c_str(), previousLog.c_str(), running);
 
 	const std::string releaseNotes = JsonExtractDecodedString(manifest, "release_notes");
 	const std::string notes        = JsonExtractDecodedString(manifest, "notes");
@@ -856,14 +878,22 @@ static void ListLoaderNotesOnce(const char* running, const std::string& remoteTa
 	if (!d.show)
 		return;
 
-	// Record first: if the record cannot be written the notes would come back
-	// on every launch, so they are not listed at all.
-	if (!WriteLoaderNotesShown(remoteTag.c_str()))
+	// Keep the previous version until the window opens. If the ini cannot be
+	// written the notes would come back on every launch, so they are not
+	// listed at all.
+	if (!WriteLoaderNotesKey(L"LoaderNotesPrevious", previous.c_str()))
 		return;
 
 	LogToFile::Info("[AutoUpdate] Listing the release notes of %s (previous version %s) in the Plugins Updated window",
 	                remoteTag.c_str(), previous.empty() ? "unknown" : previous.c_str());
 	UI::UpdateNoticeWindow::AddUpdatedPlugin("Mod Loader", previous.c_str(), remoteTag.c_str(), d.text.c_str());
+	UI::UpdateNoticeWindow::SetOnShown([tag = remoteTag]()
+	{
+		// Shown first: a crash between the two writes leaves a stale
+		// LoaderNotesPrevious, which ResolvePreviousVersion ignores.
+		if (WriteLoaderNotesKey(L"LoaderNotesShown", tag.c_str()))
+			WriteLoaderNotesKey(L"LoaderNotesPrevious", nullptr);
+	});
 }
 #endif
 

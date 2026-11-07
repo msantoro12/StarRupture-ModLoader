@@ -923,7 +923,7 @@ int main()
 
 	Check(Real::VersionMap::kFormatVersion == 2, "the real map is format 2");
 	Check(unmatched == 0, "every real map key is a registry row's or a plugin's global or scoped key");
-	Check(pluginKeys == 105, "the real map holds the 105 plugin function keys; FRHIComputeCommandList::Transition is a loader registry key now");
+	Check(pluginKeys == 140, "the real map holds the 140 plugin function keys; FRHIComputeCommandList::Transition is a loader registry key now");
 	Check(wrong == 0, "every real map row has its registry row's kind and fp");
 
 	// Restarting a plugin the crash guard switched off: the plan for each setting, the limiter, the timing.

@@ -53,18 +53,6 @@ works offline on every build in it. The signed feed (below) adds to that.
 
 **Not map data.** Some values a plugin needs are not in the map on purpose.
 
-- *Struct sizes.* A size request is a field request with the member null (`SR_SIZE_CHECK`, or the
-  same request with size 0 for the live size). Every game struct a plugin sizes is a reflected
-  `USTRUCT`, so the loader answers from the running game's own reflection data (`UStruct::Size`),
-  on the client and on the dedicated server, and each game build gives its own size. A row could
-  only repeat what reflection says, so there is no size row. A class-keyed row (a key with no `::`)
-  is read as a cross-check, like the row of a reflected member: where it disagrees with the game,
-  the game wins and the difference is logged. A size request is never native: `PLUGIN_FIELD_NATIVE`
-  on it is a bad request. A plugin asks with `PLUGIN_FIELD_CHECK` when its compiled code depends on
-  the size (a struct copied by value, a `ProcessEvent` parameter block, a buffer a native function
-  fills, a `TMap` value), and with size 0 and no flag when it only steps through an array, so it
-  takes the size the game has. A new line type in the feed would also make every 1.23.x loader drop
-  the whole signed feed, which is another reason not to add a size row.
 - *Game enums.* The numbers in a game `UEnum` can move on a game update, and no symbol or pattern
   holds them, so CI could not generate a row. The value belongs to the game's reflection data, read
   by the enum's and the entry's name.
@@ -135,11 +123,78 @@ every key and field behave that way for plugins; the loader's own lookups keep t
 Fields follow the same shape: the map's row for the running CL first (else the latest CL's),
 then the plugin's, then `builtOffset` on its `builtCL`. Two rows for one CL that disagree fail
 the request. A reflected field is read live from reflection, and a row is only a cross-check:
-where a row and the game disagree the game wins, and the disagreement is logged. A native
+where a row and the game disagree the game wins, and the disagreement is logged. It is a warning
+when the row is the running build's own (a map bug), and a debug line when the row is another
+build's, which is expected to differ (the latest row stands in for a build with none). A native
 offset (reflection does not describe it) comes from the running CL's row or the compiled offset
 on the build it was compiled for; a row carried forward from an older CL cannot be checked on
-this build, so the field is unresolved. A native offset plus its size must lie inside the
+this build, so the field is unresolved. `PLUGIN_FIELD_ANY_SIZE` (size 0) works for a native member
+too: the running build's own row serves the offset and its size comes back, so a plugin that only
+takes the member's address need not know the size; with no row for the running build it is refused.
+A native offset plus its size must lie inside the
 class's live size. See the SDK guide for the `[Map]` log lines.
+
+**Struct sizes.** A size request is a field request with the member null (`SR_SIZE_CHECK`, or the
+same request with size 0 for the live size). Its row is a class-keyed field row: the key is the
+class name alone (no `::`), offset 0, the struct's size, mask 0. CI writes one per size key a
+plugin requests, on every build. It is an ordinary field line, so the feed format is unchanged.
+
+- A reflected struct (a `USTRUCT` or `UCLASS` the game describes) is answered from the running
+  game's own reflection data (`UStruct::Size`), on the client and on the dedicated server, so each
+  game build gives its own size. The row is only a cross-check: where it disagrees with the game,
+  the game wins and the difference is logged, as a warning when the row is the running build's own
+  (a map bug) and as a debug line when it is another build's (the latest row stands in for a build
+  with none).
+- A struct the game does not reflect (a plain C++ type) has no live size. It is served from the
+  running build's own row. With no row for the running build the request is refused; a row of
+  another build is never used, since nothing on this build can confirm the size is still that.
+  `PLUGIN_FIELD_NATIVE` on a size request changes nothing: the choice follows what the game
+  reflects.
+- A plugin asks with `PLUGIN_FIELD_CHECK` when its compiled code depends on the size (a struct
+  copied by value, a `ProcessEvent` parameter block, a buffer a native function fills, a `TMap`
+  value), and with size 0 and no flag when it only steps through an array, so it takes the size the
+  game has.
+- The compatibility report (`ModLoader\compat-report-<CL>.json`) lists every size a plugin
+  requested under `sizes`, with the row's size next to the reflected one and a result (`match`,
+  `mismatch`, `row-only`, `no-row`, `reflected-only`). It is written on a boot where a plugin asked
+  for a size, whether or not the layout check found a change.
+
+**Function parameters.** A UFunction is a reflected struct whose members are its parameters, so a
+plugin can read where the running game puts them instead of trusting the compiled Dumper-7 parameter
+struct. The class of the request is that struct's name, `<Class>_<Function>` with the game's class
+name and no prefix letter (`CrEnviroWaveSubsystem_GetCurrentStageSettings`), or
+`/Script/<Module>.<Class>_<Function>`. The Game-SDK's `SR_PARAM(Class, Function, Param)` is a
+member request (`PLUGIN_FIELD_ANY_SIZE`, `Param` is `ReturnValue` for the return) and
+`SR_PARAMS_SIZE(Class, Function)` is the size request. Both are reflected requests, answered live:
+the member gives the parameter's offset in the parameter block and its size, and the size request
+gives the function's `ParmsSize`, the end of its last parameter as the engine computes it (not
+rounded up to an alignment). Locals of a Blueprint function are not parameters and are not
+counted. Rows play no part: there is nothing to cross-check against, and no row is needed. A
+name that is a class or struct is answered as one first. The name is split at every underscore
+into class and function (functions have underscores too), and every native class of that name
+that has that function answers; a name that matches no function, or more than one (the same class
+name in two modules), is refused with the reason, and `/Script/<Module>.` picks one. A parameter
+Dumper-7 renamed with a `_<n>` suffix (`Class_0`) is found under the name without it. Reads are
+on the game thread, like the rest of the reflection data.
+
+The owner may be a Blueprint generated class (the name ends in `_C`, `WBP_InventorySlot_C_SetSlotSize`),
+which lives in a `/Game/` package, not in `/Script/`. Such a class is loaded by the game with the
+screen that uses it and freed again, so it is normally not loaded when plugins load. The
+Game-SDK's `SR_PARAM` and `SR_PARAMS_SIZE` carry `PLUGIN_FIELD_LATE` for it: a request whose class
+is not loaded is not a failure but **pending**. The loader logs `pending` once (Info, no warning),
+the compat report lists the key under "Waiting for a game class to load", and the feature that
+lists the key is off and greyed in its config with a waiting reason; the plugin still loads, and no
+failure popup opens. A key no declared feature lists cannot wait and refuses the plugin like any
+miss. The plugin repeats the request from the game thread after `OnPluginLoadHooks` (the one
+scanner call allowed there, `PluginMap::ResolveLateFields`) until it resolves. The loader walks
+the game's objects at most once every two seconds per key while pending, only on the game thread,
+and never again once resolved: it copies the parameter names, offsets and sizes out of the class it
+sees and keeps no object pointer, so the numbers hold for the process even after the class is
+freed and reloaded. Only `CPF_Parm` properties count, so the locals of a Blueprint function neither
+appear as parameters nor stretch the block size. A class that is loaded and has no such function or
+parameter, or two that differ, is refused once with the usual reason. Native keys are unchanged.
+Flag only: the interface stays v75; an older loader ignores the flag and refuses a Blueprint class,
+so the feature stays off there.
 
 **Unreflected native types.** A plain C++ engine type that is neither a `UCLASS` nor a `USTRUCT`
 (`FMassEntityManager`, `FStructSharedMemory`) has no reflected size to bound a native member by.

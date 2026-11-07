@@ -289,7 +289,8 @@ namespace VersionMap
 	// reflection data. A row (the running changelist's, else the latest one's,
 	// which can also give the member's new name) only cross-checks it: where
 	// the row and the game disagree the game wins and the disagreement is
-	// logged. A native member (one reflection does not describe) is the
+	// logged (a warning for the running changelist's own row, a debug line for
+	// another changelist's). A native member (one reflection does not describe) is the
 	// running changelist's row, or the compiled offset on the build it was
 	// compiled for, and nothing else: a row carried forward from an older
 	// changelist cannot be checked on this build, so it is not used. It must
@@ -342,6 +343,12 @@ namespace VersionMap
 	{
 		std::string error;
 		bool        unreflected = false;
+		// error is set, and the answer is not final: the Blueprint class the
+		// request names is not loaded (or cannot be looked at from this thread),
+		// and a later request may find it. PickField turns it into a pending
+		// outcome for a PLUGIN_FIELD_LATE request and into a plain refusal for
+		// any other.
+		bool        pending     = false;
 		int32_t     offset   = 0;
 		uint32_t    size     = 0;
 		bool        isBool   = false;
@@ -357,8 +364,46 @@ namespace VersionMap
 
 	// Applies the rules above to one request, logs its [Map] line, and on
 	// success writes out. On failure, error says which rule failed.
+	//
+	// A PLUGIN_FIELD_LATE request may come back pending: false, error says
+	// what it waits for, *pending (when given) is set, and the line logged is
+	// Info, not a refusal. The same pending or refused answer for the same
+	// plugin and key is logged once, so a plugin repeating the request does not
+	// repeat the line.
 	bool SelectField(const char* owner, const FieldRequest& request, const Exe& running,
-		FieldValue& out, std::string& error);
+		FieldValue& out, std::string& error, bool* pending = nullptr);
+
+	// How one size request (member empty) came out, for the compatibility report:
+	// the row it was set against, the size the game reflects, and which of the
+	// two it was served from. A repeat of the same plugin and key replaces the
+	// earlier entry. Requests that fail before the type is known (a bad request,
+	// reflection not ready, an ambiguous name) leave no entry.
+	enum class SizeResult
+	{
+		Match,          // reflected, and the row has the same size
+		Mismatch,       // reflected, and the row has another (the game's size is the one used)
+		RowOnly,        // not reflected, served from the running build's row
+		NoRow,          // not reflected, and no row for the running build: refused
+		ReflectedOnly,  // reflected, with no row to set it against
+		Pending,        // a PLUGIN_FIELD_LATE request whose Blueprint class is not loaded yet; replaced when it resolves
+	};
+
+	struct SizeFinding
+	{
+		std::string plugin;
+		std::string key;
+		SizeResult  result        = SizeResult::ReflectedOnly;
+		uint32_t    rowCL         = 0;      // 0 = no row. The running build's, else the newest other build's
+		uint32_t    rowSize       = 0;
+		bool        reflected     = false;
+		uint32_t    reflectedSize = 0;
+	};
+
+	std::vector<SizeFinding> SizeFindings();
+
+	// The result as the report writes it: "match", "mismatch", "row-only",
+	// "no-row", "reflected-only" or "pending".
+	const char* SizeResultText(SizeResult result);
 
 	// The members the loader itself reads per build (SdkGlobals::ResolveFields),
 	// each a key of kFields. The map holds other components' members too.

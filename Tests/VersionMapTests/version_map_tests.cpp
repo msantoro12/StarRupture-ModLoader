@@ -63,6 +63,14 @@ namespace
 		return false;
 	}
 
+	bool LoggedDebug(const wchar_t* text)
+	{
+		for (const std::wstring& line : TestDoubles::g_debugLog)
+			if (line.find(text) != std::wstring::npos)
+				return true;
+		return false;
+	}
+
 	Request Ask(const char* name, Kind kind, const char* pattern = "")
 	{
 		Request r;
@@ -90,6 +98,9 @@ namespace
 
 	bool At(const Result& r, uintptr_t rva) { return r.Succeeded() && r.address == Base() + rva; }
 
+	// Whether the Blueprint class WBP_Slot_C is loaded, for FakeLive.
+	bool g_bpLoaded = false;
+
 	// Reflection as the field tests see it: ATest is 0x50 bytes, AOther 0x10,
 	// and AChild derives from ATest.
 	VersionMap::LiveField FakeLive(const std::string& className, const std::string& member)
@@ -101,6 +112,35 @@ namespace
 			f.size = 0x10, f.paths = { "Mod.Other" };
 		else if (className == "AUnready")
 			f.error = "the game's reflection data is not ready";
+		else if (className == "Widget_Resize")
+		{
+			// A function's parameter struct: an in-parameter, a parameter a
+			// game update put in front of the return, then the return, with
+			// the ParmsSize the game reports.
+			if (member.empty())
+				f.size = 0x20;
+			else if (member == "InSize")
+				f.offset = 0, f.size = 4;
+			else if (member == "ReturnValue")
+				f.offset = 0x18, f.size = 8;
+			else
+				f.error = "no parameter " + member + " in Mod.Widget.Resize";
+		}
+		else if (className == "WBP_Slot_C_SetSize")
+		{
+			// A Blueprint function's parameter struct: pending until the class is loaded.
+			if (!g_bpLoaded)
+			{
+				f.pending = true;
+				f.error   = "no loaded Blueprint class has the function WBP_Slot_C_SetSize yet (the class is loaded with the screen that uses it)";
+			}
+			else if (member.empty())
+				f.size = 8;
+			else if (member == "InSize")
+				f.offset = 0, f.size = 8;
+			else
+				f.error = "no parameter " + member + " in Game.WBP_Slot_C.SetSize";
+		}
 		else if (className != "ATest")
 		{
 			f.error = "no class " + className;
@@ -124,6 +164,7 @@ namespace
 		const VersionMap::Exe& running = kRunning)
 	{
 		TestDoubles::g_log.clear();
+		TestDoubles::g_debugLog.clear();
 		error.clear();
 		VersionMap::FieldRequest request;
 		request.key         = key;
@@ -614,6 +655,179 @@ int main()
 		VersionMap::SetLiveFieldSource(nullptr);
 	}
 
+	// Blueprint functions: a PLUGIN_FIELD_LATE request is pending while the class is not loaded, and resolves when
+	// the plugin repeats it after the class is. Pending is not a failure; any other request is refused as before.
+	{
+		VersionMap::SetLiveFieldSource(FakeLive);
+		IPluginHookScanner* scan = ModLoaderLogger::GetPluginHookScanner();
+		const char* sizeKey   = "WBP_Slot_C_SetSize";
+		const char* memberKey = "WBP_Slot_C_SetSize::InSize";
+		const auto ask = [&](const IPluginSelf* self, const char* key, const char* member, uint32_t flags, PluginFieldResult& result)
+		{
+			PluginFieldRequest request = PLUGIN_FIELD_REQUEST_INIT;
+			request.key       = key;
+			request.className = "WBP_Slot_C_SetSize";
+			request.member    = member;
+			request.flags     = flags;
+			request.size      = member ? 0 : 8;
+			request.builtCL   = 127004;
+			return scan->ResolveField(self, &request, &result);
+		};
+		const uint32_t late = PLUGIN_FIELD_LATE, lateAny = PLUGIN_FIELD_LATE | PLUGIN_FIELD_ANY_SIZE;
+		const auto declare = [&](const IPluginSelf* self, const char* id, std::vector<const char*> keys, bool* enabled)
+		{
+			static const char* cfg[] = { "Slot.*" };
+			PluginFeatureDesc desc = PLUGIN_FEATURE_DESC_INIT;
+			desc.id             = id;
+			desc.title          = "Slot sizing";
+			desc.keys           = keys.data();
+			desc.keyCount       = static_cast<uint32_t>(keys.size());
+			desc.configKeys     = cfg;
+			desc.configKeyCount = 1;
+			desc.enabled        = enabled;
+			return scan->DeclareFeature(self, &desc);
+		};
+		const auto pendingOf = [](const char* plugin)
+		{
+			size_t n = 0;
+			for (const PluginHookReport::PendingKey& p : PluginHookReport::Pending())
+				if (p.plugin == plugin)
+					++n;
+			return n;
+		};
+		const auto reportOf = [](const char* plugin) -> bool
+		{
+			for (const PluginHookReport::PluginReport& r : PluginHookReport::Snapshot())
+				if (r.plugin == plugin)
+					return true;
+			return false;
+		};
+		const auto sizeFinding = [](const char* plugin, const char* key)
+		{
+			for (const VersionMap::SizeFinding& f : VersionMap::SizeFindings())
+				if (f.plugin == plugin && f.key == key)
+					return f;
+			VersionMap::SizeFinding none;
+			none.key = "(no finding)";
+			return none;
+		};
+
+		g_bpLoaded = false;
+		PluginFieldResult result{};
+		bool slot = true, refused = true;
+		IPluginSelf bp{ "BpPlug", "1", nullptr, nullptr, nullptr };
+
+		// At load: pending, the feature is off, the plugin loads, nothing is a failure.
+		const unsigned serial = PluginHookReport::GetCommitSerial();
+		TestDoubles::g_log.clear();
+		PluginHookReport::BeginSession(&bp, "BpPlug", "BpPlug.dll");
+		Check(declare(&bp, "slot", { sizeKey, memberKey }, &slot) && slot, "blueprint: feature declared");
+		Check(!ask(&bp, sizeKey, nullptr, late, result) && !ask(&bp, memberKey, "InSize", lateAny, result),
+			"blueprint: both requests are false while the class is not loaded");
+		Check(!PluginHookReport::SessionHasFailures(&bp) && !slot, "blueprint: pending is no failure, and the feature's flag is off");
+		PluginHookReport::EndSession(&bp, &refused);
+		Check(!refused && !reportOf("BpPlug") && PluginHookReport::GetCommitSerial() == serial
+			&& PluginHookReport::GetFeaturesOffCount("BpPlug") == 0, "blueprint: the plugin loads, and no failure report is added");
+		Check(pendingOf("BpPlug") == 2, "blueprint: both keys are kept as pending");
+		Check(Logged(L"[Map] BpPlug: WBP_Slot_C_SetSize: pending:") && Logged(L"feature \"Slot sizing\" is waiting for a game class")
+			&& !Logged(L"refused"), "blueprint: the log says pending, once, and never refused");
+		Check(PluginHookReport::ConfigOffReason("BpPlug", "Slot", "Scale") == "Slot sizing is waiting for the game to load something it needs",
+			"blueprint: the config entries show the waiting reason");
+		Check(PluginHookReport::BuildReportText().find("[pending] WBP_Slot_C_SetSize") != std::string::npos,
+			"blueprint: the report text lists it apart from the failures");
+		Check(sizeFinding("BpPlug", sizeKey).result == VersionMap::SizeResult::Pending
+			&& std::string(VersionMap::SizeResultText(VersionMap::SizeResult::Pending)) == "pending",
+			"blueprint: the compatibility report's size finding is pending");
+
+		// The plugin repeats the request on the game thread: still pending, and no line again.
+		TestDoubles::g_log.clear();
+		Check(!ask(&bp, sizeKey, nullptr, late, result) && !ask(&bp, memberKey, "InSize", lateAny, result) && pendingOf("BpPlug") == 2
+			&& TestDoubles::g_log.empty(), "blueprint: a repeated pending request changes nothing and logs nothing");
+
+		// Without the flag the scanner is closed outside the session, and in it the miss is an ordinary one.
+		Check(!ask(&bp, sizeKey, nullptr, 0, result), "blueprint: no flag, no session: rejected");
+		IPluginSelf plain{ "PlainPlug", "1", nullptr, nullptr, nullptr };
+		bool plainSlot = true;
+		TestDoubles::g_log.clear();
+		PluginHookReport::BeginSession(&plain, "PlainPlug", "PlainPlug.dll");
+		declare(&plain, "slot", { sizeKey }, &plainSlot);
+		Check(!ask(&plain, sizeKey, nullptr, 0, result), "blueprint: a request without the flag is refused while the class is not loaded");
+		PluginHookReport::EndSession(&plain, &refused);
+		Check(!refused && !plainSlot && reportOf("PlainPlug") && pendingOf("PlainPlug") == 0 && Logged(L"PlainPlug: WBP_Slot_C_SetSize: refused:"),
+			"blueprint: it is a feature-off failure, not pending");
+
+		// A key no feature lists cannot wait.
+		IPluginSelf core{ "CoreBp", "1", nullptr, nullptr, nullptr };
+		PluginHookReport::BeginSession(&core, "CoreBp", "CoreBp.dll");
+		Check(!ask(&core, sizeKey, nullptr, late, result) && PluginHookReport::SessionHasFailures(&core),
+			"blueprint: a pending key no feature lists refuses the plugin");
+		PluginHookReport::EndSession(&core, &refused);
+		Check(refused && pendingOf("CoreBp") == 0, "blueprint: and keeps nothing pending");
+
+		// LATE is for a reflected request.
+		VersionMap::FieldValue v;
+		std::string e;
+		Check(!Field(memberKey, "WBP_Slot_C_SetSize", "InSize", PLUGIN_FIELD_LATE | PLUGIN_FIELD_CHECK, 8, {}, v, e)
+			&& e.find("bad request: PLUGIN_FIELD_LATE") == 0, "blueprint: LATE with CHECK is a bad request");
+
+		// The class is loaded and the plugin repeats: resolved, once; the pending entries go.
+		g_bpLoaded = true;
+		TestDoubles::g_log.clear();
+		Check(ask(&bp, sizeKey, nullptr, late, result) && result.size == 8, "blueprint: the block size resolves once the class is loaded");
+		Check(ask(&bp, memberKey, "InSize", lateAny, result) && result.offset == 0 && result.size == 8, "blueprint: and the parameter");
+		Check(pendingOf("BpPlug") == 0 && PluginHookReport::ConfigOffReason("BpPlug", "Slot", "Scale").empty(),
+			"blueprint: nothing pending, the config entries are free");
+		Check(sizeFinding("BpPlug", sizeKey).result == VersionMap::SizeResult::ReflectedOnly && sizeFinding("BpPlug", sizeKey).reflectedSize == 8,
+			"blueprint: the size finding is replaced by the reflected one");
+		TestDoubles::g_log.clear();
+		Check(ask(&bp, sizeKey, nullptr, late, result) && !Logged(L"WBP_Slot_C_SetSize"), "blueprint: resolving again logs nothing");
+
+		// A loaded class with a wrong parameter: refused for good, once, and not pending.
+		IPluginSelf wrong{ "BpWrong", "1", nullptr, nullptr, nullptr };
+		bool wrongSlot = true;
+		TestDoubles::g_log.clear();
+		PluginHookReport::BeginSession(&wrong, "BpWrong", "BpWrong.dll");
+		declare(&wrong, "slot", { "WBP_Slot_C_SetSize::Nope" }, &wrongSlot);
+		Check(!ask(&wrong, "WBP_Slot_C_SetSize::Nope", "Nope", lateAny, result) && !wrongSlot, "blueprint: an unknown parameter is refused");
+		PluginHookReport::EndSession(&wrong, &refused);
+		Check(!refused && reportOf("BpWrong") && pendingOf("BpWrong") == 0 && Logged(L"BpWrong: WBP_Slot_C_SetSize::Nope: refused: reflection: no parameter Nope"),
+			"blueprint: a feature-off failure naming the parameter, not pending");
+		TestDoubles::g_log.clear();
+		Check(!ask(&wrong, "WBP_Slot_C_SetSize::Nope", "Nope", lateAny, result) && !Logged(L"refused"),
+			"blueprint: repeating a refused request does not log it again");
+
+		// Pending first, then the class loads and the parameter is wrong: the entry becomes a refusal.
+		g_bpLoaded = false;
+		IPluginSelf later{ "BpLater", "1", nullptr, nullptr, nullptr };
+		bool laterSlot = true;
+		PluginHookReport::BeginSession(&later, "BpLater", "BpLater.dll");
+		declare(&later, "slot", { "WBP_Slot_C_SetSize::Nope" }, &laterSlot);
+		ask(&later, "WBP_Slot_C_SetSize::Nope", "Nope", lateAny, result);
+		PluginHookReport::EndSession(&later, &refused);
+		Check(pendingOf("BpLater") == 1, "blueprint: pending before the class loads");
+		g_bpLoaded = true;
+		TestDoubles::g_log.clear();
+		Check(!ask(&later, "WBP_Slot_C_SetSize::Nope", "Nope", lateAny, result), "blueprint: it fails once the class is loaded");
+		const std::vector<PluginHookReport::PendingKey> now = PluginHookReport::Pending();
+		bool marked = false;
+		for (const PluginHookReport::PendingKey& p : now)
+			if (p.plugin == "BpLater" && p.refused && p.detail.find("no parameter Nope") != std::string::npos)
+				marked = true;
+		Check(marked && PluginHookReport::ConfigOffReason("BpLater", "Slot", "X").find("is off: ") != std::string::npos
+			&& Logged(L"BpLater: WBP_Slot_C_SetSize::Nope: refused:"), "blueprint: the pending entry becomes a refusal with its reason");
+		TestDoubles::g_log.clear();
+		ask(&later, "WBP_Slot_C_SetSize::Nope", "Nope", lateAny, result);
+		Check(!Logged(L"refused"), "blueprint: and that is logged once");
+
+		// A reload of the plugin drops what it was waiting for.
+		PluginHookReport::BeginSession(&later, "BpLater", "BpLater.dll");
+		Check(pendingOf("BpLater") == 0, "blueprint: a reload starts without the old pending keys");
+		PluginHookReport::EndSession(&later, &refused);
+
+		g_bpLoaded = false;
+		VersionMap::SetLiveFieldSource(nullptr);
+	}
+
 	// Fields: the map's rows first, the class and member match, the class bound.
 	{
 		VersionMap::SetLiveFieldSource(FakeLive);
@@ -671,24 +885,40 @@ int main()
 			&& e == "the game's member is 0x8 bytes, the code was compiled for 0x4", "field: a non-zero size that does not match is still refused");
 		Check(!Field("ATest::Reflected", "ATest", "Reflected", PLUGIN_FIELD_ANY_SIZE, 4, {}, v, e)
 			&& e.find("bad request: PLUGIN_FIELD_ANY_SIZE") == 0, "field: the any-size flag with a non-zero size is refused");
-		Check(!Field("ATest::Native", "ATest", "Native", PLUGIN_FIELD_NATIVE | PLUGIN_FIELD_ANY_SIZE, 0, {}, v, e)
-			&& e.find("bad request: PLUGIN_FIELD_ANY_SIZE") == 0, "field: a native member refuses the any-size flag");
+		// A parameter of a UFunction (class <Class>_<Function>) is a reflected member: its live offset and size, any compiled size.
+		Check(Field("Widget_Resize::ReturnValue", "Widget_Resize", "ReturnValue", PLUGIN_FIELD_ANY_SIZE, 0, {}, v, e)
+			&& v.offset == 0x18 && v.size == 8, "field: a function parameter resolves to its live offset and size");
+		Check(Field("Widget_Resize", "Widget_Resize", "", 0, 0x10, {}, v, e) && v.size == 0x20 && v.offset == 0,
+			"field: a function's parameter block size is its live ParmsSize, not the compiled one");
+		Check(!Field("Widget_Resize::Nope", "Widget_Resize", "Nope", PLUGIN_FIELD_ANY_SIZE, 0, {}, v, e)
+			&& e == "reflection: no parameter Nope in Mod.Widget.Resize", "field: an unknown parameter is refused with the reflection's reason");
+		Check(Field("FPlain::Block", "FPlain", "Block", PLUGIN_FIELD_NATIVE | PLUGIN_FIELD_ANY_SIZE, 0, {}, v, e)
+			&& v.offset == 0x120 && v.size == 0xB0, "field: a native member with the any-size flag is served from the build's own row, with the row's size");
+		Check(!Field("FPlain::Block", "FPlain", "Block", PLUGIN_FIELD_NATIVE | PLUGIN_FIELD_ANY_SIZE, 0, {}, v, e, VersionMap::Exe{ 130000, 0, 0 })
+			&& e.find("no row for CL-130000") == 0, "field: a native any-size request is refused on a build with only another build's row");
+		Check(!Field("FPlain::Block", "FPlain", "Block", PLUGIN_FIELD_NATIVE, 0x20, {}, v, e)
+			&& e.find("gives size 0xB0, the code was compiled for 0x20") != std::string::npos, "field: a native member of an exact size is still refused on a mismatch");
+		Check(!Field("ATest::Plain", "ATest", "Plain", PLUGIN_FIELD_NATIVE | PLUGIN_FIELD_ANY_SIZE, 0, {}, v, e, built)
+			&& e.find("no row for CL-127004") == 0, "field: a native any-size request has no built offset to fall back on");
 		Check(!Field("ATest::Missing", "ATest", "Missing", PLUGIN_FIELD_ANY_SIZE, 0, {}, v, e) && e == "reflection: no member Missing",
 			"field: the any-size flag does not accept a member the game does not have");
 		Check(Field("ATest::Renamed", "ATest", "NewName", 0, 4, { FieldRow(128786, 0x44, 4) }, v, e) && v.offset == 0x44,
 			"field: an own row under the new name agrees with the map's rename row");
 		Check(Field("ATest::Reflected", "ATest", "Reflected", 0, 8, {}, v, e) && v.offset == 0x30
 			&& Logged(L"the loader map, CL-128786 row says 0x38/0x8, the game says 0x30/0x8; the game wins")
-			&& Logged(L"overruled by reflection"), "field: a map row reflection disagrees with: the game wins, logged");
+			&& Logged(L"overruled by reflection") && !LoggedDebug(L"another build"),
+			"field: this build's own map row reflection disagrees with: the game wins, a warning");
 		// A reflected field's own row against the map's: the game decides too, a native member's neither.
 		Check(Field("ATest::Reflected", "ATest", "Reflected", 0, 8, { FieldRow(128786, 0x20, 8) }, v, e) && v.offset == 0x30
 			&& Logged(L"the plugin's own says 0x20/0x8; the game's reflection decides"), "field: own row against the map's row, reflected");
 		// The latest build's row stands in when the running one has none: it is checked against the game, and the game wins.
 		const VersionMap::Exe later{ 130000, 0x33333333, 0x03000000 };
+		// Another build's row is expected to differ, so it is a debug line and never a warning.
 		Check(Field("ATest::Reflected", "ATest", "Reflected", 0, 8, {}, v, e, later) && v.offset == 0x30
-			&& Logged(L"the loader map, CL-128786 row says 0x38/0x8, the game says 0x30/0x8; the game wins")
-			&& Logged(L"reflected (no row for CL-130000; the loader map, CL-128786 row does not)"),
-			"field: no row for this build: the latest row is checked and the game wins");
+			&& Logged(L"reflected (no row for CL-130000; the loader map, CL-128786 row does not)")
+			&& LoggedDebug(L"the loader map, CL-128786 row differs (another build); it says 0x38/0x8, the game says 0x30/0x8; the game wins")
+			&& !Logged(L"the game wins"),
+			"field: no row for this build: the latest row is checked, the game wins, and it is logged at debug, not as a warning");
 		Check(Field("ATest::Renamed", "ATest", "Renamed", 0, 4, {}, v, e, later) && v.offset == 0x44
 			&& Logged(L"reflected (no row for CL-130000; the loader map, CL-128786 row agrees)"),
 			"field: no row for this build: the latest row's new name is asked for first");
@@ -730,16 +960,32 @@ int main()
 			"field: no reflection reader, no native member");
 	}
 
-	// Struct sizes (member empty) are never map data: they come live from the game's reflection, and a plugin that
-	// needs the compiled size to hold asks for PLUGIN_FIELD_CHECK. See "Not map data" in VersionMap.md.
+	// Struct sizes (member empty): a reflected struct's size comes live from the game's reflection, with its class-keyed
+	// row only a cross-check; a struct the game does not reflect is served from the running build's own row, else
+	// refused. A plugin that needs the compiled size to hold asks for PLUGIN_FIELD_CHECK. See "Struct sizes" in VersionMap.md.
 	{
 		VersionMap::SetLiveFieldSource(FakeLive);
 		VersionMap::FieldValue v;
 		std::string e;
+		// How the plugin's size request for key came out, for the compatibility report.
+		const auto finding = [](const char* key)
+		{
+			for (const VersionMap::SizeFinding& f : VersionMap::SizeFindings())
+				if (f.plugin == "Test" && f.key == key)
+					return f;
+			VersionMap::SizeFinding none;
+			none.key = "(no finding)";
+			return none;
+		};
 
 		// Size 0 and no CHECK: the live size comes back, whatever the code was compiled for.
 		Check(Field("AOther", "AOther", "", 0, 0, {}, v, e) && v.size == 0x10 && v.offset == 0 && v.boolMask == 0
 			&& Logged(L"AOther: reflected (no row for CL-128786) (0x10)"), "size: size 0 takes the game's live size");
+		{
+			const VersionMap::SizeFinding f = finding("AOther");
+			Check(f.result == VersionMap::SizeResult::ReflectedOnly && f.rowCL == 0 && f.rowSize == 0 && f.reflected && f.reflectedSize == 0x10,
+				"size report: a reflected size with no row at all is reflected-only");
+		}
 		Check(Field("AOther", "AOther", "", 0, 0x10, {}, v, e) && v.size == 0x10, "size: the compiled size matches the game's: the live size");
 		Check(Field("AOther", "AOther", "", 0, 0x20, {}, v, e) && v.size == 0x10 && !Logged(L"as compiled"),
 			"size: without CHECK a different compiled size is not compared: the live size is returned");
@@ -751,16 +997,21 @@ int main()
 			&& e == "the code relies on 0x18, this build has 0x10"
 			&& Logged(L"AOther: refused: the code relies on 0x18, this build has 0x10"), "size: CHECK refuses a game size that is not the compiled one");
 
-		// Only a reflected struct has a size: a native or bitfield flag on a size request is a bad request, an unknown class an error.
-		Check(!Field("AOther", "AOther", "", PLUGIN_FIELD_NATIVE, 0x10, {}, v, e)
-			&& e == "bad request: a field needs a class, and a size row is neither native nor a bitfield", "size: NATIVE on a size request is a bad request");
-		Check(!Field("AOther", "AOther", "", PLUGIN_FIELD_BITFIELD, 0, {}, v, e) && e.find("bad request:") == 0,
-			"size: BITFIELD on a size request is a bad request");
+		// NATIVE on a size request changes nothing: a reflected struct is still answered by the game. A bitfield flag is a
+		// bad request, an unknown class an error.
+		Check(Field("AOther", "AOther", "", PLUGIN_FIELD_NATIVE, 0x10, {}, v, e) && v.size == 0x10
+			&& Logged(L"AOther: reflected (no row for CL-128786) (0x10)"), "size: NATIVE on a reflected size request is still answered by reflection");
+		Check(!Field("AOther", "AOther", "", PLUGIN_FIELD_BITFIELD, 0, {}, v, e)
+			&& e == "bad request: a field needs a class, and a size row is not a bitfield", "size: BITFIELD on a size request is a bad request");
 		Check(!Field("AOther", "AOther", "", PLUGIN_FIELD_ANY_SIZE, 0, {}, v, e) && e.find("bad request: PLUGIN_FIELD_ANY_SIZE") == 0,
 			"size: ANY_SIZE is for a member, not a size request");
-		Check(!Field("ANone", "ANone", "", 0, 0, {}, v, e) && e == "reflection: no class ANone", "size: a class the game does not have is an error");
-		Check(!Field("AOther", "AOther", "", PLUGIN_FIELD_NATIVE | PLUGIN_FIELD_CHECK, 0x10, { FieldRow(128786, 0, 0x10) }, v, e)
-			&& e.find("bad request:") == 0, "size: an own row does not turn a size request native");
+		Check(!Field("ANone", "ANone", "", 0, 0, {}, v, e) && e == "ANone is not reflected, so its size needs a row for CL-128786 and has no other source",
+			"size: a class the game does not have, and no row for it, is an error");
+		Check(!Field("AUnready", "AUnready", "", 0, 0, {}, v, e) && e == "reflection: the game's reflection data is not ready",
+			"size: reflection that is not ready is not an unreflected struct");
+		Check(Field("AOther", "AOther", "", PLUGIN_FIELD_NATIVE | PLUGIN_FIELD_CHECK, 0x10, { FieldRow(128786, 0, 0x10) }, v, e)
+			&& v.size == 0x10 && Logged(L"AOther: CL-128786 row, as reflected, as compiled (0x10)"),
+			"size: an own row on a reflected size is a cross-check, whatever the flags");
 
 		// An own row is only a cross-check too: the game's size is the answer.
 		Check(Field("AOther", "AOther", "", 0, 0, { FieldRow(128786, 0, 0x30) }, v, e) && v.size == 0x10
@@ -771,12 +1022,80 @@ int main()
 		VersionMap::MapData classRows = VersionMap::BaselineMap();
 		classRows.fields.push_back({ "AChild", 128786, 0, 0x50, 0, "" });
 		classRows.fields.push_back({ "AOther", 128786, 0, 0x10, 0, "" });
+		// Structs the game does not reflect: one with a row for the running build, one with only another build's, one with none.
+		classRows.fields.push_back({ "FPlain", 128786, 0, 0x28, 0, "" });
+		classRows.fields.push_back({ "FOld", 127004, 0, 0x30, 0, "" });
+		classRows.fields.push_back({ "FZero", 128786, 0, 0, 0, "" });
 		VersionMap::SetActiveMap(std::make_shared<const VersionMap::MapData>(classRows));
 		Check(Field("AChild", "AChild", "", 0, 0, {}, v, e) && v.size == 0x58
 			&& Logged(L"AChild: the loader map, CL-128786 row says 0x0/0x50, the game says 0x0/0x58; the game wins")
-			&& Logged(L"overruled by reflection"), "size: a class-keyed map row the game disagrees with: the game wins, logged");
+			&& Logged(L"overruled by reflection") && !LoggedDebug(L"another build"), "size: a class-keyed map row the game disagrees with: the game wins, logged");
+		{
+			const VersionMap::SizeFinding f = finding("AChild");
+			Check(f.result == VersionMap::SizeResult::Mismatch && f.rowCL == 128786 && f.rowSize == 0x50 && f.reflected && f.reflectedSize == 0x58,
+				"size report: an own-build row that differs from the game is a mismatch");
+		}
 		Check(Field("AOther", "AOther", "", 0, 0, {}, v, e) && v.size == 0x10 && !Logged(L"the game wins")
 			&& Logged(L"loader map, CL-128786 row, as reflected (0x10)"), "size: a class-keyed map row the game agrees with");
+		{
+			const VersionMap::SizeFinding f = finding("AOther");
+			Check(f.result == VersionMap::SizeResult::Match && f.rowCL == 128786 && f.rowSize == 0x10 && f.reflected && f.reflectedSize == 0x10,
+				"size report: an own-build row that matches the game is a match");
+		}
+		// Another build's row that differs is expected to (a game update): the game wins, and it is only a debug line.
+		const VersionMap::Exe laterBuild{ 130000, 0x33333333, 0x03000000 };
+		Check(Field("AChild", "AChild", "", 0, 0, {}, v, e, laterBuild) && v.size == 0x58
+			&& LoggedDebug(L"AChild: the loader map, CL-128786 row differs (another build); it says 0x0/0x50, the game says 0x0/0x58; the game wins")
+			&& !Logged(L"the game wins"), "size: another build's row the game disagrees with: the game wins, at debug");
+		{
+			const VersionMap::SizeFinding f = finding("AChild");
+			Check(f.result == VersionMap::SizeResult::Mismatch && f.rowCL == 128786 && f.rowSize == 0x50 && f.reflectedSize == 0x58,
+				"size report: another build's row that differs is a mismatch too");
+		}
+
+		// A struct the game does not reflect has no live size: the running build's own row stands for it.
+		Check(Field("FPlain", "FPlain", "", 0, 0, {}, v, e) && v.size == 0x28 && v.offset == 0 && v.boolMask == 0
+			&& Logged(L"FPlain: loader map, CL-128786 row, unreflected type (0x28)"), "size: an unreflected struct is served from the running build's row");
+		{
+			const VersionMap::SizeFinding f = finding("FPlain");
+			Check(f.result == VersionMap::SizeResult::RowOnly && f.rowCL == 128786 && f.rowSize == 0x28 && !f.reflected && f.reflectedSize == 0,
+				"size report: an unreflected size served from its row is row-only");
+		}
+		Check(Field("FPlain", "FPlain", "", PLUGIN_FIELD_NATIVE, 0x28, {}, v, e) && v.size == 0x28,
+			"size: NATIVE on an unreflected size request is served the same way");
+		Check(Field("FPlain", "FPlain", "", PLUGIN_FIELD_CHECK, 0x28, {}, v, e) && v.size == 0x28 && Logged(L"unreflected type, as compiled (0x28)"),
+			"size: CHECK passes when the row has the size the code was compiled for");
+		Check(!Field("FPlain", "FPlain", "", PLUGIN_FIELD_CHECK, 0x30, {}, v, e) && e == "the code relies on 0x30, this build has 0x28",
+			"size: CHECK refuses an unreflected struct whose row has another size");
+		Check(Field("FOwn", "FOwn", "", 0, 0, { FieldRow(128786, 0, 0x18) }, v, e) && v.size == 0x18,
+			"size: the plugin's own row for the running build serves an unreflected struct too");
+		Check(!Field("FZero", "FZero", "", 0, 0, {}, v, e) && e == "loader map, CL-128786 row gives size 0", "size: a row of size 0 is not a size");
+		// Another build's row is never used: nothing on this build can confirm the size is still that.
+		Check(!Field("FOld", "FOld", "", 0, 0, {}, v, e)
+			&& e == "FOld is not reflected, so its size needs a row for CL-128786 and has no other source; the loader map, CL-127004 row cannot be checked on this build, so it is not used"
+			&& Logged(L"FOld: refused: FOld is not reflected"), "size: an unreflected struct with only another build's row is refused");
+		{
+			const VersionMap::SizeFinding f = finding("FOld");
+			Check(f.result == VersionMap::SizeResult::NoRow && f.rowCL == 127004 && f.rowSize == 0x30 && !f.reflected,
+				"size report: an unreflected size with only another build's row is no-row, naming that row");
+		}
+		Check(Field("FOld", "FOld", "", 0, 0, {}, v, e, VersionMap::Exe{ 127004, 0, 0 }) && v.size == 0x30,
+			"size: ... but on the build that row belongs to it is the running build's own row");
+		Check(!Field("FNone", "FNone", "", 0, 0, {}, v, e)
+			&& e == "FNone is not reflected, so its size needs a row for CL-128786 and has no other source",
+			"size: an unreflected struct with no row is refused");
+		{
+			const VersionMap::SizeFinding f = finding("FNone");
+			Check(f.result == VersionMap::SizeResult::NoRow && f.rowCL == 0 && f.rowSize == 0 && !f.reflected,
+				"size report: an unreflected size with no row at all is no-row");
+		}
+		Check(!Field("FNone", "FNone", "", PLUGIN_FIELD_CHECK, 0x10, {}, v, e, laterBuild) && e.find("needs a row for CL-130000") != std::string::npos,
+			"size: an unreflected struct on a build with no row is refused, CHECK or not");
+		Check(std::string(VersionMap::SizeResultText(VersionMap::SizeResult::Match)) == "match"
+			&& std::string(VersionMap::SizeResultText(VersionMap::SizeResult::Mismatch)) == "mismatch"
+			&& std::string(VersionMap::SizeResultText(VersionMap::SizeResult::RowOnly)) == "row-only"
+			&& std::string(VersionMap::SizeResultText(VersionMap::SizeResult::NoRow)) == "no-row"
+			&& std::string(VersionMap::SizeResultText(VersionMap::SizeResult::ReflectedOnly)) == "reflected-only", "size report: the result texts");
 		Check(!Field("AChild", "AChild", "", PLUGIN_FIELD_CHECK, 0x50, {}, v, e) && e == "the code relies on 0x50, this build has 0x58",
 			"size: CHECK compares with the game, not with the class-keyed row");
 		// ... and it is never served without the game: no reflection reader, no size.

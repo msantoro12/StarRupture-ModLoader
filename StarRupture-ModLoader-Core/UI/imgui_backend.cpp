@@ -1420,6 +1420,10 @@ namespace UiPass
 	constexpr DWORD kSlotWaitMs = 100;
 	// At most one rejected-frame line per this long.
 	constexpr ULONGLONG kRejectLogMs = 2000;
+	// Alt-tab diagnosis: a Present this long after the last Slate-step draw went
+	// out without a fresh overlay; a Slate draw after a gap this long is logged.
+	constexpr ULONGLONG kStaleOverlayMs = 50;
+	constexpr ULONGLONG kDrawGapLogMs = 100;
 
 	struct Slot
 	{
@@ -1446,6 +1450,7 @@ namespace UiPass
 	static std::atomic<UINT>      g_height{ 0 };
 	static std::atomic<ULONGLONG> g_lastDrawMs{ 0 };
 	static std::atomic<UINT64>    g_lastDoneValue{ 0 };
+	static std::atomic<UINT>      g_presentsWithoutOverlay{ 0 };
 
 	// Before anything those draws read is destroyed (font texture, SRV heap):
 	// they run on g_queue, which the g_cmdQueue waits above do not cover.
@@ -1548,6 +1553,14 @@ namespace UiPass
 		return last ? static_cast<LONGLONG>(GetTickCount64() - last) : -1;
 	}
 
+	// HookedPresent, while the Slate step owns the overlay: counts a Present that
+	// goes out with no Slate-step draw in the last kStaleOverlayMs.
+	static void NotePresentWithoutOverlay()
+	{
+		if (MsSinceDraw() > static_cast<LONGLONG>(kStaleOverlayMs))
+			g_presentsWithoutOverlay.fetch_add(1);
+	}
+
 	// A frame Record turned away. Rate limited: it can repeat every frame.
 	static void LogReject(const char* reason, const D3D12_RESOURCE_DESC& desc)
 	{
@@ -1645,7 +1658,12 @@ namespace UiPass
 		}
 		slot.pending.store(true, std::memory_order_release);
 		g_lastDoneValue = slot.fenceValue;
-		g_lastDrawMs = GetTickCount64();
+		const ULONGLONG drawMs = GetTickCount64();
+		const ULONGLONG prevDrawMs = g_lastDrawMs.exchange(drawMs);
+		const UINT missed = g_presentsWithoutOverlay.exchange(0);
+		if (prevDrawMs && drawMs - prevDrawMs > kDrawGapLogMs)
+			IMGUI_LOG_INFO("[ImGuiBackend] Slate step drew again after %llu ms; %u presents without a fresh overlay",
+				static_cast<unsigned long long>(drawMs - prevDrawMs), missed);
 		++g_next;
 		g_drawOwnerThread.store(0, std::memory_order_release);
 		return index;
@@ -1871,6 +1889,7 @@ static HRESULT STDMETHODCALLTYPE HookedPresent(IDXGISwapChain* swapChain, UINT s
 	{
 		const char* path = UiPass::Drawing() ? "slate" : "none";
 		NoteDrawPath(path);
+		UiPass::NotePresentWithoutOverlay();
 		return PresentAndCheck(swapChain, syncInterval, flags, frameIdx, path);
 	}
 

@@ -2,7 +2,7 @@
 
 Manual test projects. **Nothing in here is built by "Build Solution" or by CI.**
 
-Each project appears in `StarRupture-ModLoader.sln` with `ActiveCfg` entries but no `Build.0`
+Each project (except TexUploadProbe, which is not in the solution) appears in `StarRupture-ModLoader.sln` with `ActiveCfg` entries but no `Build.0`
 entries -- which is what unchecking *Build* in Configuration Manager does. Visual Studio still shows
 it, still gives it IntelliSense, and still builds it when you right-click the project and pick
 **Build**. `msbuild StarRupture-ModLoader.sln` skips it, which is how `release.yml` stays unaffected.

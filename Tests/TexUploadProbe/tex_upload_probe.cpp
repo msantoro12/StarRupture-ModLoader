@@ -24,7 +24,7 @@ namespace
     constexpr int       kBurst        = 32;
     constexpr int       kRgbaSize     = 256;
     constexpr int       kMaxAttempts  = 512;            // UTexture2D candidates tried at most
-    constexpr int       kWalkCapacity = 8192;
+    constexpr int       kWalkCapacity = 65536;          // upper bound on the Texture2D walk
     constexpr ULONGLONG kDelayMs      = 5000;           // after the first world begins
     constexpr ULONGLONG kFallbackMs   = 60000;          // when no world event is seen
 
@@ -89,33 +89,45 @@ namespace
         // 2. Engine icon copies.
         QueryPerformanceCounter(&t2);
         IPluginObjectWalker* walker = hooks->ObjectWalker;
-        if (walker && walker->IsReady())
+        if (!walker || !walker->IsReady())
+            PROBE_LOG("walk: object walker %s, no engine copies", walker ? "not ready" : "missing");
+        else
         {
-            std::vector<PluginObjectInfo> found(kWalkCapacity);
-            const int total = walker->FindObjectsByClassNameInto("Texture2D", PluginObjectLookup_InstanceOnly,
-                found.data(), kWalkCapacity);
-            const int count = total < kWalkCapacity ? total : kWalkCapacity;
-            int attempts = 0;
-            for (int i = 0; i < count && utex < kBurst && attempts < kMaxAttempts && tex->GetFreeSlotCount() > 0; ++i)
+            try
             {
-                if (!found[i].object || !NameHasIcon(found[i].objectName))
-                    continue;
-                ++candidates;
-                ++attempts;
-                std::snprintf(name, sizeof(name), "TexProbeUtex_%d", utex);
-                try
+                // The first call only counts the instances; the second fills a buffer that holds them all.
+                PluginObjectInfo one{};
+                const int total = walker->FindObjectsByClassNameInto("Texture2D", PluginObjectLookup_InstanceOnly, &one, 1);
+                const int capacity = total < kWalkCapacity ? total : kWalkCapacity;
+                std::vector<PluginObjectInfo> found(capacity > 0 ? capacity : 1);
+                const int count = capacity > 0
+                    ? walker->FindObjectsByClassNameInto("Texture2D", PluginObjectLookup_InstanceOnly, found.data(), capacity)
+                    : 0;
+                int attempts = 0;
+                for (int i = 0; i < count && i < capacity && utex < kBurst && attempts < kMaxAttempts
+                    && tex->GetFreeSlotCount() > 0; ++i)
                 {
-                    if (PluginTextureHandle h = tex->LoadFromUTexture2D(static_cast<SDK::UTexture2D*>(found[i].object), name))
+                    if (!found[i].object || !NameHasIcon(found[i].objectName))
+                        continue;
+                    ++candidates;
+                    ++attempts;
+                    std::snprintf(name, sizeof(name), "TexProbeUtex_%d", utex);
+                    try
                     {
-                        handles.push_back(h);
-                        ++utex;
+                        if (PluginTextureHandle h = tex->LoadFromUTexture2D(static_cast<SDK::UTexture2D*>(found[i].object), name))
+                        {
+                            handles.push_back(h);
+                            ++utex;
+                        }
+                        else
+                            ++failed;
                     }
-                    else
-                        ++failed;
+                    catch (...) { ++failed; }
                 }
-                catch (...) { ++failed; }
+                PROBE_LOG("walk: %d Texture2D instance(s)%s, %d tried, %d copied", total,
+                    total > capacity ? " (walk truncated)" : "", candidates, utex);
             }
-            PROBE_LOG("walk: %d Texture2D instance(s), %d tried, %d copied", total, candidates, utex);
+            catch (...) { PROBE_LOG("walk: threw, engine copies stopped at %d", utex); }
         }
         QueryPerformanceCounter(&t3);
 

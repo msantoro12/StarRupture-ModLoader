@@ -4,7 +4,7 @@
   test/texture-copy-timing. See Tests/README.md. It is not in the solution and
   CI never builds it; name the project file to build it:
 
-    msbuild Tests\TexUploadProbe\TexUploadProbe.vcxproj /p:Configuration="Client Release" /p:Platform=x64
+    msbuild Tests\TexUploadProbe\TexUploadProbe.vcxproj /p:Configuration="Client Release" /p:Platform=x64 /p:SolutionDir=<repo root>\
 
   Output goes to build\tests\TexUploadProbe.dll, flat like PreloadTest.
 -->

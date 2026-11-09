@@ -54,6 +54,7 @@ ImGuiKey ImGui_ImplWin32_KeyEventToImGuiKey(WPARAM wParam, LPARAM lParam);
 static HRESULT STDMETHODCALLTYPE HookedPresent(IDXGISwapChain* swapChain, UINT syncInterval, UINT flags);
 static void ReclaimRetiredTextures();
 static void ReleaseGpuCopyContext();
+static void TexTimingFlushFrame();
 static void    STDMETHODCALLTYPE HookedECL(ID3D12CommandQueue* pQueue, UINT NumCmdLists, ID3D12CommandList* const* ppCmdLists);
 static HRESULT STDMETHODCALLTYPE HookedCreateSwapChainForHwnd(void* pFactory, IUnknown* pDevice, HWND hWnd,
 	const void* pDesc, const void* pFullscreenDesc, void* pRestrictToOutput, void* ppSwapChain);
@@ -1637,6 +1638,7 @@ namespace UiPass
 		{
 			std::lock_guard<std::recursive_mutex> imguiLock(g_imguiMutex);
 			// Before RenderFrame, as in HookedPresent.
+			TexTimingFlushFrame();
 			ReclaimRetiredTextures();
 			BuildImGuiFrame();
 
@@ -1921,6 +1923,7 @@ static HRESULT STDMETHODCALLTYPE HookedPresent(IDXGISwapChain* swapChain, UINT s
 	// Release plugin textures freed since the GPU last caught up. Before
 	// RenderFrame, so a slot freed here can be reused by a Load* without this
 	// frame ever having seen the old SRV.
+	TexTimingFlushFrame();
 	ReclaimRetiredTextures();
 
 	// Acquire the back buffer just for this frame -- released before returning
@@ -2418,6 +2421,157 @@ static IWICImagingFactory* GetWICFactory()
 	return g_wicFactory;
 }
 
+// ---------------------------------------------------------------------------
+// TEXTURE TIMING DIAGNOSTIC (test-only build, never for an upstream branch).
+// Times every Load* call and logs one "[TexTiming]" line per call, plus one
+// per frame whose uploads add up to more than 1 ms. A flag file next to the
+// loader DLLs (ModLoader\texture-old-path.flag) forces the old per-call
+// queue/fence/allocator path ("B") instead of the reused copy context ("A").
+// To drop it: delete this block, the TexTiming* / TexStage lines at the call
+// sites, and IsGameThread from ImGuiRenderCallbacks.
+// ---------------------------------------------------------------------------
+namespace
+{
+	bool g_texOldPath = false;   // set once by TexTimingInit, read under g_textureMutex
+
+	int64_t TexNow()
+	{
+		LARGE_INTEGER t;
+		QueryPerformanceCounter(&t);
+		return t.QuadPart;
+	}
+
+	double TexMs(int64_t ticks)
+	{
+		static const double freq = []{ LARGE_INTEGER f; QueryPerformanceFrequency(&f); return (double)f.QuadPart; }();
+		return (double)ticks * 1000.0 / freq;
+	}
+
+	// One outermost Load* call, per thread. LoadFromMemory and LoadFromFile call
+	// LoadFromRGBA, which only adds to the outer call instead of logging itself.
+	struct TexCall
+	{
+		const char* api      = "";
+		void*       caller   = nullptr;
+		char        name[64] = {};
+		int         width    = 0;
+		int         height   = 0;
+		int64_t     start    = 0;
+		int64_t     setup    = 0;   // resource creation + copy context create/reset/teardown
+		int64_t     copy     = 0;   // Map + row memcpy + Unmap
+		int64_t     wait     = 0;   // fence wait
+		bool        cached   = false;
+		bool        waited   = false;
+	};
+	thread_local TexCall tl_texCall;
+	thread_local int     tl_texDepth = 0;
+
+	// Upload time summed since the last frame boundary (TexTimingFlushFrame).
+	std::atomic<int64_t> g_texFrameTicks{ 0 };
+	std::atomic<int>     g_texFrameCalls{ 0 };
+
+	// Adds the time between construction and Stop() (or scope exit) to a TexCall field.
+	struct TexStage
+	{
+		int64_t* acc;
+		int64_t  t0;
+		explicit TexStage(int64_t& a) : acc(&a), t0(TexNow()) {}
+		void Stop() { if (acc) { *acc += TexNow() - t0; acc = nullptr; } }
+		~TexStage() { Stop(); }
+	};
+
+	const char* TexThreadKind(DWORD tid)
+	{
+		if (g_presentOwnerThread.load(std::memory_order_acquire) == tid ||
+			g_drawOwnerThread.load(std::memory_order_acquire) == tid)
+			return "render";
+		if (g_callbacks.IsGameThread && g_callbacks.IsGameThread())
+			return "game";
+		return "other";
+	}
+
+	// File name of the module that holds the caller's return address.
+	void TexCallerName(void* caller, char* out, size_t outSize)
+	{
+		snprintf(out, outSize, "?");
+		HMODULE mod = nullptr;
+		if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+			(LPCWSTR)caller, &mod))
+			return;
+		wchar_t path[MAX_PATH] = {};
+		if (!GetModuleFileNameW(mod, path, MAX_PATH))
+			return;
+		const wchar_t* base = wcsrchr(path, L'\\');
+		base = base ? base + 1 : path;
+		WideCharToMultiByte(CP_UTF8, 0, base, -1, out, (int)outSize, nullptr, nullptr);
+	}
+
+	// Put at the top of each public Load*. caller is _ReturnAddress() of that Load*.
+	class TexTimingScope
+	{
+	public:
+		TexTimingScope(const char* api, void* caller, int w, int h, const char* name)
+		{
+			if (tl_texDepth++ == 0)
+			{
+				tl_texCall = {};
+				tl_texCall.api    = api;
+				tl_texCall.caller = caller;
+				if (name) strncpy_s(tl_texCall.name, name, _TRUNCATE);
+				tl_texCall.start  = TexNow();
+			}
+			SetSize(w, h);
+		}
+		void SetSize(int w, int h)
+		{
+			if (w > 0 && h > 0) { tl_texCall.width = w; tl_texCall.height = h; }
+		}
+		~TexTimingScope()
+		{
+			if (--tl_texDepth != 0)
+				return;
+			const TexCall& c = tl_texCall;
+			const int64_t total = TexNow() - c.start;
+			g_texFrameTicks.fetch_add(total, std::memory_order_relaxed);
+			g_texFrameCalls.fetch_add(1, std::memory_order_relaxed);
+
+			char plugin[96];
+			TexCallerName(c.caller, plugin, sizeof(plugin));
+			const DWORD tid = GetCurrentThreadId();
+			IMGUI_LOG_INFO("[TexTiming] plugin=%s api=%s size=%dx%d total=%.3fms setup=%.3fms copy=%.3fms wait=%.3fms other=%.3fms "
+				"thread=%lu(%s) path=%s result=%s name='%s'",
+				plugin, c.api, c.width, c.height,
+				TexMs(total), TexMs(c.setup), TexMs(c.copy), TexMs(c.wait), TexMs(total - c.setup - c.copy - c.wait),
+				(unsigned long)tid, TexThreadKind(tid), g_texOldPath ? "B" : "A",
+				c.cached ? "cached" : (c.waited ? "uploaded" : "none"), c.name);
+		}
+	};
+}
+
+// Frame boundary: the render thread's overlay draw (Present, or Slate's present step).
+static void TexTimingFlushFrame()
+{
+	const int64_t ticks = g_texFrameTicks.exchange(0, std::memory_order_relaxed);
+	const int     calls = g_texFrameCalls.exchange(0, std::memory_order_relaxed);
+	if (calls > 0 && TexMs(ticks) > 1.0)
+		IMGUI_LOG_INFO("[TexTiming] frame total=%.3fms calls=%d", TexMs(ticks), calls);
+}
+
+// Once, at startup.
+static void TexTimingInit()
+{
+	wchar_t exe[MAX_PATH] = {};
+	GetModuleFileNameW(nullptr, exe, MAX_PATH);
+	wchar_t* slash = wcsrchr(exe, L'\\');
+	if (slash) *(slash + 1) = L'\0';
+	const std::wstring flag = std::wstring(exe) + L"ModLoader\\texture-old-path.flag";
+	g_texOldPath = GetFileAttributesW(flag.c_str()) != INVALID_FILE_ATTRIBUTES;
+
+	IMGUI_LOG_INFO("[TexTiming] texture timing diagnostics are ON (test build)");
+	IMGUI_LOG_INFO("[TexTiming] texture upload path: %s",
+		g_texOldPath ? "B (old, forced by flag)" : "A (reuse)");
+}
+
 // The queue, allocator, list, fence and event behind texture uploads and copies.
 // Its own queue, so it never conflicts with the main render queue. Made on first
 // use and kept, because making them per texture is wasted work.
@@ -2455,6 +2609,13 @@ static void ReleaseGpuCopyContext()
 // Returns an open list to record one copy into, or nullptr on failure.
 static ID3D12GraphicsCommandList* BeginGpuCopy()
 {
+	TexStage setupStage(tl_texCall.setup);
+
+	// Test build: path B makes and tears down the whole context per copy, as
+	// before the reuse change. FinishGpuCopy releases it again.
+	if (g_texOldPath)
+		ReleaseGpuCopyContext();
+
 	// A Load* that was waiting on g_textureMutex through the release in
 	// CleanupD3D12Resources must not make a new context on a device going away.
 	if (g_shutdown)
@@ -2503,13 +2664,19 @@ static bool FinishGpuCopy()
 	{
 		g_gpuCopy.queue->ExecuteCommandLists(1, lists);
 		const UINT64 value = ++g_gpuCopy.value;
+		TexStage waitStage(tl_texCall.wait);
 		ok = SUCCEEDED(g_gpuCopy.queue->Signal(g_gpuCopy.fence, value)) &&
 			SUCCEEDED(g_gpuCopy.fence->SetEventOnCompletion(value, g_gpuCopy.event)) &&
-			WaitForSingleObject(g_gpuCopy.event, INFINITE) == WAIT_OBJECT_0 &&
-			SUCCEEDED(g_device->GetDeviceRemovedReason());
+			WaitForSingleObject(g_gpuCopy.event, INFINITE) == WAIT_OBJECT_0;
+		waitStage.Stop();
+		ok = ok && SUCCEEDED(g_device->GetDeviceRemovedReason());
+		tl_texCall.waited = ok;
 	}
-	if (!ok)
+	if (!ok || g_texOldPath)
+	{
+		TexStage teardownStage(tl_texCall.setup);
 		ReleaseGpuCopyContext();
+	}
 	return ok;
 }
 
@@ -2522,6 +2689,8 @@ static ID3D12Resource* UploadRGBAToGPU(
 {
 	if (!g_device || !rgba || width <= 0 || height <= 0)
 		return nullptr;
+
+	TexStage createStage(tl_texCall.setup);
 
 	// Default heap texture
 	D3D12_HEAP_PROPERTIES heapProps = {};
@@ -2569,7 +2738,10 @@ static ID3D12Resource* UploadRGBAToGPU(
 		return nullptr;
 	}
 
+	createStage.Stop();
+
 	// Copy pixels row-by-row to respect pitch alignment
+	TexStage copyStage(tl_texCall.copy);
 	void* mapped = nullptr;
 	D3D12_RANGE mapRange = { 0, uploadSize };
 	if (FAILED(uploadBuffer->Map(0, &mapRange, &mapped)))
@@ -2582,6 +2754,7 @@ static ID3D12Resource* UploadRGBAToGPU(
 		memcpy((uint8_t*)mapped + (size_t)y * rowPitch,
 		       rgba + (size_t)y * width * 4, (size_t)width * 4);
 	uploadBuffer->Unmap(0, &mapRange);
+	copyStage.Stop();
 
 	ID3D12GraphicsCommandList* list = BeginGpuCopy();
 	if (!list)
@@ -2656,6 +2829,8 @@ static ID3D12Resource* CopyEngineTextureToOwned(
 {
 	if (!g_device || !srcResource) return nullptr;
 
+	TexStage createStage(tl_texCall.setup);
+
 	D3D12_HEAP_PROPERTIES heapProps = {};
 	heapProps.Type = D3D12_HEAP_TYPE_DEFAULT;
 
@@ -2666,6 +2841,7 @@ static ID3D12Resource* CopyEngineTextureToOwned(
 	if (FAILED(g_device->CreateCommittedResource(&heapProps, D3D12_HEAP_FLAG_NONE,
 		&dstDesc, D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&dstResource))))
 		return nullptr;
+	createStage.Stop();
 
 	ID3D12GraphicsCommandList* list = BeginGpuCopy();
 	if (!list)
@@ -2861,6 +3037,7 @@ static void ReclaimRetiredTextures()
 
 static PluginTextureHandle TextureLoadFromRGBA(const unsigned char* rgba, int width, int height, const char* name)
 {
+	TexTimingScope texTiming("LoadFromRGBA", _ReturnAddress(), width, height, name);
 	if (!g_device || !rgba || width <= 0 || height <= 0)
 		return nullptr;
 
@@ -2869,6 +3046,7 @@ static PluginTextureHandle TextureLoadFromRGBA(const unsigned char* rgba, int wi
 	if (PluginTextureRecord* existing = FindTextureByName(name))
 	{
 		existing->refCount++;
+		tl_texCall.cached = true;
 		IMGUI_LOG_DEBUG("[ImGuiBackend] TextureLoadFromRGBA '%s': reusing existing texture, refCount=%d",
 			existing->name, existing->refCount);
 		return existing;
@@ -3118,6 +3296,8 @@ static bool GetNativeResourceSEH(
 
 static PluginTextureHandle TextureLoadFromUTexture2D(SDK::UTexture2D* uTexture2D, const char* name)
 {
+	TexTimingScope texTiming("LoadFromUTexture2D", _ReturnAddress(), 0, 0, name);
+
 	// Warn if called from the render thread (inside HookedPresent).
 	// This causes a 44ms+ GPU stall that crashes Streamline/DLSS.
 	// Load textures from OnExperienceLoadComplete or another game-thread callback instead.
@@ -3149,6 +3329,7 @@ static PluginTextureHandle TextureLoadFromUTexture2D(SDK::UTexture2D* uTexture2D
 		if (PluginTextureRecord* existing = FindTextureByName(name))
 		{
 			existing->refCount++;
+			tl_texCall.cached = true;
 			IMGUI_LOG_DEBUG("[ImGuiBackend] LoadFromUTexture2D '%s': reusing existing texture, refCount=%d",
 				existing->name, existing->refCount);
 			return existing;
@@ -3194,6 +3375,7 @@ static PluginTextureHandle TextureLoadFromUTexture2D(SDK::UTexture2D* uTexture2D
 		return nullptr;
 	int width  = static_cast<int>(resDesc.Width);
 	int height = static_cast<int>(resDesc.Height);
+	texTiming.SetSize(width, height);
 	IMGUI_LOG_TRACE("[ImGuiBackend] LoadFromUTexture2D: desc %dx%d format=%u mips=%u dim=%u flags=0x%X",
 		width, height,
 		(unsigned)resDesc.Format,
@@ -3253,6 +3435,7 @@ static PluginTextureHandle TextureLoadFromUTexture2D(SDK::UTexture2D* uTexture2D
 	if (PluginTextureRecord* existing = FindTextureByName(name))
 	{
 		existing->refCount++;
+		tl_texCall.cached = true;
 		IMGUI_LOG_DEBUG("[ImGuiBackend] LoadFromUTexture2D '%s': reusing existing texture (registered concurrently), refCount=%d",
 			existing->name, existing->refCount);
 		return existing;
@@ -3306,6 +3489,7 @@ static PluginTextureHandle TextureLoadFromUTexture2D(SDK::UTexture2D* uTexture2D
 
 static PluginTextureHandle TextureLoadFromMemory(const void* data, size_t size, const char* name)
 {
+	TexTimingScope texTiming("LoadFromMemory", _ReturnAddress(), 0, 0, name);
 	if (!data || size == 0) return nullptr;
 
 	IWICImagingFactory* factory = GetWICFactory();
@@ -3342,6 +3526,7 @@ static PluginTextureHandle TextureLoadFromMemory(const void* data, size_t size, 
 
 static PluginTextureHandle TextureLoadFromFile(const char* utf8_path, const char* name)
 {
+	TexTimingScope texTiming("LoadFromFile", _ReturnAddress(), 0, 0, name);
 	if (!utf8_path || !*utf8_path) return nullptr;
 
 	// UTF-8 -> wide string for WIC
@@ -3484,6 +3669,7 @@ static void DL_AddImageRounded(PluginDrawList dl, PluginTextureHandle tex, float
 
 static void PopulateTextureAPI()
 {
+	TexTimingInit();
 	g_textureAPI.LoadFromFile        = TextureLoadFromFile;
 	g_textureAPI.LoadFromMemory      = TextureLoadFromMemory;
 	g_textureAPI.LoadFromRGBA        = TextureLoadFromRGBA;

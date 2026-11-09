@@ -33,6 +33,7 @@
 #include "../UI/toast.h"
 #include "../UI/update_notice_window.h"
 #include "../UI/wheel_test.h"
+#include "../utils/game_thread_dispatch.h"
 #include "../logging/log.h"
 
 static bool         s_imguiEnabled = true;
@@ -212,6 +213,7 @@ void InitClientUI()
             return Hooks::MouseWheel::Dispatch(msg, wParam, lParam, uiCapturing);
         };
         cbs.IsGameMouseShared = []() -> bool { return ShouldShareGameMouseNow(); };
+        cbs.IsGameThread = []() -> bool { return GameThreadDispatch::IsGameThread(); };
         cbs.GetFontFamily = []() -> const char*
         {
             return UI::GlobalSettings::GetFontFamily();

@@ -65,6 +65,9 @@ struct ImGuiRenderCallbacks
     // is fed the mouse then and keeps only the messages it wants; the keyboard
     // stays with the game unless an ImGui text field has focus.
     bool    (*IsGameMouseShared)();
+
+    // Test build (texture timing diagnostic): true on the game thread.
+    bool    (*IsGameThread)();
 };
 
 // The two fences that order one overlay draw, recorded at Slate's present

@@ -111,6 +111,28 @@ without it.
 
 ---
 
+## TexUploadProbe
+
+A plugin, only on the diagnostic branch `test/texture-copy-timing`. It runs one texture upload burst
+so the loader's `[TexTiming]` lines (and `texture-old-path.flag`) can be read without anyone at the
+keyboard. Being in `ModLoader\Plugins\` is the on switch; remove it when the runs are done.
+
+About 5 seconds after the first world begins (the main menu), on the game thread, it loads 32
+256x256 textures with `LoadFromRGBA`, copies up to 32 resident engine textures named `*icon*` with
+`LoadFromUTexture2D`, frees them all and logs once:
+
+```
+[Plugin:TexUploadProbe] [TexProbe] done: rgba=32 utex=32 freed=64 failed=0 rgba_ms=... utex_ms=...
+```
+
+```
+msbuild Tests\TexUploadProbe\TexUploadProbe.vcxproj /p:Configuration="Client Release" /p:Platform=x64 /p:SolutionDir=<repo root>\
+```
+
+Output is `build\tests\TexUploadProbe.dll`.
+
+---
+
 ## ConfigEditTests
 
 A console program, not a plugin: it runs on its own, with no game and no DLLs to copy anywhere.

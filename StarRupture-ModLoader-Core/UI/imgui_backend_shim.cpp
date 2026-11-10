@@ -24,6 +24,9 @@ namespace
     // Atomic too: the render and RHI threads call these.
     std::atomic<int  (*)(void*)>                    g_recordUiOverlayFn{ nullptr };
     std::atomic<bool (*)(int, ImGuiUiOverlaySync*)> g_submitUiOverlayFn{ nullptr };
+    // Atomic: the game thread and the RHI thread call these.
+    std::atomic<void (*)(const char*, const char*)> g_diagEventFn{ nullptr };
+    std::atomic<void (*)()>                         g_diagImmediateFn{ nullptr };
 }
 
 namespace UI::ImGuiBackend
@@ -55,6 +58,8 @@ namespace UI::ImGuiBackend
         g_getGameWindowFn.store(reinterpret_cast<HWND (*)()>(GetProcAddress(g_hostDll, "ImGuiHost_GetGameWindow")));
         g_recordUiOverlayFn.store(reinterpret_cast<int (*)(void*)>(GetProcAddress(g_hostDll, "ImGuiHost_RecordUiOverlay")));
         g_submitUiOverlayFn.store(reinterpret_cast<bool (*)(int, ImGuiUiOverlaySync*)>(GetProcAddress(g_hostDll, "ImGuiHost_SubmitUiOverlay")));
+        g_diagEventFn.store(reinterpret_cast<void (*)(const char*, const char*)>(GetProcAddress(g_hostDll, "ImGuiHost_DiagEvent")));
+        g_diagImmediateFn.store(reinterpret_cast<void (*)()>(GetProcAddress(g_hostDll, "ImGuiHost_DiagNoteImmediateSubmit")));
 
         if (!g_initFn)
         {
@@ -71,6 +76,8 @@ namespace UI::ImGuiBackend
     {
         g_getGameWindowFn.store(nullptr);
         g_recordUiOverlayFn.store(nullptr);
+        g_diagEventFn.store(nullptr);
+        g_diagImmediateFn.store(nullptr);
         if (g_shutdownFn) g_shutdownFn();
         g_submitUiOverlayFn.store(nullptr);
         if (g_hostDll)
@@ -128,6 +135,18 @@ namespace UI::ImGuiBackend
     {
         const auto fn = g_submitUiOverlayFn.load();
         return fn ? fn(slot, sync) : false;
+    }
+
+    void DiagEvent(const char* event, const char* detail)
+    {
+        const auto fn = g_diagEventFn.load();
+        if (fn) fn(event, detail);
+    }
+
+    void DiagNoteImmediateSubmit()
+    {
+        const auto fn = g_diagImmediateFn.load();
+        if (fn) fn();
     }
 }
 

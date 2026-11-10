@@ -53,6 +53,7 @@ extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg
 ImGuiKey ImGui_ImplWin32_KeyEventToImGuiKey(WPARAM wParam, LPARAM lParam);
 static HRESULT STDMETHODCALLTYPE HookedPresent(IDXGISwapChain* swapChain, UINT syncInterval, UINT flags);
 static void ReclaimRetiredTextures();
+namespace OverlayDiag { static void Event(const char* event, const char* detail); }
 static void ReleaseGpuCopyContext();
 static void PrecreateGpuCopyContext();
 static void    STDMETHODCALLTYPE HookedECL(ID3D12CommandQueue* pQueue, UINT NumCmdLists, ID3D12CommandList* const* ppCmdLists);
@@ -335,6 +336,11 @@ static void LogWindowStateMessage(UINT msg, WPARAM wParam, LPARAM lParam)
 	case WM_ACTIVATEAPP:
 		IMGUI_LOG_INFO("[ImGuiBackend] WM_ACTIVATEAPP active=%u thread=%u", static_cast<unsigned>(wParam),
 			static_cast<unsigned>(lParam));
+		{
+			char detail[32];
+			snprintf(detail, sizeof(detail), "active=%u", static_cast<unsigned>(wParam));
+			OverlayDiag::Event("WM_ACTIVATEAPP", detail);
+		}
 		break;
 	case WM_SIZE:
 	{
@@ -1394,6 +1400,186 @@ static void BuildImGuiFrame()
 }
 
 // ---------------------------------------------------------------------------
+// Overlay frame counters (diagnostic build)
+//
+// What the overlay did per presented frame, counted in memory (std::atomic, no
+// file I/O per frame). Logged: once at start, at most once a second and only
+// for a second with something unusual in it, and at world and focus events
+// with the totals since the previous event line. Nothing here changes what is
+// drawn. A resource pointer kept here is an identity value only: it is
+// compared, never dereferenced.
+// ---------------------------------------------------------------------------
+namespace OverlayDiag
+{
+	enum Counter : int
+	{
+		kPresents,              // Presents on the game's swap chain while Slate's step is the one drawing
+		kRecords,               // UiPass::Record calls that recorded a frame
+		kPresentsNoRecord,      // a Present with no Record since the previous Present
+		kRecordsPerPresent,     // a Record while the previous Record had not met a Present yet
+		kRecordThreadChanges,   // a Record on another thread than the last Record
+		kPresentThreadChanges,  // a Present on another thread than the last Present
+		kMismatchSibling,       // the Record's resource is another buffer of the swap chain
+		kMismatchForeign,       // the Record's resource is not a buffer of the swap chain
+		kImmediateSubmits,      // the submit command ran at once instead of in RHI command order
+		kRejects,               // frames Record turned away
+		kCount
+	};
+
+	static std::atomic<uint32_t>  g_count[kCount];
+	static std::atomic<bool>      g_recordSincePresent{ false };
+	static std::atomic<uintptr_t> g_lastRecordResource{ 0 };
+	static std::atomic<DWORD>     g_lastRecordThread{ 0 };
+	static std::atomic<DWORD>     g_lastPresentThread{ 0 };
+	static std::atomic<ULONGLONG> g_nextWindowMs{ 0 };
+
+	// Guards the two snapshots below. Taken once a second or once per event,
+	// never per frame.
+	static std::mutex g_emitMutex;
+	static uint32_t   g_windowSnap[kCount];
+	static ULONGLONG  g_windowSnapMs = 0;
+	static uint32_t   g_eventSnap[kCount];
+	static ULONGLONG  g_eventSnapMs = 0;
+
+	static void Inc(Counter c)
+	{
+		g_count[c].fetch_add(1, std::memory_order_relaxed);
+	}
+
+	static void Format(char* buf, size_t size, const uint32_t (&v)[kCount])
+	{
+		snprintf(buf, size,
+			"presents=%u records=%u presentsNoRecord=%u recordsPerPresent>1=%u recordThreadChanges=%u "
+			"presentThreadChanges=%u bufferMismatch=%u(sibling=%u foreign=%u) immediateSubmits=%u rejects=%u",
+			v[kPresents], v[kRecords], v[kPresentsNoRecord], v[kRecordsPerPresent], v[kRecordThreadChanges],
+			v[kPresentThreadChanges], v[kMismatchSibling] + v[kMismatchForeign], v[kMismatchSibling],
+			v[kMismatchForeign], v[kImmediateSubmits], v[kRejects]);
+	}
+
+	// Counts since the snapshot, which then moves to now. Under g_emitMutex.
+	static void Delta(uint32_t (&snap)[kCount], uint32_t (&delta)[kCount])
+	{
+		for (int i = 0; i < kCount; ++i)
+		{
+			const uint32_t now = g_count[i].load(std::memory_order_relaxed);
+			delta[i] = now - snap[i];
+			snap[i] = now;
+		}
+	}
+
+	static void EmitWindow(ULONGLONG nowMs)
+	{
+		uint32_t delta[kCount];
+		std::lock_guard<std::mutex> lock(g_emitMutex);
+		Delta(g_windowSnap, delta);
+		const ULONGLONG windowMs = g_windowSnapMs ? nowMs - g_windowSnapMs : 0;
+		g_windowSnapMs = nowMs;
+		bool unusual = false;
+		for (int i = 0; i < kCount; ++i)
+			unusual |= (i != kPresents && i != kRecords && delta[i] != 0);
+		if (!unusual)
+			return;
+		char buf[400];
+		Format(buf, sizeof(buf), delta);
+		IMGUI_LOG_INFO("[OverlayDiag] window=%llums %s", windowMs, buf);
+	}
+
+	// Presents and Records call this; whichever notices a second has passed
+	// writes the line.
+	static void Tick()
+	{
+		const ULONGLONG now = GetTickCount64();
+		ULONGLONG next = g_nextWindowMs.load(std::memory_order_relaxed);
+		if (now < next || !g_nextWindowMs.compare_exchange_strong(next, now + 1000))
+			return;
+		EmitWindow(now);
+	}
+
+	// A world or focus event: one line with the totals since the previous one.
+	static void Event(const char* event, const char* detail)
+	{
+		const ULONGLONG nowMs = GetTickCount64();
+		uint32_t delta[kCount];
+		std::lock_guard<std::mutex> lock(g_emitMutex);
+		Delta(g_eventSnap, delta);
+		const ULONGLONG sinceMs = g_eventSnapMs ? nowMs - g_eventSnapMs : 0;
+		g_eventSnapMs = nowMs;
+		char buf[400];
+		Format(buf, sizeof(buf), delta);
+		IMGUI_LOG_INFO("[OverlayDiag] event=%s%s%s sincePreviousEventMs=%llu %s", event ? event : "",
+			detail && *detail ? " " : "", detail ? detail : "", sinceMs, buf);
+	}
+
+	// Once, on the game's swap chain.
+	static void LogStart(IDXGISwapChain* swapChain)
+	{
+		DXGI_SWAP_CHAIN_DESC scDesc = {};
+		const UINT buffers = SUCCEEDED(swapChain->GetDesc(&scDesc)) ? scDesc.BufferCount : g_frameCount;
+		IMGUI_LOG_INFO("[OverlayDiag] start: swapChainBuffers=%u streamline=%s (sl.interposer.dll loaded; whether "
+			"frame generation is on is not detected). bufferMismatch is only meaningful with frame generation off",
+			buffers, g_streamlineActive ? "yes" : "no");
+	}
+
+	// Render thread, a frame recorded.
+	static void NoteRecord(const ID3D12Resource* resource)
+	{
+		Inc(kRecords);
+		g_lastRecordResource.store(reinterpret_cast<uintptr_t>(resource), std::memory_order_relaxed);
+		if (g_recordSincePresent.exchange(true, std::memory_order_acq_rel))
+			Inc(kRecordsPerPresent);
+		const DWORD tid = GetCurrentThreadId();
+		const DWORD prev = g_lastRecordThread.exchange(tid, std::memory_order_relaxed);
+		if (prev && prev != tid)
+			Inc(kRecordThreadChanges);
+		Tick();
+	}
+
+	// HookedPresent, every Present on the game's swap chain.
+	static void NotePresentThread(DWORD tid)
+	{
+		const DWORD prev = g_lastPresentThread.exchange(tid, std::memory_order_relaxed);
+		if (prev && prev != tid)
+			Inc(kPresentThreadChanges);
+		Tick();
+	}
+
+	static uintptr_t BufferIdentity(IDXGISwapChain3* swapChain, UINT index)
+	{
+		ID3D12Resource* buffer = nullptr;
+		if (FAILED(swapChain->GetBuffer(index, IID_PPV_ARGS(&buffer))) || !buffer)
+			return 0;
+		const uintptr_t id = reinterpret_cast<uintptr_t>(buffer);
+		buffer->Release();
+		return id;
+	}
+
+	// HookedPresent, a Present while Slate's step is the one drawing: was a
+	// frame recorded for it, and was it the buffer about to be presented?
+	static void NoteActivePresent(IDXGISwapChain* swapChain)
+	{
+		Inc(kPresents);
+		if (!g_recordSincePresent.exchange(false, std::memory_order_acq_rel))
+		{
+			Inc(kPresentsNoRecord);
+			return;
+		}
+		const uintptr_t drewInto = g_lastRecordResource.load(std::memory_order_relaxed);
+		IDXGISwapChain3* sc3 = nullptr;
+		if (!drewInto || FAILED(swapChain->QueryInterface(IID_PPV_ARGS(&sc3))))
+			return;
+		const UINT current = sc3->GetCurrentBackBufferIndex();
+		if (BufferIdentity(sc3, current) != drewInto)
+		{
+			bool sibling = false;
+			for (UINT i = 0; i < g_frameCount && !sibling; ++i)
+				sibling = (i != current && BufferIdentity(sc3, i) == drewInto);
+			Inc(sibling ? kMismatchSibling : kMismatchForeign);
+		}
+		sc3->Release();
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Drawing at Slate's present step (hooks/game/slate_present in the main DLL)
 //
 // Frame generation takes the game's UI from the back buffer at Slate's
@@ -1557,6 +1743,7 @@ namespace UiPass
 	static void LogReject(const char* reason, const D3D12_RESOURCE_DESC& desc)
 	{
 		static std::atomic<ULONGLONG> s_lastLogMs{ 0 };
+		OverlayDiag::Inc(OverlayDiag::kRejects);
 		const ULONGLONG now = GetTickCount64();
 		ULONGLONG last = s_lastLogMs.load();
 		if (now - last < kRejectLogMs || !s_lastLogMs.compare_exchange_strong(last, now))
@@ -1651,6 +1838,7 @@ namespace UiPass
 		slot.pending.store(true, std::memory_order_release);
 		g_lastDoneValue = slot.fenceValue;
 		g_lastDrawMs = GetTickCount64();
+		OverlayDiag::NoteRecord(backBuffer);
 		++g_next;
 		g_drawOwnerThread.store(0, std::memory_order_release);
 		return index;
@@ -1866,6 +2054,10 @@ static HRESULT STDMETHODCALLTYPE HookedPresent(IDXGISwapChain* swapChain, UINT s
 			static_cast<void*>(g_capturedQueue),
 			g_frameCount, static_cast<unsigned>(g_rtvFormat));
 
+	if (frameIdx == 0)
+		OverlayDiag::LogStart(swapChain);
+	OverlayDiag::NotePresentThread(tid);
+
 	// The overlay is already in this frame, drawn at Slate's present step.
 	{
 		DXGI_SWAP_CHAIN_DESC scDesc = {};
@@ -1874,6 +2066,7 @@ static HRESULT STDMETHODCALLTYPE HookedPresent(IDXGISwapChain* swapChain, UINT s
 	}
 	if (UiPass::Active())
 	{
+		OverlayDiag::NoteActivePresent(swapChain);
 		const char* path = UiPass::Drawing() ? "slate" : "none";
 		NoteDrawPath(path);
 		return PresentAndCheck(swapChain, syncInterval, flags, frameIdx, path);
@@ -4010,4 +4203,15 @@ extern "C" __declspec(dllexport) int ImGuiHost_RecordUiOverlay(void* rhiBackBuff
 extern "C" __declspec(dllexport) bool ImGuiHost_SubmitUiOverlay(int slot, ImGuiUiOverlaySync* sync)
 {
 	return UiPass::Submit(slot, sync);
+}
+
+// Overlay frame counters: see OverlayDiag.
+extern "C" __declspec(dllexport) void ImGuiHost_DiagEvent(const char* event, const char* detail)
+{
+	OverlayDiag::Event(event, detail);
+}
+
+extern "C" __declspec(dllexport) void ImGuiHost_DiagNoteImmediateSubmit()
+{
+	OverlayDiag::Inc(OverlayDiag::kImmediateSubmits);
 }

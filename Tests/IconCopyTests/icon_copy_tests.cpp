@@ -102,8 +102,7 @@ static void BudgetFreshAtTickZero()
 
 static void BudgetRefusalTakesNothing()
 {
-    // A call that is refused (or fails after being admitted) does not Take, so
-    // only started copies count.
+    // Asking takes nothing: only a copy that starts calls Take.
     IconCopy::TickBudget budget;
     for (int i = 0; i < 100; ++i)
         CHECK(budget.Available(9));
@@ -315,20 +314,95 @@ static void ChooseFullWithRows()
 static void ChooseReducedWithoutRows()
 {
     // No rows for the running build: whatever the probe says (it is not run),
-    // the copy goes ahead with no residency step and says why.
+    // the copy goes ahead, the source itself is made resident (which holds a
+    // committed one; D3D12 refuses a placed one), and it says why.
     for (IconCopy::HeapProbe probe : { IconCopy::HeapProbe::Committed, IconCopy::HeapProbe::Heap, IconCopy::HeapProbe::Invalid })
     {
         const IconCopy::Protection p = IconCopy::Choose(false, probe);
-        CHECK(p.residency == IconCopy::Residency::None);
+        CHECK(p.residency == IconCopy::Residency::Resource);
         CHECK(p.reduced != nullptr && std::strstr(p.reduced, "version map") != nullptr);
     }
 }
 
 static void ChooseReducedOnInvalidHeap()
 {
+    // The pointer is not followed: only the source itself is made resident.
     const IconCopy::Protection p = IconCopy::Choose(true, IconCopy::HeapProbe::Invalid);
-    CHECK(p.residency == IconCopy::Residency::None);
+    CHECK(p.residency == IconCopy::Residency::Resource);
     CHECK(p.reduced != nullptr && std::strstr(p.reduced, "heap") != nullptr);
+}
+
+static void RingOldestFence()
+{
+    FakeOps::Reset();
+    Ring<FakeOps> ring;
+    CHECK(ring.OldestFence() == 0);
+    ring.Start(ring.FreeSlot(), 7, Hold{});
+    ring.Start(ring.FreeSlot(), 5, Hold{});
+    ring.Start(ring.FreeSlot(), 9, Hold{});
+    CHECK(ring.OldestFence() == 5);
+    ring.Reclaim(5);
+    CHECK(ring.OldestFence() == 7);
+    ring.Reclaim(UINT64_MAX);
+    CHECK(ring.OldestFence() == 0);
+}
+
+static void StartsAtOnceWithinBothLimits()
+{
+    FakeOps::Reset();
+    Ring<FakeOps> ring;
+    IconCopy::TickBudget budget;
+    for (int i = 0; i < IconCopy::kMaxPerTick; ++i)
+    {
+        CHECK(IconCopy::WaitBeforeStart(ring, budget, true, 3) == 0);
+        budget.Take(3);
+        ring.Start(ring.FreeSlot(), static_cast<uint64_t>(i + 1), Hold{});
+    }
+}
+
+static void OverTheTickBudgetWaitsForTheOldest()
+{
+    // A plugin that loads a whole list in one tick: the ninth copy is not
+    // refused, it waits for the oldest one in flight.
+    FakeOps::Reset();
+    Ring<FakeOps> ring;
+    IconCopy::TickBudget budget;
+    for (int i = 0; i < IconCopy::kMaxPerTick; ++i)
+    {
+        budget.Take(3);
+        ring.Start(ring.FreeSlot(), static_cast<uint64_t>(i + 1), Hold{});
+    }
+    CHECK(IconCopy::WaitBeforeStart(ring, budget, true, 3) == 1);
+
+    // Once that copy is done the entry is free, but the tick's budget is still
+    // spent, so the next one waits for the new oldest.
+    ring.Reclaim(1);
+    CHECK(IconCopy::WaitBeforeStart(ring, budget, true, 3) == 2);
+
+    // With nothing in flight there is nothing to wait for: it starts.
+    ring.Reclaim(UINT64_MAX);
+    CHECK(IconCopy::WaitBeforeStart(ring, budget, true, 3) == 0);
+
+    // The next tick starts at once again.
+    ring.Start(ring.FreeSlot(), 20, Hold{});
+    CHECK(IconCopy::WaitBeforeStart(ring, budget, true, 4) == 0);
+}
+
+static void FullRingWaitsEvenWithoutATick()
+{
+    // No tick count (the tick hook is not in): no per-tick budget, but a full
+    // ring still makes the next copy wait for its oldest.
+    FakeOps::Reset();
+    Ring<FakeOps> ring;
+    IconCopy::TickBudget budget;
+    for (int i = 0; i < IconCopy::kMaxInFlight; ++i)
+    {
+        CHECK(IconCopy::WaitBeforeStart(ring, budget, false, 0) == 0);
+        ring.Start(ring.FreeSlot(), static_cast<uint64_t>(i + 10), Hold{});
+    }
+    CHECK(IconCopy::WaitBeforeStart(ring, budget, false, 0) == 10);
+    ring.Reclaim(10);
+    CHECK(IconCopy::WaitBeforeStart(ring, budget, false, 0) == 0);
 }
 
 int main()
@@ -351,6 +425,10 @@ int main()
     RunTest("Choose: full protection with the rows", ChooseFullWithRows);
     RunTest("Choose: reduced without the rows, the copy still runs", ChooseReducedWithoutRows);
     RunTest("Choose: reduced when the heap does not check out", ChooseReducedOnInvalidHeap);
+    RunTest("Ring: the oldest fence in flight", RingOldestFence);
+    RunTest("WaitBeforeStart: within both limits a copy starts at once", StartsAtOnceWithinBothLimits);
+    RunTest("WaitBeforeStart: past the tick budget, wait for the oldest copy", OverTheTickBudgetWaitsForTheOldest);
+    RunTest("WaitBeforeStart: a full ring waits, with or without a tick", FullRingWaitsEvenWithoutATick);
 
     printf("\n%d checks, %d failed\n", g_checks, g_failed);
     return g_failed == 0 ? 0 : 1;

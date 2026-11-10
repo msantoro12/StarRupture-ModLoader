@@ -11,7 +11,9 @@
 namespace IconCopy
 {
 	// At most this many copies on the GPU at once, and at most this many started
-	// in one engine tick. A call over either limit gets null and retries next tick.
+	// in one engine tick without waiting. A call over either limit first waits for
+	// the oldest copy in flight (WaitBeforeStart), so a plugin that loads a whole
+	// list in one pass still gets every icon.
 	constexpr int kMaxInFlight = 8;
 	constexpr int kMaxPerTick  = 8;
 
@@ -41,8 +43,7 @@ namespace IconCopy
 	// What keeps the source's memory resident while the copy runs.
 	enum class Residency
 	{
-		None,      // reduced: the source is held by reference and queue order only
-		Resource,  // a committed source: the resource itself is made resident
+		Resource,  // the resource itself is made resident (a committed source)
 		Heap,      // a placed source: the heap it lives in is made resident
 	};
 
@@ -60,15 +61,18 @@ namespace IconCopy
 		const char* reduced;  // why protection is reduced, or nullptr for full protection
 	};
 
+	// Without the rows, or with a heap pointer that does not check out, the source
+	// itself is still made resident: that works for a committed source, and D3D12
+	// refuses it for a placed one, which is then held by reference and queue order.
 	inline Protection Choose(bool rowsKnown, HeapProbe probe)
 	{
 		if (!rowsKnown)
-			return { Residency::None, "the version map has no heap rows for this game build" };
+			return { Residency::Resource, "the version map has no heap rows for this game build" };
 		switch (probe)
 		{
 		case HeapProbe::Committed: return { Residency::Resource, nullptr };
 		case HeapProbe::Heap:      return { Residency::Heap, nullptr };
-		default:                   return { Residency::None, "the source's heap pointer did not look like a D3D12 heap" };
+		default:                   return { Residency::Resource, "the source's heap pointer did not look like a D3D12 heap" };
 		}
 	}
 
@@ -180,6 +184,16 @@ namespace IconCopy
 
 		uint64_t LastFence() const { return m_lastFence; }
 
+		// The lowest fence value still in flight, or 0 when none is.
+		uint64_t OldestFence() const
+		{
+			uint64_t oldest = 0;
+			for (const Entry& e : m_entries)
+				if (e.busy && (oldest == 0 || e.fence < oldest))
+					oldest = e.fence;
+			return oldest;
+		}
+
 	private:
 		struct Entry
 		{
@@ -190,4 +204,17 @@ namespace IconCopy
 		Entry    m_entries[N];
 		uint64_t m_lastFence = 0;
 	};
+
+	// The fence value a new copy waits for before it starts, or 0 to start now.
+	// Within this tick's budget (haveTick false: no budget) and with an entry free
+	// it starts at once; over either limit it waits for the oldest copy in flight.
+	// Call after reclaiming the finished copies.
+	template <class Ops, int N>
+	uint64_t WaitBeforeStart(const Ring<Ops, N>& ring, const TickBudget& budget, bool haveTick, uint64_t tick)
+	{
+		const bool overTick = haveTick && !budget.Available(tick);
+		if (!overTick && ring.FreeSlot() >= 0)
+			return 0;
+		return ring.OldestFence();
+	}
 }

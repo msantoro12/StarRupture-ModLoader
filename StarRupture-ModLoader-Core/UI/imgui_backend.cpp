@@ -2825,7 +2825,11 @@ static ID3D12Resource* UploadRGBAToGPU(
 // failed Signal does.
 //
 // Everything here needs g_textureMutex held, and no wait is made with it held
-// except at shutdown (ReleaseIconCopies).
+// except two. At shutdown ReleaseIconCopies waits up to 1 s for the copies in
+// flight; it runs once, and those copies need nothing from this thread or the
+// mutex, so it only delays a load made during shutdown, which fails anyway.
+// Without ID3D12Device3 (Windows 10 before 1709) MakeResident is the only way
+// to take a count, and it returns only once the source is resident.
 // ---------------------------------------------------------------------------
 namespace
 {
@@ -2983,18 +2987,30 @@ static void ReleaseIconCopies()
 
 // The fence value an engine-texture copy waits for before it starts, or 0 to
 // start now (IconCopy::WaitBeforeStart). When not 0, *fence holds a reference
-// for WaitForIconCopy. *stalled: over the limits while g_iconCopyStalled is set,
-// so the call is not to wait (and returns 0). Mutex held.
-static UINT64 IconCopyWaitFor(bool haveTick, uint64_t tick, ID3D12Fence** fence, bool* stalled)
+// for WaitForIconCopy. *notCopied, when set, says why the call is not to copy
+// (and returns 0): copies are off, a residency request is parked, or the call
+// is over the limits while g_iconCopyStalled is set. Mutex held.
+static UINT64 IconCopyWaitFor(bool haveTick, uint64_t tick, ID3D12Fence** fence, const char** notCopied)
 {
-	*stalled = false;
+	*notCopied = nullptr;
 	if (!g_iconCopy.fence)
 		return 0;  // nothing started yet; the queue is made with the first copy
 	ReclaimIconCopies();
+	if (g_iconCopyOff)
+	{
+		*notCopied = "engine-texture copies are off for the session";
+		return 0;
+	}
+	if (!g_iconCopy.parked.Empty())
+	{
+		// Requests finish in order, so a new one could not finish sooner.
+		*notCopied = "an earlier source is still becoming resident";
+		return 0;
+	}
 	const UINT64 value = IconCopy::WaitBeforeStart(g_iconCopy.ring, g_iconTickBudget, haveTick, tick);
 	if (value && g_iconCopyStalled)
 	{
-		*stalled = true;
+		*notCopied = "the GPU has not finished a copy since a wait ran out";
 		return 0;
 	}
 	if (value)
@@ -3762,7 +3778,7 @@ static PluginTextureHandle TextureLoadFromUTexture2D(SDK::UTexture2D* uTexture2D
 	// over the per-tick or in-flight limit, wait for the oldest copy first.
 	UINT64       waitFor   = 0;
 	ID3D12Fence* waitFence = nullptr;
-	bool         stalled   = false;
+	const char*  notCopied = nullptr;
 	{
 		std::lock_guard<std::mutex> lock(g_textureMutex);
 		if (PluginTextureRecord* existing = FindTextureByName(name))
@@ -3772,12 +3788,11 @@ static PluginTextureHandle TextureLoadFromUTexture2D(SDK::UTexture2D* uTexture2D
 				existing->name, existing->refCount);
 			return existing;
 		}
-		waitFor = IconCopyWaitFor(haveTick, tick, &waitFence, &stalled);
+		waitFor = IconCopyWaitFor(haveTick, tick, &waitFence, &notCopied);
 	}
-	if (stalled)
+	if (notCopied)
 	{
-		IMGUI_LOG_TRACE("[ImGuiBackend] LoadFromUTexture2D '%s': the GPU has not finished a copy since a wait ran out -- not copied",
-			name ? name : "?");
+		IMGUI_LOG_TRACE("[ImGuiBackend] LoadFromUTexture2D '%s': %s -- not copied", name ? name : "?", notCopied);
 		return nullptr;
 	}
 	if (waitFor)
@@ -3952,7 +3967,7 @@ static PluginTextureHandle TextureLoadFromUTexture2D(SDK::UTexture2D* uTexture2D
 				return nullptr;  // logged when it was set
 			if (!g_iconCopy.parked.Empty())
 			{
-				// Requests finish in order, so a new one could not finish sooner.
+				// Parked by another call since IconCopyWaitFor checked.
 				IMGUI_LOG_TRACE("[ImGuiBackend] LoadFromUTexture2D '%s': an earlier source is still becoming resident -- not copied",
 					name ? name : "?");
 				return nullptr;
@@ -4017,8 +4032,9 @@ static PluginTextureHandle TextureLoadFromUTexture2D(SDK::UTexture2D* uTexture2D
 			static std::atomic<bool> s_slowLogged{ false };
 			if (!s_slowLogged.exchange(true))
 				IMGUI_LOG_WARN("[ImGuiBackend] LoadFromUTexture2D '%s': making the source resident did not finish within %lu ms "
-					"or could not be waited for -- returns null (not copied, ask again), as does every call until it finishes "
-					"(logged once)", name ? name : "?", kIconResidentWaitMs);
+					"or could not be waited for -- returns null (not copied, ask again), as does every new copy until it "
+					"finishes; if it has not in %llu s, no more engine textures are copied this session (logged once)",
+					name ? name : "?", kIconResidentWaitMs, kIconResidentGiveUpMs / 1000);
 		}
 		residentFence->Release();
 		if (!resident)

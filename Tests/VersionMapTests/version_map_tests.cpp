@@ -1456,6 +1456,15 @@ int main()
 		oldRow = fieldRow("UCrEnviroWaveTimerSubsystem::TimerActor", 127004);
 		newRow = fieldRow("UCrEnviroWaveTimerSubsystem::TimerActor", 128786);
 		Check(oldRow && oldRow->offset == 0x90 && newRow && newRow->offset == 0x98, "real field rows: TimerActor 0x90 on CL-127004, 0x98 on CL-128786");
+		// The engine heap behind a placed D3D12 resource: FD3D12Resource::Heap and the ID3D12Heap pointer in FD3D12Heap.
+		// One pointer each, the same offsets on both builds that were measured.
+		for (const uint32_t cl : { 127004u, 129402u })
+		{
+			const Real::VersionMap::FieldRow* resourceHeap = fieldRow("FD3D12Resource::Heap", cl);
+			const Real::VersionMap::FieldRow* heapHeap = fieldRow("FD3D12Heap::Heap", cl);
+			Check(resourceHeap && resourceHeap->offset == 0x30 && resourceHeap->size == 0x8 && resourceHeap->boolMask == 0, "real field rows: FD3D12Resource::Heap is a pointer at 0x30");
+			Check(heapHeap && heapHeap->offset == 0x20 && heapHeap->size == 0x8 && heapHeap->boolMask == 0, "real field rows: FD3D12Heap::Heap is a pointer at 0x20");
+		}
 	}
 	// The real map's function rows for Build Windows Anywhere and Build Benches Anywhere: one function-start row per
 	// build, the CL-127004 rows untouched by the CL-128786 ones. Each row is the plugin's own pattern that was proven on

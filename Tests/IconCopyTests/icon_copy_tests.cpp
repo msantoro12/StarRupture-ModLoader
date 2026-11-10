@@ -405,6 +405,111 @@ static void FullRingWaitsEvenWithoutATick()
     CHECK(IconCopy::WaitBeforeStart(ring, budget, false, 0) == 0);
 }
 
+// A parked hold keeps its residency count until its request has finished: an
+// Evict while it may still be paging in could race it.
+static void ParkedReleasesOnlyOnceTheRequestFinished()
+{
+    FakeOps::Reset();
+    IconCopy::Parked<FakeOps> parked;
+    CHECK(parked.Empty());
+    {
+        PendingHold<FakeOps> hold;
+        hold.Get() = FullHold(0, true);
+        CHECK(parked.Park(7, hold, 1000));
+        CHECK(hold.Get().source == nullptr);  // the hold is the parked list's now
+    }
+    CHECK(Evicted(Object(1)) == 0);
+    CHECK(Released(Object(0)) == 0);
+    CHECK(parked.Count() == 1);
+
+    CHECK(!parked.Reclaim(6, 1100, 10000));
+    CHECK(Evicted(Object(1)) == 0);
+    CHECK(!parked.AllDone(6));
+
+    CHECK(!parked.Reclaim(7, 1200, 10000));
+    CHECK(Evicted(Object(1)) == 1);
+    CHECK(Released(Object(0)) == 1);
+    CHECK(Released(Object(1)) == 1);
+    CHECK(Released(Object(2)) == 1);
+    CHECK(parked.Empty());
+    CHECK(parked.AllDone(7));
+
+    // A lost device completes every fence.
+    PendingHold<FakeOps> hold;
+    hold.Get() = FullHold(10, false);
+    CHECK(parked.Park(8, hold, 1300));
+    parked.Reclaim(UINT64_MAX, 1300, 10000);
+    CHECK(Evicted(Object(10)) == 1);
+    CHECK(parked.Empty());
+}
+
+static void ParkedRefusesWhenFull()
+{
+    FakeOps::Reset();
+    IconCopy::Parked<FakeOps, 2> parked;
+    for (int i = 0; i < 2; ++i)
+    {
+        PendingHold<FakeOps> hold;
+        hold.Get() = FullHold(i * 4, false);
+        CHECK(parked.Park(static_cast<uint64_t>(i + 1), hold, 0));
+    }
+    {
+        PendingHold<FakeOps> hold;
+        hold.Get() = FullHold(20, false);
+        CHECK(!parked.Park(3, hold, 0));
+        CHECK(hold.Get().source == Object(20));  // left with the caller
+        hold.Abandon();
+    }
+    CHECK(parked.Count() == 2);
+    CHECK(Evicted(Object(20)) == 0);
+}
+
+// Expired: some still parked and none has finished for the limit, counted from
+// the oldest one's park or the last one that finished.
+static void ParkedExpiresWithoutProgress()
+{
+    FakeOps::Reset();
+    IconCopy::Parked<FakeOps> parked;
+    CHECK(!parked.Reclaim(0, 50000, 10000));  // empty never expires
+
+    PendingHold<FakeOps> a;
+    a.Get() = FullHold(0, false);
+    CHECK(parked.Park(1, a, 100000));
+    PendingHold<FakeOps> b;
+    b.Get() = FullHold(4, false);
+    CHECK(parked.Park(2, b, 105000));  // the clock stays at the oldest
+
+    CHECK(!parked.Reclaim(0, 109999, 10000));
+    CHECK(parked.Reclaim(0, 110000, 10000));
+
+    // The first finishes: the clock restarts for the second.
+    CHECK(!parked.Reclaim(1, 111000, 10000));
+    CHECK(parked.Count() == 1);
+    CHECK(!parked.Reclaim(1, 120999, 10000));
+    CHECK(parked.Reclaim(1, 121000, 10000));
+
+    parked.AbandonAll();
+    CHECK(parked.Empty());
+    CHECK(Evicted(Object(4)) == 0);
+    CHECK(Released(Object(4)) == 0);
+}
+
+// A park into an empty list starts the clock afresh, however long ago the
+// list was last looked at.
+static void ParkedClockStartsAtThePark()
+{
+    FakeOps::Reset();
+    IconCopy::Parked<FakeOps> parked;
+    CHECK(!parked.Reclaim(0, 1000, 10000));
+    PendingHold<FakeOps> hold;
+    hold.Get() = FullHold(0, false);
+    CHECK(parked.Park(1, hold, 500000));
+    CHECK(!parked.Reclaim(0, 500001, 10000));
+    parked.ReleaseAll();
+    CHECK(Evicted(Object(0)) == 1);
+    CHECK(parked.Empty());
+}
+
 int main()
 {
     RunTest("TickBudget: eight copies per tick", BudgetAllowsEightPerTick);
@@ -429,6 +534,10 @@ int main()
     RunTest("WaitBeforeStart: within both limits a copy starts at once", StartsAtOnceWithinBothLimits);
     RunTest("WaitBeforeStart: past the tick budget, wait for the oldest copy", OverTheTickBudgetWaitsForTheOldest);
     RunTest("WaitBeforeStart: a full ring waits, with or without a tick", FullRingWaitsEvenWithoutATick);
+    RunTest("Parked: released only once the residency request finished", ParkedReleasesOnlyOnceTheRequestFinished);
+    RunTest("Parked: refuses when full, the hold stays with the caller", ParkedRefusesWhenFull);
+    RunTest("Parked: expires when none finishes for the limit", ParkedExpiresWithoutProgress);
+    RunTest("Parked: the clock starts at the park", ParkedClockStartsAtThePark);
 
     printf("\n%d checks, %d failed\n", g_checks, g_failed);
     return g_failed == 0 ? 0 : 1;

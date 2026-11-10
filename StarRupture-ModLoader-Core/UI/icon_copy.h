@@ -205,6 +205,51 @@ namespace IconCopy
 		uint64_t m_lastFence = 0;
 	};
 
+	// The holds of copies not made because the source's residency request had not
+	// finished in time. A residency count is given back (Evict) only after its
+	// request has finished, so each hold waits here until the residency fence
+	// passes its request's value. Requests finish in order.
+	template <class Ops, int N = kMaxInFlight>
+	class Parked
+	{
+	public:
+		bool Empty() const { return m_ring.InFlight() == 0; }
+		int  Count() const { return m_ring.InFlight(); }
+
+		// Takes the hold, to be released once the fence reaches residentValue.
+		// False, with the hold left as it was, when all N entries are taken.
+		bool Park(uint64_t residentValue, PendingHold<Ops>& hold, uint64_t nowMs)
+		{
+			const int slot = m_ring.FreeSlot();
+			if (slot < 0)
+				return false;
+			if (Empty())
+				m_sinceMs = nowMs;
+			m_ring.Start(slot, residentValue, hold.Take());
+			return true;
+		}
+
+		// Releases the holds whose request has finished. True when some are still
+		// waiting and none has finished for limitMs, counted from when the oldest
+		// was parked or from the last one that finished.
+		bool Reclaim(uint64_t residentDone, uint64_t nowMs, uint64_t limitMs)
+		{
+			if (m_ring.Reclaim(residentDone) > 0)
+				m_sinceMs = nowMs;
+			return !Empty() && nowMs - m_sinceMs >= limitMs;
+		}
+
+		// True when every request ever parked has finished.
+		bool AllDone(uint64_t residentDone) const { return residentDone >= m_ring.LastFence(); }
+
+		void ReleaseAll() { m_ring.ReleaseAll(); }
+		void AbandonAll() { m_ring.AbandonAll(); }
+
+	private:
+		Ring<Ops, N> m_ring;
+		uint64_t     m_sinceMs = 0;
+	};
+
 	// The fence value a new copy waits for before it starts, or 0 to start now.
 	// Within this tick's budget (haveTick false: no budget) and with an entry free
 	// it starts at once; over either limit it waits for the oldest copy in flight.

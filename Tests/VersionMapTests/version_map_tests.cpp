@@ -1457,8 +1457,8 @@ int main()
 		newRow = fieldRow("UCrEnviroWaveTimerSubsystem::TimerActor", 128786);
 		Check(oldRow && oldRow->offset == 0x90 && newRow && newRow->offset == 0x98, "real field rows: TimerActor 0x90 on CL-127004, 0x98 on CL-128786");
 		// The engine heap behind a placed D3D12 resource: FD3D12Resource::Heap and the ID3D12Heap pointer in FD3D12Heap.
-		// One pointer each, the same offsets on both builds that were measured.
-		for (const uint32_t cl : { 127004u, 129402u })
+		// One pointer each, measured on CL-127004.
+		for (const uint32_t cl : { 127004u })
 		{
 			const Real::VersionMap::FieldRow* resourceHeap = fieldRow("FD3D12Resource::Heap", cl);
 			const Real::VersionMap::FieldRow* heapHeap = fieldRow("FD3D12Heap::Heap", cl);

@@ -2812,7 +2812,8 @@ static ID3D12Resource* UploadRGBAToGPU(
 // the oldest copy in flight: plugins that load a whole list in one pass and
 // never retry still get every icon, paced by the GPU instead of one full wait
 // per copy. The other wait is for a residency request, bounded by
-// kIconResidentWaitMs.
+// kIconResidentWaitMs; once one runs past it, the game's queue waits for each
+// copy's residency on the GPU instead.
 //
 // Everything here needs g_textureMutex held.
 // ---------------------------------------------------------------------------
@@ -2858,10 +2859,15 @@ namespace
 	std::atomic<bool>   g_iconCopyOff{ false };
 
 	// Set when a residency request ran past kIconResidentWaitMs. Paging is that
-	// slow, so later copies skip the step (each would wait as long) and are held
-	// by reference and queue order only. The late request's count is never
-	// evicted, since it may still complete.
-	std::atomic<bool>   g_iconResidencyOff{ false };
+	// slow, so from then on no copy waits for residency on the CPU (each would
+	// wait as long): the game's queue waits for the request on the GPU before
+	// the copy instead.
+	std::atomic<bool>   g_iconResidencyOnGpu{ false };
+
+	// Set when a wait for a copy ran past kIconSlotWaitMs. Until a copy is seen
+	// done again, a call over the limits returns null instead of waiting, so a
+	// stuck GPU costs one wait, not one per icon.
+	std::atomic<bool>   g_iconCopyStalled{ false };
 
 	constexpr DWORD kIconResidentWaitMs = 250;
 	constexpr DWORD kIconSlotWaitMs     = 1000;
@@ -2871,7 +2877,8 @@ namespace
 static void ReclaimIconCopies()
 {
 	const UINT64 completed = g_iconCopy.fence->GetCompletedValue();
-	g_iconCopy.ring.Reclaim(completed);
+	if (g_iconCopy.ring.Reclaim(completed) > 0)
+		g_iconCopyStalled = false;
 	g_iconCopiesInFlight.store(g_iconCopy.ring.InFlight());
 	g_iconCopyDone.store(completed);
 }
@@ -2953,13 +2960,20 @@ static void ReleaseIconCopies()
 
 // The fence value an engine-texture copy waits for before it starts, or 0 to
 // start now (IconCopy::WaitBeforeStart). When not 0, *fence holds a reference
-// for WaitForIconCopy. Mutex held.
-static UINT64 IconCopyWaitFor(bool haveTick, uint64_t tick, ID3D12Fence** fence)
+// for WaitForIconCopy. *stalled: over the limits while g_iconCopyStalled is set,
+// so the call is not to wait (and returns 0). Mutex held.
+static UINT64 IconCopyWaitFor(bool haveTick, uint64_t tick, ID3D12Fence** fence, bool* stalled)
 {
+	*stalled = false;
 	if (!g_iconCopy.fence)
 		return 0;  // nothing started yet; the queue is made with the first copy
 	ReclaimIconCopies();
 	const UINT64 value = IconCopy::WaitBeforeStart(g_iconCopy.ring, g_iconTickBudget, haveTick, tick);
+	if (value && g_iconCopyStalled)
+	{
+		*stalled = true;
+		return 0;
+	}
 	if (value)
 	{
 		g_iconCopy.fence->AddRef();
@@ -2969,8 +2983,9 @@ static UINT64 IconCopyWaitFor(bool haveTick, uint64_t tick, ID3D12Fence** fence)
 }
 
 // Waits at most kIconSlotWaitMs for fence to reach value, then releases the
-// reference IconCopyWaitFor took. Mutex NOT held: the render thread keeps
-// drawing, and the copy waited for never depends on it.
+// reference IconCopyWaitFor took. False, with g_iconCopyStalled set, when it did
+// not get there. Mutex NOT held: the render thread keeps drawing, and the copy
+// waited for never depends on it.
 static bool WaitForIconCopy(ID3D12Fence* fence, UINT64 value)
 {
 	bool done = fence->GetCompletedValue() >= value;
@@ -2984,16 +2999,20 @@ static bool WaitForIconCopy(ID3D12Fence* fence, UINT64 value)
 		}
 	}
 	fence->Release();
+	if (!done)
+		g_iconCopyStalled = true;
 	return done;
 }
 
-enum class IconResidency { Resident, OverBudget, Refused, TimedOut };
+// Pending: counted, but still paging in; the copy must be queued behind
+// residentFence reaching *pendingValue.
+enum class IconResidency { Resident, Pending, OverBudget, Refused };
 
 // Takes a residency count on pageable for the copy, waiting at most
-// kIconResidentWaitMs for its memory to be resident. *counted says whether a
-// count was taken (an Evict must balance it), whatever the result. Mutex held,
-// the queue made.
-static IconResidency MakeIconSourceResident(ID3D12Pageable* pageable, bool* counted, HRESULT* result)
+// kIconResidentWaitMs on the CPU for its memory to be resident (not at all once
+// g_iconResidencyOnGpu is set). *counted says whether a count was taken (an
+// Evict must balance it), whatever the result. Mutex held, the queue made.
+static IconResidency MakeIconSourceResident(ID3D12Pageable* pageable, bool* counted, HRESULT* result, UINT64* pendingValue)
 {
 	IconCopyQueue& q = g_iconCopy;
 	ID3D12Pageable* const objects[] = { pageable };
@@ -3007,11 +3026,17 @@ static IconResidency MakeIconSourceResident(ID3D12Pageable* pageable, bool* coun
 		*counted = SUCCEEDED(hr);
 		if (SUCCEEDED(hr) && q.residentFence->GetCompletedValue() < value)
 		{
-			hr = q.residentFence->SetEventOnCompletion(value, q.residentEvent);
-			if (SUCCEEDED(hr) && WaitForSingleObject(q.residentEvent, kIconResidentWaitMs) != WAIT_OBJECT_0)
+			const bool resident = !g_iconResidencyOnGpu &&
+				SUCCEEDED(q.residentFence->SetEventOnCompletion(value, q.residentEvent)) &&
+				WaitForSingleObject(q.residentEvent, kIconResidentWaitMs) == WAIT_OBJECT_0;
+			if (!resident)
 			{
-				*result = S_OK;
-				return IconResidency::TimedOut;
+				if (!g_iconResidencyOnGpu.exchange(true))
+					IMGUI_LOG_WARN("[ImGuiBackend] Icon copies: making a source resident took over %lu ms -- from now on "
+						"each copy waits for its residency on the GPU instead", kIconResidentWaitMs);
+				*result       = S_OK;
+				*pendingValue = value;
+				return IconResidency::Pending;
 			}
 		}
 	}
@@ -3043,6 +3068,9 @@ static IconResidency MakeIconSourceResident(ID3D12Pageable* pageable, bool* coun
 // COPY_SOURCE and back runs from and to that state, in queue order. COMMON
 // promotes to COPY_SOURCE on its own and decays back, so it needs no barrier.
 //
+// residentWait, when not 0, is the residency fence value the source's memory is
+// still paging in for: the queue waits for it on the GPU before the copy.
+//
 // Mutex held, the queue made, a ring entry free.
 static ID3D12Resource* StartEngineTextureCopy(
 	IconCopy::PendingHold<IconCopyOps>& hold,
@@ -3051,6 +3079,7 @@ static ID3D12Resource* StartEngineTextureCopy(
 	const D3D12_RESOURCE_DESC&  srcDesc,
 	DXGI_FORMAT                 srvFormat,
 	D3D12_CPU_DESCRIPTOR_HANDLE srvCpuHandle,
+	UINT64                      residentWait,
 	UINT64*                     outFence)
 {
 	IconCopyQueue& q = g_iconCopy;
@@ -3124,6 +3153,12 @@ static ID3D12Resource* StartEngineTextureCopy(
 	}
 
 	if (!GpuCopyStep("CommandList::Close", list->Close()))
+	{
+		dstResource->Release();
+		return nullptr;
+	}
+
+	if (residentWait && !GpuCopyStep("Wait (residency)", g_cmdQueue->Wait(q.residentFence, residentWait)))
 	{
 		dstResource->Release();
 		return nullptr;
@@ -3723,6 +3758,7 @@ static PluginTextureHandle TextureLoadFromUTexture2D(SDK::UTexture2D* uTexture2D
 	// over the per-tick or in-flight limit, wait for the oldest copy first.
 	UINT64       waitFor   = 0;
 	ID3D12Fence* waitFence = nullptr;
+	bool         stalled   = false;
 	{
 		std::lock_guard<std::mutex> lock(g_textureMutex);
 		if (PluginTextureRecord* existing = FindTextureByName(name))
@@ -3732,7 +3768,13 @@ static PluginTextureHandle TextureLoadFromUTexture2D(SDK::UTexture2D* uTexture2D
 				existing->name, existing->refCount);
 			return existing;
 		}
-		waitFor = IconCopyWaitFor(haveTick, tick, &waitFence);
+		waitFor = IconCopyWaitFor(haveTick, tick, &waitFence, &stalled);
+	}
+	if (stalled)
+	{
+		IMGUI_LOG_TRACE("[ImGuiBackend] LoadFromUTexture2D '%s': the GPU has not finished a copy since a wait ran out -- not copied",
+			name ? name : "?");
+		return nullptr;
 	}
 	if (waitFor)
 	{
@@ -3742,8 +3784,9 @@ static PluginTextureHandle TextureLoadFromUTexture2D(SDK::UTexture2D* uTexture2D
 		{
 			static std::atomic<bool> s_slowLogged{ false };
 			if (!s_slowLogged.exchange(true))
-				IMGUI_LOG_WARN("[ImGuiBackend] LoadFromUTexture2D '%s': the icon copies on the GPU did not finish within %lu ms -- "
-					"not copied (logged once)", name ? name : "?", kIconSlotWaitMs);
+				IMGUI_LOG_WARN("[ImGuiBackend] LoadFromUTexture2D '%s': waiting for the icon copies on the GPU failed or ran past "
+					"%lu ms -- not copied, nor any icon over the limits until a copy finishes (logged once)",
+					name ? name : "?", kIconSlotWaitMs);
 			return nullptr;
 		}
 	}
@@ -3924,20 +3967,25 @@ static PluginTextureHandle TextureLoadFromUTexture2D(SDK::UTexture2D* uTexture2D
 		}
 
 		const char* held = "by reference and queue order only";
-		if (!g_iconResidencyOff)
+		UINT64 residentWait = 0;
 		{
 			ID3D12Pageable* pageable = protection.residency == IconCopy::Residency::Heap
 				? static_cast<ID3D12Pageable*>(heap)
 				: static_cast<ID3D12Pageable*>(d3dResource);
 			bool counted = false;
 			HRESULT hr = S_OK;
-			const IconResidency residency = MakeIconSourceResident(pageable, &counted, &hr);
+			const IconResidency residency = MakeIconSourceResident(pageable, &counted, &hr, &residentWait);
 			if (counted)
 				hold.Get().resident = pageable;
 			switch (residency)
 			{
 			case IconResidency::Resident:
 				held = protection.residency == IconCopy::Residency::Heap ? "with its heap resident" : "resident";
+				break;
+			case IconResidency::Pending:
+				held = protection.residency == IconCopy::Residency::Heap
+					? "with its heap resident, the copy queued behind its residency"
+					: "resident, the copy queued behind its residency";
 				break;
 			case IconResidency::OverBudget:
 				IMGUI_LOG_DEBUG("[ImGuiBackend] LoadFromUTexture2D '%s': no video memory to keep the source resident -- retry next tick",
@@ -3954,14 +4002,6 @@ static PluginTextureHandle TextureLoadFromUTexture2D(SDK::UTexture2D* uTexture2D
 						name ? name : "?", static_cast<unsigned>(hr));
 				break;
 			}
-			case IconResidency::TimedOut:
-				// The request may still complete, so its count is never evicted.
-				hold.Get().resident = nullptr;
-				g_iconResidencyOff = true;
-				IMGUI_LOG_WARN("[ImGuiBackend] Icon copies: making '%s' resident took over %lu ms -- icons still load, "
-					"but no more sources are made resident this session (reduced protection)",
-					name ? name : "?", kIconResidentWaitMs);
-				break;
 			}
 		}
 
@@ -3981,7 +4021,7 @@ static PluginTextureHandle TextureLoadFromUTexture2D(SDK::UTexture2D* uTexture2D
 
 		UINT64 copyFence = 0;
 		if (ID3D12Resource* ownedResource = StartEngineTextureCopy(
-			hold, d3dResource, srcState, resDesc, srvFormat, cpuHandle, &copyFence))
+			hold, d3dResource, srcState, resDesc, srvFormat, cpuHandle, residentWait, &copyFence))
 		{
 			if (haveTick)
 				g_iconTickBudget.Take(tick);
@@ -4003,6 +4043,9 @@ static PluginTextureHandle TextureLoadFromUTexture2D(SDK::UTexture2D* uTexture2D
 				static_cast<unsigned long long>(copyFence), held);
 			return &rec;
 		}
+		// Not copied while its residency may still be paging in: that count is never evicted.
+		if (residentWait)
+			hold.Get().resident = nullptr;
 	}
 
 	IMGUI_LOG_ERROR("[ImGuiBackend] LoadFromUTexture2D '%s': the texture copy failed at %s: 0x%08X",

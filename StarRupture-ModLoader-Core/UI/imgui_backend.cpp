@@ -1423,6 +1423,8 @@ namespace OverlayDiag
 		kMismatchForeign,       // the Record's resource is not a buffer of the swap chain
 		kImmediateSubmits,      // the submit command ran at once instead of in RHI command order
 		kRejects,               // frames Record turned away
+		kTargetChangedAtSubmit, // at submit, the texture resolves to another resource than Record drew into
+		kRecordSameTargetAsPrev,// two Records in a row resolved the same resource with a Present between them
 		kCount
 	};
 
@@ -1450,10 +1452,12 @@ namespace OverlayDiag
 	{
 		snprintf(buf, size,
 			"presents=%u records=%u presentsNoRecord=%u recordsPerPresent>1=%u recordThreadChanges=%u "
-			"presentThreadChanges=%u bufferMismatch=%u(sibling=%u foreign=%u) immediateSubmits=%u rejects=%u",
+			"presentThreadChanges=%u bufferMismatch=%u(sibling=%u foreign=%u) immediateSubmits=%u rejects=%u "
+			"targetChangedAtSubmit=%u recordSameTargetAsPrev=%u",
 			v[kPresents], v[kRecords], v[kPresentsNoRecord], v[kRecordsPerPresent], v[kRecordThreadChanges],
 			v[kPresentThreadChanges], v[kMismatchSibling] + v[kMismatchForeign], v[kMismatchSibling],
-			v[kMismatchForeign], v[kImmediateSubmits], v[kRejects]);
+			v[kMismatchForeign], v[kImmediateSubmits], v[kRejects], v[kTargetChangedAtSubmit],
+			v[kRecordSameTargetAsPrev]);
 	}
 
 	// Counts since the snapshot, which then moves to now. Under g_emitMutex.
@@ -1476,10 +1480,16 @@ namespace OverlayDiag
 		g_windowSnapMs = nowMs;
 		bool unusual = false;
 		for (int i = 0; i < kCount; ++i)
-			unusual |= (i != kPresents && i != kRecords && delta[i] != 0);
+		{
+			// With Streamline loaded the swap chain's buffers are proxies, so
+			// "foreign" is the normal case there and is still counted and printed.
+			if (i == kPresents || i == kRecords || (i == kMismatchForeign && g_streamlineActive))
+				continue;
+			unusual |= (delta[i] != 0);
+		}
 		if (!unusual)
 			return;
-		char buf[400];
+		char buf[480];
 		Format(buf, sizeof(buf), delta);
 		IMGUI_LOG_INFO("[OverlayDiag] window=%llums %s", windowMs, buf);
 	}
@@ -1504,7 +1514,7 @@ namespace OverlayDiag
 		Delta(g_eventSnap, delta);
 		const ULONGLONG sinceMs = g_eventSnapMs ? nowMs - g_eventSnapMs : 0;
 		g_eventSnapMs = nowMs;
-		char buf[400];
+		char buf[480];
 		Format(buf, sizeof(buf), delta);
 		IMGUI_LOG_INFO("[OverlayDiag] event=%s%s%s sincePreviousEventMs=%llu %s", event ? event : "",
 			detail && *detail ? " " : "", detail ? detail : "", sinceMs, buf);
@@ -1516,7 +1526,9 @@ namespace OverlayDiag
 		DXGI_SWAP_CHAIN_DESC scDesc = {};
 		const UINT buffers = SUCCEEDED(swapChain->GetDesc(&scDesc)) ? scDesc.BufferCount : g_frameCount;
 		IMGUI_LOG_INFO("[OverlayDiag] start: swapChainBuffers=%u streamline=%s (sl.interposer.dll loaded; whether "
-			"frame generation is on is not detected). bufferMismatch is only meaningful with frame generation off",
+			"frame generation is on is not detected). bufferMismatch is only meaningful with frame generation off; "
+			"with streamline=yes a foreign mismatch is expected and does not trigger a window line (targetChangedAtSubmit "
+			"and recordSameTargetAsPrev are the counters that matter there)",
 			buffers, g_streamlineActive ? "yes" : "no");
 	}
 
@@ -1524,9 +1536,11 @@ namespace OverlayDiag
 	static void NoteRecord(const ID3D12Resource* resource)
 	{
 		Inc(kRecords);
-		g_lastRecordResource.store(reinterpret_cast<uintptr_t>(resource), std::memory_order_relaxed);
+		const uintptr_t prevResource = g_lastRecordResource.exchange(reinterpret_cast<uintptr_t>(resource), std::memory_order_relaxed);
 		if (g_recordSincePresent.exchange(true, std::memory_order_acq_rel))
 			Inc(kRecordsPerPresent);
+		else if (prevResource && prevResource == reinterpret_cast<uintptr_t>(resource))
+			Inc(kRecordSameTargetAsPrev);   // a Present came between the two Records
 		const DWORD tid = GetCurrentThreadId();
 		const DWORD prev = g_lastRecordThread.exchange(tid, std::memory_order_relaxed);
 		if (prev && prev != tid)
@@ -1618,6 +1632,7 @@ namespace UiPass
 		ID3D12GraphicsCommandList* list = nullptr;
 		UINT64                     fenceValue = 0;      // g_fence value this slot's draw signals
 		std::atomic<bool>          pending{ false };    // recorded, not yet submitted
+		std::atomic<uintptr_t>     recordedResource{ 0 }; // diagnostic: identity of the resource drawn into
 	};
 
 	static std::mutex            g_submitMutex;         // the queue and slots vs. the RHI thread
@@ -1835,6 +1850,7 @@ namespace UiPass
 			slot.list->Close();
 			slot.fenceValue = ++g_fenceValue;
 		}
+		slot.recordedResource.store(reinterpret_cast<uintptr_t>(backBuffer), std::memory_order_relaxed);
 		slot.pending.store(true, std::memory_order_release);
 		g_lastDoneValue = slot.fenceValue;
 		g_lastDrawMs = GetTickCount64();
@@ -1842,6 +1858,21 @@ namespace UiPass
 		++g_next;
 		g_drawOwnerThread.store(0, std::memory_order_release);
 		return index;
+	}
+
+	// RHI thread (or the render thread, for the immediate path), just before
+	// Submit: the texture resolved again; did it change from the resource this
+	// slot's frame was recorded into? Identity compare only, an atomic bump
+	// only. The slot is still pending, so nothing rewrites it meanwhile.
+	static void NoteSubmitTarget(int index, const void* resolved)
+	{
+		if (!resolved || index < 0 || index >= static_cast<int>(kSlots))
+			return;
+		const Slot& slot = g_slots[index];
+		if (!slot.pending.load(std::memory_order_acquire))
+			return;
+		if (reinterpret_cast<uintptr_t>(resolved) != slot.recordedResource.load(std::memory_order_relaxed))
+			OverlayDiag::Inc(OverlayDiag::kTargetChangedAtSubmit);
 	}
 
 	// RHI thread, in command order, so slots arrive in the order recorded and
@@ -4188,16 +4219,34 @@ extern "C" __declspec(dllexport) void ImGuiHost_RequestFontRebuild()
 }
 
 // Slate's present step: see UiPass and hooks/game/slate_present.
+// FRHITexture::GetNativeResource: the window's back buffer, UE's own texture.
+static ID3D12Resource* ResolveBackBufferResource(void* rhiBackBuffer)
+{
+	using GetNativeResourceFn = void* (*)(void*);
+	void** vtable = *static_cast<void***>(rhiBackBuffer);
+	return static_cast<ID3D12Resource*>(
+		reinterpret_cast<GetNativeResourceFn>(vtable[kFRHITexture_GetNativeResource_Slot])(rhiBackBuffer));
+}
+
 extern "C" __declspec(dllexport) int ImGuiHost_RecordUiOverlay(void* rhiBackBuffer)
 {
 	if (!rhiBackBuffer || !g_initialized || g_shutdown)
 		return -1;
-	// FRHITexture::GetNativeResource: the window's back buffer, UE's own texture.
-	using GetNativeResourceFn = void* (*)(void*);
-	void** vtable = *static_cast<void***>(rhiBackBuffer);
-	auto* resource = static_cast<ID3D12Resource*>(
-		reinterpret_cast<GetNativeResourceFn>(vtable[kFRHITexture_GetNativeResource_Slot])(rhiBackBuffer));
-	return UiPass::Record(resource);
+	return UiPass::Record(ResolveBackBufferResource(rhiBackBuffer));
+}
+
+// Diagnostic read on the RHI thread: no C++ objects with destructors (so __try
+// is legal), no logging. A fault gives null, which the check skips.
+static ID3D12Resource* ResolveBackBufferResourceNoFault(void* rhiBackBuffer)
+{
+	__try
+	{
+		return ResolveBackBufferResource(rhiBackBuffer);
+	}
+	__except (EXCEPTION_EXECUTE_HANDLER)
+	{
+		return nullptr;
+	}
 }
 
 extern "C" __declspec(dllexport) bool ImGuiHost_SubmitUiOverlay(int slot, ImGuiUiOverlaySync* sync)
@@ -4214,4 +4263,11 @@ extern "C" __declspec(dllexport) void ImGuiHost_DiagEvent(const char* event, con
 extern "C" __declspec(dllexport) void ImGuiHost_DiagNoteImmediateSubmit()
 {
 	OverlayDiag::Inc(OverlayDiag::kImmediateSubmits);
+}
+
+extern "C" __declspec(dllexport) void ImGuiHost_DiagCheckSubmitTarget(int slot, void* rhiBackBuffer)
+{
+	if (!rhiBackBuffer || !g_initialized || g_shutdown)
+		return;
+	UiPass::NoteSubmitTarget(slot, ResolveBackBufferResourceNoFault(rhiBackBuffer));
 }

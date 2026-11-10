@@ -60,6 +60,7 @@ namespace UI::ImGuiBackend
     // Overlay frame counters; see ImGuiHost_DiagEvent / ImGuiHost_DiagNoteImmediateSubmit.
     void DiagEvent(const char* event, const char* detail);
     void DiagNoteImmediateSubmit();
+    void DiagCheckSubmitTarget(int slot, void* rhiBackBuffer);
 }
 
 #endif // MODLOADER_CLIENT_BUILD

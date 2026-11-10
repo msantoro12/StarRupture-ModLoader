@@ -126,3 +126,8 @@ IMGUI_HOST_API bool                   ImGuiHost_SubmitUiOverlay(int slot, ImGuiU
 // submit that ran at once instead of in RHI command order.
 IMGUI_HOST_API void                   ImGuiHost_DiagEvent(const char* event, const char* detail);
 IMGUI_HOST_API void                   ImGuiHost_DiagNoteImmediateSubmit();
+
+// RHI thread, just before SubmitUiOverlay for the same slot: resolves the
+// back buffer texture again and counts when it is another resource than the
+// one the slot was recorded into. rhiBackBuffer must still be alive.
+IMGUI_HOST_API void                   ImGuiHost_DiagCheckSubmitTarget(int slot, void* rhiBackBuffer);

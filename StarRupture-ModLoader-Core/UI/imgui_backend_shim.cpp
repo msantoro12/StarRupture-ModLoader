@@ -27,6 +27,7 @@ namespace
     // Atomic: the game thread and the RHI thread call these.
     std::atomic<void (*)(const char*, const char*)> g_diagEventFn{ nullptr };
     std::atomic<void (*)()>                         g_diagImmediateFn{ nullptr };
+    std::atomic<void (*)(int, void*)>               g_diagTargetFn{ nullptr };
 }
 
 namespace UI::ImGuiBackend
@@ -60,6 +61,7 @@ namespace UI::ImGuiBackend
         g_submitUiOverlayFn.store(reinterpret_cast<bool (*)(int, ImGuiUiOverlaySync*)>(GetProcAddress(g_hostDll, "ImGuiHost_SubmitUiOverlay")));
         g_diagEventFn.store(reinterpret_cast<void (*)(const char*, const char*)>(GetProcAddress(g_hostDll, "ImGuiHost_DiagEvent")));
         g_diagImmediateFn.store(reinterpret_cast<void (*)()>(GetProcAddress(g_hostDll, "ImGuiHost_DiagNoteImmediateSubmit")));
+        g_diagTargetFn.store(reinterpret_cast<void (*)(int, void*)>(GetProcAddress(g_hostDll, "ImGuiHost_DiagCheckSubmitTarget")));
 
         if (!g_initFn)
         {
@@ -78,6 +80,7 @@ namespace UI::ImGuiBackend
         g_recordUiOverlayFn.store(nullptr);
         g_diagEventFn.store(nullptr);
         g_diagImmediateFn.store(nullptr);
+        g_diagTargetFn.store(nullptr);
         if (g_shutdownFn) g_shutdownFn();
         g_submitUiOverlayFn.store(nullptr);
         if (g_hostDll)
@@ -147,6 +150,12 @@ namespace UI::ImGuiBackend
     {
         const auto fn = g_diagImmediateFn.load();
         if (fn) fn();
+    }
+
+    void DiagCheckSubmitTarget(int slot, void* rhiBackBuffer)
+    {
+        const auto fn = g_diagTargetFn.load();
+        if (fn) fn(slot, rhiBackBuffer);
     }
 }
 

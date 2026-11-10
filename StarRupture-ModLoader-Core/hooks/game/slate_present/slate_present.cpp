@@ -72,10 +72,12 @@ namespace Hooks::SlatePresent
 	struct SubmitOverlayCommand final : RhiCommandBase
 	{
 		int slot = -1;
+		void* rhiBackBuffer = nullptr;   // the texture the frame was recorded for; see Detour
 
 		void ExecuteAndDestruct(void* rhiCmdList) override
 		{
 			ImGuiUiOverlaySync sync{};
+			UI::ImGuiBackend::DiagCheckSubmitTarget(slot, rhiBackBuffer);
 			if (UI::ImGuiBackend::SubmitUiOverlay(slot, &sync))
 			{
 				g_signalManualFence(nullptr, rhiCmdList, sync.readyFence, sync.readyValue);
@@ -116,6 +118,7 @@ namespace Hooks::SlatePresent
 
 			auto* cmd = new SubmitOverlayCommand();
 			cmd->slot = slot;
+			cmd->rhiBackBuffer = backBuffer;
 			Enqueue(rhiCmdList, cmd);
 
 			if (!g_loggedFirst.exchange(true))

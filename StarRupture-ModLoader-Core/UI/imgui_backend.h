@@ -56,6 +56,10 @@ namespace UI::ImGuiBackend
     // ImGuiHost_RecordUiOverlay / ImGuiHost_SubmitUiOverlay.
     int  RecordUiOverlay(void* rhiBackBuffer);
     bool SubmitUiOverlay(int slot, ImGuiUiOverlaySync* sync);
+
+    // Overlay frame counters; see ImGuiHost_DiagEvent / ImGuiHost_DiagNoteImmediateSubmit.
+    void DiagEvent(const char* event, const char* detail);
+    void DiagNoteImmediateSubmit();
 }
 
 #endif // MODLOADER_CLIENT_BUILD

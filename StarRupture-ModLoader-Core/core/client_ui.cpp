@@ -8,6 +8,7 @@
 #include "Engine_classes.hpp"
 #include "../hooks/game/text_input_focus/text_input_focus.h"
 #include "../hooks/game/world_begin_play/world_begin_play.h"
+#include "../hooks/game/world_end_play/world_end_play.h"
 #include "../hooks/game/engine_tick/engine_tick.h"
 #include "../hooks/game/slate_present/slate_present.h"
 #include "../hooks/game/game_menu/game_menu.h"
@@ -274,6 +275,22 @@ void InitClientUI()
         }
     };
     Hooks::WorldBeginPlay::RegisterAnyWorldCallback(s_onWorldReady);
+
+    // The overlay frame counters' world events: one line with the totals so far.
+    static auto s_diagWorldBegin = [](SDK::UWorld* /*world*/, const char* worldName)
+    {
+        char detail[160];
+        snprintf(detail, sizeof(detail), "world=%s", worldName ? worldName : "");
+        UI::ImGuiBackend::DiagEvent("WorldBeginPlay", detail);
+    };
+    Hooks::WorldBeginPlay::RegisterAnyWorldCallback(s_diagWorldBegin);
+    static auto s_diagWorldEnd = [](SDK::UWorld* /*world*/, const char* worldName)
+    {
+        char detail[160];
+        snprintf(detail, sizeof(detail), "world=%s", worldName ? worldName : "");
+        UI::ImGuiBackend::DiagEvent("WorldEndPlay", detail);
+    };
+    Hooks::WorldEndPlay::RegisterBeforeCallback(s_diagWorldEnd);
 
     static auto s_onTick = [](float)
     {

@@ -90,6 +90,7 @@ namespace Hooks::SlatePresent
 		auto* base = static_cast<uint8_t*>(rhiCmdList);
 		if (*reinterpret_cast<bool*>(base + kCmdList_Executing))
 		{
+			UI::ImGuiBackend::DiagNoteImmediateSubmit();
 			cmd->ExecuteAndDestruct(rhiCmdList);
 			return;
 		}

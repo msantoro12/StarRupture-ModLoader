@@ -122,3 +122,9 @@ IMGUI_HOST_API int                    ImGuiHost_RecordUiOverlay(void* rhiBackBuf
 // ready fence and wait on the done fence on UE's queue. False: nothing was
 // queued and there is nothing to signal or wait on.
 IMGUI_HOST_API bool                   ImGuiHost_SubmitUiOverlay(int slot, ImGuiUiOverlaySync* sync);
+
+// Overlay frame counters. Any thread. DiagEvent logs the counter totals since
+// the previous event under the given name; DiagNoteImmediateSubmit counts a
+// submit that ran at once instead of in RHI command order.
+IMGUI_HOST_API void                   ImGuiHost_DiagEvent(const char* event, const char* detail);
+IMGUI_HOST_API void                   ImGuiHost_DiagNoteImmediateSubmit();

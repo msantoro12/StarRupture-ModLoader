@@ -6,6 +6,7 @@
 #include <windows.h>
 #include "imgui_host_interface.h"
 #include "icon_copy.h"
+#include "image_trial_ops.h"
 #include "imgui.h"
 #include "imgui_impl_dx12.h"
 #include "imgui_impl_win32.h"
@@ -27,6 +28,7 @@
 
 #include <wincodec.h>
 #include <mutex>
+#include <vector>
 
 // ---------------------------------------------------------------------------
 // Callback table (set by ImGuiHost_Initialize)
@@ -4121,6 +4123,412 @@ static PluginTextureHandle TextureLoadFromUTexture2D(SDK::UTexture2D* uTexture2D
 	LogEngineCopyFailure(name);
 	return nullptr;
 }
+
+// ---- image trial: test build only, never ships --------------------------------------------------
+// What core/image_trial.cpp asks of this DLL: the D3D12 facts of an engine texture, the adapter's video
+// memory, whether a copy has finished, and a PNG of a finished copy. Game thread only. The engine reads
+// are the safe read path's own helpers; the compiled offsets are the ones that path uses.
+namespace
+{
+	// Only the faults a bad engine pointer gives. Anything else goes on to the crash handler.
+	int TrialFilter(unsigned code)
+	{
+		return (code == EXCEPTION_ACCESS_VIOLATION || code == EXCEPTION_IN_PAGE_ERROR)
+			? EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH;
+	}
+
+	// UTexture -> FTextureResource -> FRHITexture -> FD3D12Resource and its default state.
+	// SEH only: no C++ objects with destructors in here. 1 = read, 0 = not there yet, -1 = fault.
+	int TrialWalkSEH(void* texture, void** outRhi, void** outUnderlying, unsigned* outState)
+	{
+		__try
+		{
+			void* resource = *reinterpret_cast<void**>(static_cast<uint8_t*>(texture) + kUTexture_PrivateResource);
+			if (!IsValidUserPtr(resource))
+				return 0;
+			void* rhi = *reinterpret_cast<void**>(static_cast<uint8_t*>(resource) + kFTextureResource_TextureRHI_Ptr);
+			if (!IsValidUserPtr(rhi))
+				return 0;
+			void* underlying = *reinterpret_cast<void**>(static_cast<uint8_t*>(rhi) + kFD3D12Texture_UnderlyingResource_Ptr);
+			if (!IsValidUserPtr(underlying))
+				return 0;
+			*outState = *reinterpret_cast<unsigned*>(static_cast<uint8_t*>(underlying) + kFD3D12Resource_DefaultResourceState);
+			*outRhi = rhi;
+			*outUnderlying = underlying;
+			return 1;
+		}
+		__except (TrialFilter(GetExceptionCode()))
+		{
+			return -1;
+		}
+	}
+
+	int TrialFacts(void* texture, ImageTrialOps::Facts* out)
+	{
+		if (!g_device || !texture || !out)
+			return 0;
+		void* rhi = nullptr;
+		void* underlying = nullptr;
+		unsigned state = 0;
+		const int walked = TrialWalkSEH(texture, &rhi, &underlying, &state);
+		if (walked <= 0)
+			return walked;
+
+		void** vtable = nullptr;
+		ID3D12Resource* resource = nullptr;
+		D3D12_RESOURCE_DESC desc = {};
+		if (!GetNativeResourceSEH(rhi, &vtable, &resource, &desc))
+			return -1;
+
+		*out = {};
+		out->fmt          = static_cast<unsigned>(desc.Format);
+		out->w            = static_cast<unsigned>(desc.Width);
+		out->h            = desc.Height;
+		out->mips         = desc.MipLevels;
+		out->depthOrArray = desc.DepthOrArraySize;
+		out->dimension    = static_cast<unsigned>(desc.Dimension);
+		out->flags        = static_cast<unsigned>(desc.Flags);
+		out->samples      = desc.SampleDesc.Count;
+		out->state        = state;
+		out->allocBytes   = g_device->GetResourceAllocationInfo(0, 1, &desc).SizeInBytes;
+
+		std::call_once(g_iconHeapRowsOnce, LookUpIconHeapRows);
+		ID3D12Heap* heap = nullptr;
+		const IconCopy::HeapProbe probe = g_iconHeapRows.known
+			? ProbeSourceHeap(underlying, desc, &heap)
+			: IconCopy::HeapProbe::Invalid;
+		if (heap)
+			heap->Release();
+		out->heap    = probe == IconCopy::HeapProbe::Committed ? 0 : probe == IconCopy::HeapProbe::Heap ? 1 : 2;
+		out->reduced = IconCopy::Choose(g_iconHeapRows.known, probe).reduced ? 1 : 0;
+		return 1;
+	}
+
+	int TrialMemory(ImageTrialOps::MemoryInfo* out)
+	{
+		static IDXGIAdapter3* s_adapter = nullptr;   // kept for the session
+		static DXGI_ADAPTER_DESC1 s_desc = {};
+		if (!g_device || !out)
+			return 0;
+		if (!s_adapter)
+		{
+			IDXGIFactory4* factory = nullptr;
+			if (FAILED(CreateDXGIFactory1(IID_PPV_ARGS(&factory))))
+				return 0;
+			IDXGIAdapter3* adapter = nullptr;
+			if (SUCCEEDED(factory->EnumAdapterByLuid(g_device->GetAdapterLuid(), IID_PPV_ARGS(&adapter))) && adapter)
+			{
+				adapter->GetDesc1(&s_desc);
+				s_adapter = adapter;
+			}
+			factory->Release();
+			if (!s_adapter)
+				return 0;
+		}
+		DXGI_QUERY_VIDEO_MEMORY_INFO info = {};
+		if (FAILED(s_adapter->QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &info)))
+			return 0;
+		*out = {};
+		WideCharToMultiByte(CP_UTF8, 0, s_desc.Description, -1, out->adapter, sizeof(out->adapter), nullptr, nullptr);
+		out->dedicatedBytes     = s_desc.DedicatedVideoMemory;
+		out->budget             = info.Budget;
+		out->usage              = info.CurrentUsage;
+		out->availableToReserve = info.AvailableForReservation;
+		out->reserved           = info.CurrentReservation;
+		return 1;
+	}
+
+	int TrialCopyState(PluginTextureHandle handle)
+	{
+		std::lock_guard<std::mutex> lock(g_textureMutex);
+		const PluginTextureRecord* rec = ValidateHandle(handle);
+		if (!rec)
+			return -1;
+		if (g_iconCopy.fence)
+			ReclaimIconCopies();
+		return CopyDone(rec) ? 1 : 0;
+	}
+
+	// ---- PNG of a finished copy ----
+
+	unsigned Expand565(unsigned v, int shift, int bits)
+	{
+		const unsigned c = (v >> shift) & ((1u << bits) - 1);
+		return bits == 5 ? (c << 3) | (c >> 2) : (c << 2) | (c >> 4);
+	}
+
+	void Bc1Colors(const uint8_t* b, uint8_t col[4][4], bool opaque4)
+	{
+		const unsigned c0 = b[0] | (b[1] << 8), c1 = b[2] | (b[3] << 8);
+		col[0][0] = uint8_t(Expand565(c0, 0, 5));  col[0][1] = uint8_t(Expand565(c0, 5, 6));  col[0][2] = uint8_t(Expand565(c0, 11, 5)); col[0][3] = 255;
+		col[1][0] = uint8_t(Expand565(c1, 0, 5));  col[1][1] = uint8_t(Expand565(c1, 5, 6));  col[1][2] = uint8_t(Expand565(c1, 11, 5)); col[1][3] = 255;
+		if (c0 > c1 || opaque4)
+			for (int i = 0; i < 3; ++i)
+			{
+				col[2][i] = uint8_t((2 * col[0][i] + col[1][i]) / 3);
+				col[3][i] = uint8_t((col[0][i] + 2 * col[1][i]) / 3);
+			}
+		else
+			for (int i = 0; i < 3; ++i)
+			{
+				col[2][i] = uint8_t((col[0][i] + col[1][i]) / 2);
+				col[3][i] = 0;
+			}
+		col[2][3] = 255;
+		col[3][3] = (c0 > c1 || opaque4) ? 255 : 0;
+	}
+
+	// col[i] is B, G, R, A.
+	void DecodeBc4Block(const uint8_t* b, uint8_t out[16])
+	{
+		unsigned a[8];
+		a[0] = b[0]; a[1] = b[1];
+		if (a[0] > a[1])
+			for (int i = 1; i < 7; ++i) a[1 + i] = ((7 - i) * a[0] + i * a[1]) / 7;
+		else
+		{
+			for (int i = 1; i < 5; ++i) a[1 + i] = ((5 - i) * a[0] + i * a[1]) / 5;
+			a[6] = 0; a[7] = 255;
+		}
+		uint64_t bits = 0;
+		for (int i = 0; i < 6; ++i) bits |= uint64_t(b[2 + i]) << (8 * i);
+		for (int i = 0; i < 16; ++i) out[i] = uint8_t(a[(bits >> (3 * i)) & 7]);
+	}
+
+	// Rows of 4-byte BGRA from the level in the readback buffer. False for a format it does not decode.
+	bool TrialDecode(DXGI_FORMAT fmt, const uint8_t* src, UINT rowPitch, UINT w, UINT h, std::vector<uint8_t>& bgra)
+	{
+		bgra.assign(size_t(w) * h * 4, 255);
+		switch (fmt)
+		{
+		case DXGI_FORMAT_R8G8B8A8_TYPELESS: case DXGI_FORMAT_R8G8B8A8_UNORM: case DXGI_FORMAT_R8G8B8A8_UNORM_SRGB:
+		case DXGI_FORMAT_B8G8R8A8_TYPELESS: case DXGI_FORMAT_B8G8R8A8_UNORM: case DXGI_FORMAT_B8G8R8A8_UNORM_SRGB:
+		{
+			const bool swap = fmt == DXGI_FORMAT_R8G8B8A8_TYPELESS || fmt == DXGI_FORMAT_R8G8B8A8_UNORM || fmt == DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
+			for (UINT y = 0; y < h; ++y)
+				for (UINT x = 0; x < w; ++x)
+				{
+					const uint8_t* p = src + size_t(y) * rowPitch + size_t(x) * 4;
+					uint8_t* o = &bgra[(size_t(y) * w + x) * 4];
+					o[0] = swap ? p[2] : p[0]; o[1] = p[1]; o[2] = swap ? p[0] : p[2]; o[3] = p[3];
+				}
+			return true;
+		}
+		case DXGI_FORMAT_BC1_TYPELESS: case DXGI_FORMAT_BC1_UNORM: case DXGI_FORMAT_BC1_UNORM_SRGB:
+		case DXGI_FORMAT_BC2_TYPELESS: case DXGI_FORMAT_BC2_UNORM: case DXGI_FORMAT_BC2_UNORM_SRGB:
+		case DXGI_FORMAT_BC3_TYPELESS: case DXGI_FORMAT_BC3_UNORM: case DXGI_FORMAT_BC3_UNORM_SRGB:
+		{
+			const bool bc1 = fmt <= DXGI_FORMAT_BC1_UNORM_SRGB;
+			const bool bc2 = !bc1 && fmt <= DXGI_FORMAT_BC2_UNORM_SRGB;
+			for (UINT by = 0; by < (h + 3) / 4; ++by)
+				for (UINT bx = 0; bx < (w + 3) / 4; ++bx)
+				{
+					const uint8_t* blk = src + size_t(by) * rowPitch + size_t(bx) * (bc1 ? 8 : 16);
+					uint8_t alpha[16];
+					for (int i = 0; i < 16; ++i) alpha[i] = 255;
+					if (bc2)
+						for (int i = 0; i < 16; ++i) alpha[i] = uint8_t(((blk[i / 2] >> (4 * (i & 1))) & 15) * 17);
+					else if (!bc1)
+						DecodeBc4Block(blk, alpha);
+					uint8_t col[4][4];
+					const uint8_t* cb = bc1 ? blk : blk + 8;
+					Bc1Colors(cb, col, !bc1);
+					const unsigned idx = cb[4] | (cb[5] << 8) | (cb[6] << 16) | (unsigned(cb[7]) << 24);
+					for (int i = 0; i < 16; ++i)
+					{
+						const UINT x = bx * 4 + (i & 3), y = by * 4 + (i >> 2);
+						if (x >= w || y >= h) continue;
+						const uint8_t* c = col[(idx >> (2 * i)) & 3];
+						uint8_t* o = &bgra[(size_t(y) * w + x) * 4];
+						o[0] = c[0]; o[1] = c[1]; o[2] = c[2]; o[3] = bc1 ? c[3] : alpha[i];
+					}
+				}
+			return true;
+		}
+		case DXGI_FORMAT_BC4_TYPELESS: case DXGI_FORMAT_BC4_UNORM:
+		case DXGI_FORMAT_BC5_TYPELESS: case DXGI_FORMAT_BC5_UNORM:
+		{
+			const bool two = fmt == DXGI_FORMAT_BC5_TYPELESS || fmt == DXGI_FORMAT_BC5_UNORM;
+			for (UINT by = 0; by < (h + 3) / 4; ++by)
+				for (UINT bx = 0; bx < (w + 3) / 4; ++bx)
+				{
+					const uint8_t* blk = src + size_t(by) * rowPitch + size_t(bx) * (two ? 16 : 8);
+					uint8_t r[16], g[16];
+					DecodeBc4Block(blk, r);
+					if (two) DecodeBc4Block(blk + 8, g);
+					for (int i = 0; i < 16; ++i)
+					{
+						const UINT x = bx * 4 + (i & 3), y = by * 4 + (i >> 2);
+						if (x >= w || y >= h) continue;
+						uint8_t* o = &bgra[(size_t(y) * w + x) * 4];
+						o[0] = two ? 0 : r[i]; o[1] = two ? g[i] : r[i]; o[2] = r[i]; o[3] = 255;
+					}
+				}
+			return true;
+		}
+		default:
+			return false;
+		}
+	}
+
+	bool TrialWritePng(const wchar_t* path, UINT w, UINT h, const std::vector<uint8_t>& bgra)
+	{
+		IWICImagingFactory* factory = GetWICFactory();
+		if (!factory)
+			return false;
+		IWICBitmapEncoder* encoder = nullptr;
+		IWICStream* stream = nullptr;
+		IWICBitmapFrameEncode* frame = nullptr;
+		IPropertyBag2* props = nullptr;
+		bool ok = false;
+		if (SUCCEEDED(factory->CreateStream(&stream)) && SUCCEEDED(stream->InitializeFromFilename(path, GENERIC_WRITE)) &&
+			SUCCEEDED(factory->CreateEncoder(GUID_ContainerFormatPng, nullptr, &encoder)) &&
+			SUCCEEDED(encoder->Initialize(stream, WICBitmapEncoderNoCache)) &&
+			SUCCEEDED(encoder->CreateNewFrame(&frame, &props)) && SUCCEEDED(frame->Initialize(props)) &&
+			SUCCEEDED(frame->SetSize(w, h)))
+		{
+			WICPixelFormatGUID pixelFormat = GUID_WICPixelFormat32bppBGRA;
+			ok = SUCCEEDED(frame->SetPixelFormat(&pixelFormat)) &&
+				SUCCEEDED(frame->WritePixels(h, w * 4, UINT(bgra.size()), const_cast<BYTE*>(bgra.data()))) &&
+				SUCCEEDED(frame->Commit()) && SUCCEEDED(encoder->Commit());
+		}
+		if (props) props->Release();
+		if (frame) frame->Release();
+		if (encoder) encoder->Release();
+		if (stream) stream->Release();
+		return ok;
+	}
+
+	// Top level of a finished copy to a PNG. The copy is ours: it is read back on a queue made for this
+	// and gone after, with the copy back in the state the draw path expects.
+	int TrialDumpPng(PluginTextureHandle handle, const wchar_t* path)
+	{
+		ID3D12Resource* resource = nullptr;
+		{
+			std::lock_guard<std::mutex> lock(g_textureMutex);
+			PluginTextureRecord* rec = ValidateHandle(handle);
+			if (!rec || !rec->resource)
+				return -1;
+			if (g_iconCopy.fence)
+				ReclaimIconCopies();
+			if (!CopyDone(rec))
+				return 0;
+			resource = rec->resource;
+			resource->AddRef();
+		}
+
+		int result = -1;
+		ID3D12Resource* readback = nullptr;
+		ID3D12CommandQueue* queue = nullptr;
+		ID3D12CommandAllocator* allocator = nullptr;
+		ID3D12GraphicsCommandList* list = nullptr;
+		ID3D12Fence* fence = nullptr;
+		HANDLE event = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+
+		const D3D12_RESOURCE_DESC desc = resource->GetDesc();
+		D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint = {};
+		UINT rows = 0;
+		UINT64 rowSize = 0, total = 0;
+		g_device->GetCopyableFootprints(&desc, 0, 1, 0, &footprint, &rows, &rowSize, &total);
+
+		D3D12_HEAP_PROPERTIES hp = {};
+		hp.Type = D3D12_HEAP_TYPE_READBACK;
+		D3D12_RESOURCE_DESC bufDesc = {};
+		bufDesc.Dimension        = D3D12_RESOURCE_DIMENSION_BUFFER;
+		bufDesc.Width            = total;
+		bufDesc.Height           = 1;
+		bufDesc.DepthOrArraySize = 1;
+		bufDesc.MipLevels        = 1;
+		bufDesc.SampleDesc.Count = 1;
+		bufDesc.Layout           = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+		D3D12_COMMAND_QUEUE_DESC qd = {};
+		qd.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
+
+		if (event &&
+			SUCCEEDED(g_device->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &bufDesc, D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&readback))) &&
+			SUCCEEDED(g_device->CreateCommandQueue(&qd, IID_PPV_ARGS(&queue))) &&
+			SUCCEEDED(g_device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&allocator))) &&
+			SUCCEEDED(g_device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, allocator, nullptr, IID_PPV_ARGS(&list))) &&
+			SUCCEEDED(g_device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence))))
+		{
+			D3D12_RESOURCE_BARRIER barrier = {};
+			barrier.Type                   = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+			barrier.Transition.pResource   = resource;
+			barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+			barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+			barrier.Transition.StateAfter  = D3D12_RESOURCE_STATE_COPY_SOURCE;
+			list->ResourceBarrier(1, &barrier);
+
+			D3D12_TEXTURE_COPY_LOCATION dst = {}, src = {};
+			dst.pResource       = readback;
+			dst.Type            = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+			dst.PlacedFootprint = footprint;
+			src.pResource        = resource;
+			src.Type             = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+			src.SubresourceIndex = 0;
+			list->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
+
+			std::swap(barrier.Transition.StateBefore, barrier.Transition.StateAfter);
+			list->ResourceBarrier(1, &barrier);
+
+			ID3D12CommandList* lists[] = { list };
+			if (SUCCEEDED(list->Close()))
+			{
+				queue->ExecuteCommandLists(1, lists);
+				if (SUCCEEDED(queue->Signal(fence, 1)) && WaitForFence(fence, 1, 2000))
+				{
+					void* mapped = nullptr;
+					D3D12_RANGE range = { 0, size_t(total) };
+					if (SUCCEEDED(readback->Map(0, &range, &mapped)))
+					{
+						std::vector<uint8_t> bgra;
+						if (TrialDecode(desc.Format, static_cast<const uint8_t*>(mapped), footprint.Footprint.RowPitch,
+							UINT(desc.Width), desc.Height, bgra))
+							result = TrialWritePng(path, UINT(desc.Width), desc.Height, bgra) ? 1 : -1;
+						readback->Unmap(0, nullptr);
+					}
+				}
+				else
+				{
+					// The queue may still hold the copy: keep what it uses rather than free it under the GPU.
+					readback = nullptr; queue = nullptr; allocator = nullptr; list = nullptr; fence = nullptr;
+					resource = nullptr;
+				}
+			}
+		}
+		if (fence) fence->Release();
+		if (list) list->Release();
+		if (allocator) allocator->Release();
+		if (queue) queue->Release();
+		if (readback) readback->Release();
+		if (event) CloseHandle(event);
+		if (resource) resource->Release();
+		return result;
+	}
+}
+
+extern "C" __declspec(dllexport) intptr_t ImGuiHost_ImageTrial(int op, void* a, void* b)
+{
+	switch (op)
+	{
+	case ImageTrialOps::HeapRows:
+		if (!g_device)
+			return -1;
+		std::call_once(g_iconHeapRowsOnce, LookUpIconHeapRows);
+		return g_iconHeapRows.known ? 1 : 0;
+	case ImageTrialOps::TextureFacts: return TrialFacts(a, static_cast<ImageTrialOps::Facts*>(b));
+	case ImageTrialOps::Memory:       return TrialMemory(static_cast<ImageTrialOps::MemoryInfo*>(a));
+	case ImageTrialOps::CopyState:    return TrialCopyState(a);
+	case ImageTrialOps::DumpPng:      return TrialDumpPng(a, static_cast<const wchar_t*>(b));
+	case ImageTrialOps::Parked:
+	{
+		std::lock_guard<std::mutex> lock(g_textureMutex);
+		return g_iconCopy.parked.Count();
+	}
+	default: return 0;
+	}
+}
+// ---- end image trial ---------------------------------------------------------------------------
 
 static PluginTextureHandle TextureLoadFromMemory(const void* data, size_t size, const char* name)
 {

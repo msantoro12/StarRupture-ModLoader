@@ -40,6 +40,10 @@ namespace UI::ImGuiBackend
     // Returns the IPluginImGuiTextures function table (valid after Initialize).
     IPluginImGuiTextures* GetTextureAPI();
 
+    // Test build only: the image trial's requests to the host (image_trial_ops.h).
+    // Returns -2 when the host has no such export.
+    intptr_t ImageTrial(int op, void* a, void* b);
+
     // Request a font atlas rebuild on the next rendered frame.
     // Safe to call from any thread.  No-op before D3D12 resources are initialised.
     void RequestFontRebuild();

@@ -6,4 +6,5 @@ EXPORTS
     ImGuiHost_SetRenderingReady
     ImGuiHost_GetImGuiAPI
     ImGuiHost_GetTextureAPI
+    ImGuiHost_ImageTrial
     ImGuiHost_RequestFontRebuild

@@ -18,6 +18,7 @@ namespace
     IModLoaderImGui*       (*g_getAPIFn)()                            = nullptr;
     IPluginImGuiTextures*  (*g_getTexFn)()                            = nullptr;
     void                   (*g_fontRebuildFn)()                       = nullptr;
+    intptr_t               (*g_imageTrialFn)(int, void*, void*)       = nullptr;
     bool                   (*g_isTextInputActiveFn)()                 = nullptr;
     // Atomic, unlike the rest: GetGameWindow is called from any thread.
     std::atomic<HWND (*)()> g_getGameWindowFn{ nullptr };
@@ -51,6 +52,7 @@ namespace UI::ImGuiBackend
         g_getAPIFn      = reinterpret_cast<decltype(g_getAPIFn)>     (GetProcAddress(g_hostDll, "ImGuiHost_GetImGuiAPI"));
         g_getTexFn      = reinterpret_cast<decltype(g_getTexFn)>     (GetProcAddress(g_hostDll, "ImGuiHost_GetTextureAPI"));
         g_fontRebuildFn = reinterpret_cast<decltype(g_fontRebuildFn)>(GetProcAddress(g_hostDll, "ImGuiHost_RequestFontRebuild"));
+        g_imageTrialFn  = reinterpret_cast<decltype(g_imageTrialFn)> (GetProcAddress(g_hostDll, "ImGuiHost_ImageTrial"));
         g_isTextInputActiveFn = reinterpret_cast<decltype(g_isTextInputActiveFn)>(GetProcAddress(g_hostDll, "ImGuiHost_IsTextInputActive"));
         g_getGameWindowFn.store(reinterpret_cast<HWND (*)()>(GetProcAddress(g_hostDll, "ImGuiHost_GetGameWindow")));
         g_recordUiOverlayFn.store(reinterpret_cast<int (*)(void*)>(GetProcAddress(g_hostDll, "ImGuiHost_RecordUiOverlay")));
@@ -84,6 +86,7 @@ namespace UI::ImGuiBackend
         g_fontRebuildFn = nullptr;
         g_getAPIFn = nullptr;
         g_getTexFn = nullptr;
+        g_imageTrialFn = nullptr;
         g_isTextInputActiveFn = nullptr;
     }
 
@@ -100,6 +103,11 @@ namespace UI::ImGuiBackend
     IPluginImGuiTextures* GetTextureAPI()
     {
         return g_getTexFn ? g_getTexFn() : nullptr;
+    }
+
+    intptr_t ImageTrial(int op, void* a, void* b)
+    {
+        return g_imageTrialFn ? g_imageTrialFn(op, a, b) : -2;
     }
 
     void RequestFontRebuild()

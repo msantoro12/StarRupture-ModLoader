@@ -1070,7 +1070,7 @@ static void ForgetPluginBlockingDropsItsOwners()
     Hooks::Input::GetRegistrationCounts(nullptr, nullptr, nullptr, &blockingCount);
     CHECK(blockingCount == 0);                                     // emptied combos are erased
     Hooks::Input::GetBlockedCombos(blocked, sizeof(blocked));
-    CHECK(blocked[0] == ' ');
+    CHECK(blocked[0] == '\0');
 }
 
 int main()

@@ -346,7 +346,7 @@ namespace
     Ph                     g_ph = Ph::Idle;
     bool                   g_started = false;     // the build gate has been passed once
     bool                   g_listed = false;
-    LONGLONG               g_gateStart = 0, g_phaseStart = 0;
+    LONGLONG               g_gateStart = 0, g_phaseStart = 0, g_partStart = 0;
     LONGLONG               g_lastTick = 0;
     double                 g_dt = 0;
     LONGLONG               g_nextToast = 0;
@@ -1018,6 +1018,7 @@ namespace
         LogVram(part);
         if (!g_started) LogPlugins();
         g_started = true;
+        g_partStart = Now();
     }
 
     void StartSelect()
@@ -1110,6 +1111,7 @@ namespace
         LogCounts();
         if (g_part[0] == 'm')
         {
+            LogToFile::Info("[ImgTrial] DONE part=menu elapsedS=%.1f", Ms(g_partStart, Now()) / 1000.0);
             ShowToast("Image trial: menu part done");
             SetPhase(Ph::MenuDone);
             return;
@@ -1338,6 +1340,7 @@ namespace ImageTrial
         if (g_finishPending && !g_watchActive)
         {
             g_finishPending = false;
+            LogToFile::Info("[ImgTrial] DONE part=world elapsedS=%.1f", Ms(g_partStart, Now()) / 1000.0);
             ShowToast("Image trial finished");
         }
     }

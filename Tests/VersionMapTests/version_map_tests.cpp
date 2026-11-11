@@ -1471,6 +1471,10 @@ int main()
 		oldRow = functionRow("MiniMap/FRenderCommandFence::FRenderCommandFence", 127004);
 		newRow = functionRow("MiniMap/FRenderCommandFence::FRenderCommandFence", 128786);
 		Check(oldRow && newRow && oldRow->fp == newRow->fp && oldRow->fp != 0, "real function rows: a site key's rows for both builds carry the one fingerprint");
+		oldRow = functionRow("ACrPlayerControllerBase::NativeOnInputCloseInGameMenu", 127004);
+		newRow = functionRow("ACrPlayerControllerBase::NativeOnInputCloseInGameMenu", 129402);
+		Check(oldRow && newRow && oldRow->rva == 0x07606ED0 && newRow->rva == 0x07652E60 && strcmp(oldRow->pattern, newRow->pattern) == 0 && !functionRow("ACrPlayerControllerBase::NativeOnInputCloseInGameMenu", 128786),
+			"real function rows: CloseInGameMenu has one pattern and a row on CL-127004 and CL-129402");
 		oldRow = functionRow("UCrBuildingStabilitySubsystem::OnCreateBuildingEntity", 128786);
 		newRow = functionRow("UCrBuildingStabilitySubsystem::OnDestroyBuildingEntity", 128786);
 		Check(oldRow && newRow && oldRow->rva == 0x074E7BF0 && newRow->rva == 0x074E7C30 && strcmp(oldRow->pattern, newRow->pattern) != 0,
@@ -1490,7 +1494,7 @@ int main()
 		Check(textureBoth, "real function rows: the texture natives and the UpdateResource site have rows for both builds with one pattern");
 	}
 	Check(unmatched == 0, "every real map key is a registry row's or a plugin's global or scoped key");
-	Check(pluginKeys == 155, "the real map holds the 155 plugin function keys; FRHIComputeCommandList::Transition is a loader registry key now");
+	Check(pluginKeys == 156, "the real map holds the 156 plugin function keys; FRHIComputeCommandList::Transition is a loader registry key now");
 	Check(wrong == 0, "every real map row has its registry row's kind and fp");
 
 	// Restarting a plugin the crash guard switched off: the plan for each setting, the limiter, the timing.

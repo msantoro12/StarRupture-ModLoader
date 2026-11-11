@@ -1456,6 +1456,13 @@ int main()
 		oldRow = fieldRow("UCrEnviroWaveTimerSubsystem::TimerActor", 127004);
 		newRow = fieldRow("UCrEnviroWaveTimerSubsystem::TimerActor", 128786);
 		Check(oldRow && oldRow->offset == 0x90 && newRow && newRow->offset == 0x98, "real field rows: TimerActor 0x90 on CL-127004, 0x98 on CL-128786");
+		// The hotbar subsystem exists only on CL-129402: a row there, none on the older builds.
+		const Real::VersionMap::FieldRow* index = fieldRow("UCrHotbarLocalPlayerSubsystem::CurrentHotbarIndex", 129402);
+		const Real::VersionMap::FieldRow* pages = fieldRow("UCrHotbarLocalPlayerSubsystem::Hotbars", 129402);
+		Check(index && index->offset == 0x48 && index->size == 0x1 && index->boolMask == 0, "real field rows: CurrentHotbarIndex is a byte at 0x48 on CL-129402");
+		Check(pages && pages->offset == 0x38 && pages->size == 0x10 && pages->boolMask == 0, "real field rows: Hotbars is a 16-byte array at 0x38 on CL-129402");
+		Check(!fieldRow("UCrHotbarLocalPlayerSubsystem::CurrentHotbarIndex", 127004) && !fieldRow("UCrHotbarLocalPlayerSubsystem::Hotbars", 127004),
+			"real field rows: the hotbar subsystem has no CL-127004 row");
 		// The engine heap behind a placed D3D12 resource: FD3D12Resource::Heap and the ID3D12Heap pointer in FD3D12Heap.
 		// One pointer each, measured on CL-127004.
 		for (const uint32_t cl : { 127004u })
@@ -1536,6 +1543,10 @@ int main()
 		oldRow = functionRow("MiniMap/FRenderCommandFence::FRenderCommandFence", 127004);
 		newRow = functionRow("MiniMap/FRenderCommandFence::FRenderCommandFence", 128786);
 		Check(oldRow && newRow && oldRow->fp == newRow->fp && oldRow->fp != 0, "real function rows: a site key's rows for both builds carry the one fingerprint");
+		oldRow = functionRow("ACrPlayerControllerBase::NativeOnInputCloseInGameMenu", 127004);
+		newRow = functionRow("ACrPlayerControllerBase::NativeOnInputCloseInGameMenu", 129402);
+		Check(oldRow && newRow && oldRow->rva == 0x07606ED0 && newRow->rva == 0x07652E60 && strcmp(oldRow->pattern, newRow->pattern) == 0 && !functionRow("ACrPlayerControllerBase::NativeOnInputCloseInGameMenu", 128786),
+			"real function rows: CloseInGameMenu has one pattern and a row on CL-127004 and CL-129402");
 		oldRow = functionRow("UCrBuildingStabilitySubsystem::OnCreateBuildingEntity", 128786);
 		newRow = functionRow("UCrBuildingStabilitySubsystem::OnDestroyBuildingEntity", 128786);
 		Check(oldRow && newRow && oldRow->rva == 0x074E7BF0 && newRow->rva == 0x074E7C30 && strcmp(oldRow->pattern, newRow->pattern) != 0,

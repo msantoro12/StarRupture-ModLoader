@@ -3427,7 +3427,9 @@ enum PluginUIState : uint64_t
 	PLUGIN_UI_PAUSE_MENU   = 1ull << 1,
 
 	// The game shows its own mouse cursor (the player controller's
-	// bShowMouseCursor): the menus, the pause menu and the machine screens.
+	// bShowMouseCursor): the menus, the pause menu and the machine screens. The
+	// build menu counts too while it is the active screen (once any plugin has
+	// registered for a menu bit), whether or not the game raises the flag there.
 	PLUGIN_UI_CURSOR_UP    = 1ull << 2,
 
 	// A screen is on the game's menu layer: the map, the inventory, the build

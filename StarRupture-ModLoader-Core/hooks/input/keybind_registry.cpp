@@ -834,6 +834,27 @@ namespace Hooks::Input
 			s_blockingMap.erase(it);
 	}
 
+	void ForgetPluginBlocking(const char* pluginName)
+	{
+		if (!pluginName || !*pluginName) return;
+
+		const std::string prefix = std::string(pluginName) + "|";
+
+		std::lock_guard<std::mutex> lock(s_mutex);
+		for (auto combo = s_blockingMap.begin(); combo != s_blockingMap.end();)
+		{
+			std::set<std::string>& owners = combo->second;
+			for (auto owner = owners.begin(); owner != owners.end();)
+			{
+				if (owner->compare(0, prefix.size(), prefix) == 0)
+					owner = owners.erase(owner);
+				else
+					++owner;
+			}
+			combo = owners.empty() ? s_blockingMap.erase(combo) : std::next(combo);
+		}
+	}
+
 	bool ShouldBlock(EModKey key, EModKeyModifiers mods)
 	{
 		if (key == EModKey::Unknown) return false;

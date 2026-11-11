@@ -1041,6 +1041,38 @@ static void BlockingComboModifiers()
     CHECK(!InputKeyBlocked("S"));
 }
 
+// A plugin's blocking goes when it unloads, and only its own: a combo another
+// plugin also blocks stays blocked, and a plugin whose name starts with the
+// same letters is not touched.
+static void ForgetPluginBlockingDropsItsOwners()
+{
+    Reset();
+    char blocked[256];
+    SetComboBlocking("Drone|Controls|Slow Key", "LeftControl", true);
+    SetComboBlocking("Drone|Controls|Toggle", "F10", true);
+    SetComboBlocking("Cheats|Controls|Toggle", "F10", true);
+    SetComboBlocking("DroneExtras|Controls|Boost", "F9", true);
+    CHECK(ShouldBlock(EModKey::LeftControl, EModKeyMod_None));
+
+    Hooks::Input::ForgetPluginBlocking("Drone");
+    CHECK(!ShouldBlock(EModKey::LeftControl, EModKeyMod_None));    // only Drone asked for it
+    CHECK(ShouldBlock(EModKey::F10, EModKeyMod_None));             // Cheats still does
+    CHECK(ShouldBlock(EModKey::F9, EModKeyMod_None));              // DroneExtras is another plugin
+
+    Hooks::Input::ForgetPluginBlocking("Drone");                   // nothing left: harmless
+    Hooks::Input::ForgetPluginBlocking("");
+    Hooks::Input::ForgetPluginBlocking(nullptr);
+    CHECK(ShouldBlock(EModKey::F10, EModKeyMod_None));
+
+    Hooks::Input::ForgetPluginBlocking("Cheats");
+    Hooks::Input::ForgetPluginBlocking("DroneExtras");
+    int blockingCount = -1;
+    Hooks::Input::GetRegistrationCounts(nullptr, nullptr, nullptr, &blockingCount);
+    CHECK(blockingCount == 0);                                     // emptied combos are erased
+    Hooks::Input::GetBlockedCombos(blocked, sizeof(blocked));
+    CHECK(blocked[0] == ' ');
+}
+
 int main()
 {
     RunTest("IsGameThread: false on every thread before the first tick", GameThreadBeforeFirstTick);
@@ -1074,6 +1106,7 @@ int main()
     RunTest("InputKey: the wheel survives a blocked LeftControl", WheelWithBlockedControl);
     RunTest("InputKey: a held blocked key does not block another key", BlockedKeyHeldOtherPressed);
     RunTest("InputKey: a blocking combo needs its own modifiers", BlockingComboModifiers);
+    RunTest("ForgetPluginBlocking: an unloading plugin's blocking goes", ForgetPluginBlockingDropsItsOwners);
     RunTest("ForgetModule: an unloading plugin's keybinds go", ForgetModuleDropsItsKeybinds);
     RunTest("ForgetModule: an unloading plugin's game-thread tasks go", ForgetModuleDropsItsGameThreadTasks);
     RunTest("UIState: mask filter, once per change", UIStateMaskAndOncePerChange);

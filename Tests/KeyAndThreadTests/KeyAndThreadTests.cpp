@@ -923,6 +923,124 @@ static void ReleasePassthroughTextField()
     CHECK(!ShouldKeepFromGame(typing, seen.TakeRelease('W')));
 }
 
+// ---------------------------------------------------------------------------
+// The InputKey hook's key lookup: the event's own FName text, never the keys held
+// ---------------------------------------------------------------------------
+
+using Hooks::Input::NameToModKey;
+using Hooks::Input::SampleCurrentModifiers;
+using Hooks::Input::SetComboBlocking;
+using Hooks::Input::ShouldBlock;
+
+// What the hook decides for a Pressed event whose FName reads `name`: the key
+// the name stands for, then the blocking map under the modifiers held now.
+static bool InputKeyBlocked(const char* name)
+{
+    return ShouldBlock(NameToModKey(name), SampleCurrentModifiers());
+}
+
+static void BlockedKeysForTest(bool on)
+{
+    SetComboBlocking("Test|Controls|Slow", "LeftControl", on);
+    SetComboBlocking("Test|Controls|Toggle", "F10", on);
+}
+
+// A key's UE name finds that key whatever else is down, and every key the
+// registry names finds itself.
+static void KeyNameResolvesToItself()
+{
+    Reset();
+    SetKeyDown(VK_LCONTROL, true);
+    SetKeyDown(VK_F10, true);
+    CHECK(NameToModKey("F5") == EModKey::F5);
+    CHECK(NameToModKey("LeftControl") == EModKey::LeftControl);
+    CHECK(NameToModKey("LeftMouseButton") == EModKey::LeftMouseButton);
+    CHECK(NameToModKey("Tilde") == EModKey::Tilde);
+    CHECK(NameToModKey("SpaceBar") == EModKey::SpaceBar);
+
+    int named = 0;
+    for (uint32_t i = 0; i < static_cast<uint32_t>(EModKey::Unknown); ++i)
+    {
+        const EModKey key = static_cast<EModKey>(i);
+        const char* name = Hooks::Input::ModKeyToName(key);
+        if (!name) continue;
+        ++named;
+        CHECK(NameToModKey(name) == key);
+    }
+    CHECK(named > 90);
+}
+
+// A wheel notch, a gamepad button or axis has no mod key, with a registered key
+// held or not, and a blocked key's entry never reaches it.
+static void NamesWithoutAModKey()
+{
+    Reset();
+    BlockedKeysForTest(true);
+    const char* names[] = { "MouseScrollUp", "MouseScrollDown", "MouseWheelAxis", "MouseX", "MouseY",
+                            "Gamepad_FaceButton_Bottom", "Gamepad_LeftTriggerAxis", "None", "" };
+    for (int held = 0; held < 2; ++held)
+    {
+        SetKeyDown(VK_LCONTROL, held != 0);
+        for (const char* name : names)
+        {
+            CHECK(NameToModKey(name) == EModKey::Unknown);
+            CHECK(!InputKeyBlocked(name));
+        }
+    }
+    BlockedKeysForTest(false);
+}
+
+// The wheel went dead when its first notch was read as LeftControl: with Ctrl
+// let go, a plain notch matched the plain "LeftControl" blocking entry.
+static void WheelWithBlockedControl()
+{
+    Reset();
+    BlockedKeysForTest(true);
+    SetKeyDown(VK_LCONTROL, true);
+    CHECK(!InputKeyBlocked("MouseScrollUp"));
+    SetKeyDown(VK_LCONTROL, false);
+    CHECK(!InputKeyBlocked("MouseScrollUp"));
+    CHECK(!InputKeyBlocked("MouseScrollDown"));
+    CHECK(InputKeyBlocked("F10"));         // a blocking key still blocks
+    BlockedKeysForTest(false);
+    CHECK(!InputKeyBlocked("F10"));
+}
+
+// Holding one blocked key and pressing another blocks only the blocked one,
+// each way round.
+static void BlockedKeyHeldOtherPressed()
+{
+    Reset();
+    BlockedKeysForTest(true);
+    SetKeyDown(VK_F10, true);
+    CHECK(!InputKeyBlocked("K"));
+    CHECK(!InputKeyBlocked("LeftMouseButton"));
+    CHECK(!InputKeyBlocked("F5"));
+    CHECK(InputKeyBlocked("F10"));
+    SetKeyDown(VK_F10, false);
+
+    SetKeyDown('K', true);
+    CHECK(InputKeyBlocked("F10"));         // blocked whatever else is held
+    SetKeyDown('K', false);
+    BlockedKeysForTest(false);
+}
+
+// A combo blocks only under its own modifiers; non-blocking keys are untouched.
+static void BlockingComboModifiers()
+{
+    Reset();
+    SetComboBlocking("Test|Controls|Save", "Ctrl+S", true);
+    CHECK(!InputKeyBlocked("S"));
+    SetKeyDown(VK_LCONTROL, true);
+    CHECK(InputKeyBlocked("S"));
+    CHECK(!InputKeyBlocked("D"));
+    SetKeyDown(VK_LSHIFT, true);
+    CHECK(!InputKeyBlocked("S"));          // Ctrl+Shift+S is another combo
+    SetComboBlocking("Test|Controls|Save", "Ctrl+S", false);
+    SetKeyDown(VK_LSHIFT, false);
+    CHECK(!InputKeyBlocked("S"));
+}
+
 int main()
 {
     RunTest("IsGameThread: false on every thread before the first tick", GameThreadBeforeFirstTick);
@@ -951,6 +1069,11 @@ int main()
     RunTest("InputArbitration: a text field owns the keyboard in the shared modes", SharedKeyboard);
     RunTest("InputArbitration: a release reaches the game for a press it saw", ReleasePassthrough);
     RunTest("InputArbitration: a text field's keys stay kept, a held key still gets its release", ReleasePassthroughTextField);
+    RunTest("InputKey: a key's UE name finds that key", KeyNameResolvesToItself);
+    RunTest("InputKey: names without a mod key are never blocked", NamesWithoutAModKey);
+    RunTest("InputKey: the wheel survives a blocked LeftControl", WheelWithBlockedControl);
+    RunTest("InputKey: a held blocked key does not block another key", BlockedKeyHeldOtherPressed);
+    RunTest("InputKey: a blocking combo needs its own modifiers", BlockingComboModifiers);
     RunTest("ForgetModule: an unloading plugin's keybinds go", ForgetModuleDropsItsKeybinds);
     RunTest("ForgetModule: an unloading plugin's game-thread tasks go", ForgetModuleDropsItsGameThreadTasks);
     RunTest("UIState: mask filter, once per change", UIStateMaskAndOncePerChange);

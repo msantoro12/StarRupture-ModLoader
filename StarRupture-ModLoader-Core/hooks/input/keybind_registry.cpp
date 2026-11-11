@@ -1053,34 +1053,6 @@ namespace Hooks::Input
 		}
 	}
 
-	// -----------------------------------------------------------------------
-	// GetActiveKeys — returns (EModKey, VK) pairs with at least one callback
-	// (simple or combo).
-	// -----------------------------------------------------------------------
-	std::vector<std::pair<EModKey, int>> GetActiveKeys()
-	{
-		std::vector<std::pair<EModKey, int>> result;
-
-		auto addIfNew = [&](EModKey k)
-		{
-			for (auto& r : result)
-				if (r.first == k) return;
-			int vk = ModKeyToVK(k);
-			if (vk != 0)
-				result.push_back({k, vk});
-		};
-
-		std::lock_guard<std::mutex> lock(s_mutex);
-		for (auto& e : s_callbacks)
-			addIfNew(e.key);
-		for (auto& e : s_namedCombos)
-			addIfNew(e.key);
-		for (auto& e : s_comboCallbacks)
-			addIfNew(e.key);
-
-		return result;
-	}
-
 	void GetRegistrationCounts(int* outSimple, int* outNamedCombos,
 	                           int* outAdvancedCombos, int* outBlocking)
 	{

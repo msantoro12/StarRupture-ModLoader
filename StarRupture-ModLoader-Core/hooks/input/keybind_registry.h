@@ -114,10 +114,6 @@ namespace Hooks::Input
 	// Modifier-less named entries follow the same shadowing rule as Dispatch.
 	void DispatchCombo(EModKey key, EModKeyModifiers mods, EModKeyEvent event);
 
-	// Returns the set of (EModKey, VK) pairs that have at least one registered callback
-	// (simple or combo).  Used by the input processor to know which keys to poll.
-	std::vector<std::pair<EModKey, int>> GetActiveKeys();
-
 	// --- Diagnostics ---
 	// How many callbacks are registered, split by kind, plus how many combos are
 	// currently set to swallow their key from the game. For the debug HUD: a

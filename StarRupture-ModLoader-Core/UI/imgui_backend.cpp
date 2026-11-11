@@ -4399,6 +4399,41 @@ namespace
 		return ok;
 	}
 
+	// The top level as it came from the GPU, for a format TrialDecode does not handle (BC7 and the like).
+	// A DDS with a DX10 header opens in any DDS-aware viewer.
+	bool TrialWriteDds(const wchar_t* pngPath, DXGI_FORMAT fmt, UINT w, UINT h, const uint8_t* mapped, UINT rowPitch,
+		UINT rows, UINT64 rowSize)
+	{
+		std::wstring path = pngPath;
+		if (path.size() > 4)
+			path.replace(path.size() - 4, 4, L".dds");
+		if (fmt == DXGI_FORMAT_BC7_TYPELESS) fmt = DXGI_FORMAT_BC7_UNORM;
+		uint32_t header[1 + 31 + 5] = {};
+		header[0]  = 0x20534444;                 // 'DDS '
+		header[1]  = 124;
+		header[2]  = 0x1 | 0x2 | 0x4 | 0x1000 | 0x80000;
+		header[3]  = h;
+		header[4]  = w;
+		header[5]  = uint32_t(rowSize * rows);
+		header[7]  = 1;                          // mip count
+		header[19] = 32;                         // pixel format size
+		header[20] = 0x4;                        // FOURCC
+		header[21] = 0x30315844;                 // 'DX10'
+		header[27] = 0x1000;                     // caps: texture
+		header[32] = uint32_t(fmt);
+		header[33] = 3;                          // texture 2D
+		header[35] = 1;                          // array size
+		HANDLE file = CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+		if (file == INVALID_HANDLE_VALUE)
+			return false;
+		DWORD written = 0;
+		bool ok = WriteFile(file, header, sizeof(header), &written, nullptr) != 0;
+		for (UINT r = 0; ok && r < rows; ++r)
+			ok = WriteFile(file, mapped + size_t(r) * rowPitch, DWORD(rowSize), &written, nullptr) != 0;
+		CloseHandle(file);
+		return ok;
+	}
+
 	// Top level of a finished copy to a PNG. The copy is ours: it is read back on a queue made for this
 	// and gone after, with the copy back in the state the draw path expects.
 	int TrialDumpPng(PluginTextureHandle handle, const wchar_t* path)
@@ -4485,6 +4520,9 @@ namespace
 						if (TrialDecode(desc.Format, static_cast<const uint8_t*>(mapped), footprint.Footprint.RowPitch,
 							UINT(desc.Width), desc.Height, bgra))
 							result = TrialWritePng(path, UINT(desc.Width), desc.Height, bgra) ? 1 : -1;
+						else if (TrialWriteDds(path, desc.Format, UINT(desc.Width), desc.Height, static_cast<const uint8_t*>(mapped),
+							footprint.Footprint.RowPitch, rows, rowSize))
+							result = 2;
 						readback->Unmap(0, nullptr);
 					}
 				}

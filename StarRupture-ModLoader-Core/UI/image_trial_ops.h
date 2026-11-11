@@ -12,7 +12,7 @@ namespace ImageTrialOps
         TextureFacts = 2,  // a = UTexture2D*, b = Facts*. Returns 1 when filled, 0 when the texture has no RHI resource yet, -1 on a fault.
         Memory       = 3,  // a = MemoryInfo*. Returns 1 when filled.
         CopyState    = 4,  // a = PluginTextureHandle. Returns 1 when its copy has finished on the GPU, 0 while it is pending, -1 for a bad handle.
-        DumpPng      = 5,  // a = PluginTextureHandle, b = const wchar_t* path. Returns 1 written, 0 not yet, -1 failed or format not handled.
+        DumpPng      = 5,  // a = PluginTextureHandle, b = const wchar_t* path (.png). Returns 1 PNG written, 2 raw DDS written beside it (format not decoded), 0 not yet, -1 failed.
         Parked       = 6,  // Returns the number of residency requests parked by the icon copies.
     };
 

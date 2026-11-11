@@ -51,6 +51,7 @@ namespace
     constexpr double kWorldDelayMs    = 10000.0;
     constexpr double kHeapWaitMs      = 120000.0;
     constexpr int    kParkTicksMax    = 300;
+    constexpr int    kRefusedTicksMax = 120;
     constexpr int    kFenceTicksMax   = 600;
     constexpr int    kBaselineTicks   = 120;
     constexpr int    kPaceRetryMax    = 20;
@@ -315,6 +316,7 @@ namespace
         double       find = -1, load = -1, fullload = -1, resolve = -1, read = -1, parkwait = -1;
         LONGLONG     parkStart = 0;
         int          parkTicks = 0, fenceTicks = 0;
+        bool         parkedSeen = false;
         double       worst = 0;
         std::string  png = "-";
     };
@@ -683,8 +685,8 @@ namespace
     {
         Cur& c = g_cur;
         LogToFile::Info("[ImgTrial] TIME part=%s n=%d set=%s name=%s resident=%d find=%.3f load=%.3f fullyload=%.3f resolve=%.3f read=%.3f "
-            "parkwait=%.3f fenceTicks=%d worstTick=%.3f kind=%s copy=%s png=%s tex=%s", g_part, g_sampleNo, e.building ? "building" : "item",
-            e.asset.c_str(), c.resident ? 1 : 0, c.find, c.load, c.fullload, c.resolve, c.read, c.parkwait, c.fenceTicks, c.worst,
+            "parkwait=%.3f parked=%d fenceTicks=%d worstTick=%.3f kind=%s copy=%s png=%s tex=%s", g_part, g_sampleNo, e.building ? "building" : "item",
+            e.asset.c_str(), c.resident ? 1 : 0, c.find, c.load, c.fullload, c.resolve, c.read, c.parkwait, c.parkedSeen ? 1 : 0, c.fenceTicks, c.worst,
             KindName(e.kind), copy, c.png.c_str(), e.texPath.empty() ? "-" : e.texPath.c_str());
         if (c.find >= 0) g_stats.find.push_back(c.find);
         if (c.load >= 0) g_stats.load.push_back(c.load);
@@ -709,9 +711,11 @@ namespace
             const std::wstring fw = W(file);
             const intptr_t r = UI::ImGuiBackend::ImageTrial(Ops::DumpPng, c.h, const_cast<wchar_t*>(fw.c_str()));
             const TexRec& rec = g_tex[e.texPath];
+            std::string written = file;
+            if (r == 2) written.replace(written.size() - 4, 4, ".dds");
             LogToFile::Info("[ImgTrial] DUMP set=%s name=%s result=%s fmt=%u res=%ux%u file=%s", e.building ? "building" : "item",
-                e.asset.c_str(), r == 1 ? "ok" : r == 0 ? "not-ready" : "failed-or-format-not-decoded", rec.f.fmt, rec.f.w, rec.f.h, file.c_str());
-            if (r == 1) { (e.building ? g_dumpBuildings : g_dumpItems)++; c.png = file; }
+                e.asset.c_str(), r == 1 ? "png" : r == 2 ? "dds-raw" : r == 0 ? "not-ready" : "failed", rec.f.fmt, rec.f.w, rec.f.h, written.c_str());
+            if (r == 1 || r == 2) { (e.building ? g_dumpBuildings : g_dumpItems)++; c.png = written; }
         }
         if (IPluginImGuiTextures* api = UI::ImGuiBackend::GetTextureAPI()) api->FreeTexture(c.h);
         c.h = nullptr;
@@ -758,16 +762,12 @@ namespace
             if (UI::ImGuiBackend::ImageTrial(Ops::CopyState, c.h, nullptr) == 1) CopyFinished(e);
             return;
         }
+        // Refused: a residency request is parked, the copy ring is full, or the texture is not ready yet. Try again each tick.
         const intptr_t parkedAfter = UI::ImGuiBackend::ImageTrial(Ops::Parked, nullptr, nullptr);
-        if (parkedAfter > 0 || parkedBefore > 0)
-        {
-            ++g_stats.parked;
-            c.stage = 1;
-            c.parkStart = Now();
-            return;
-        }
-        ++g_stats.copyFail;
-        EndSample(e, "read-refused");
+        c.parkedSeen = parkedAfter > 0 || parkedBefore > 0;
+        if (c.parkedSeen) ++g_stats.parked;
+        c.stage = 1;
+        c.parkStart = Now();
     }
 
     void SampleStep()
@@ -792,7 +792,13 @@ namespace
                 if (UI::ImGuiBackend::ImageTrial(Ops::CopyState, c.h, nullptr) == 1) CopyFinished(e);
                 return;
             }
-            if (++c.parkTicks > kParkTicksMax) { ++g_stats.copyFail; c.parkwait = Ms(c.parkStart, Now()); EndSample(e, "park-timeout"); }
+            if (!c.parkedSeen && UI::ImGuiBackend::ImageTrial(Ops::Parked, nullptr, nullptr) > 0) { c.parkedSeen = true; ++g_stats.parked; }
+            if (++c.parkTicks > (c.parkedSeen ? kParkTicksMax : kRefusedTicksMax))
+            {
+                ++g_stats.copyFail;
+                c.parkwait = Ms(c.parkStart, Now());
+                EndSample(e, c.parkedSeen ? "park-timeout" : "read-refused");
+            }
             return;
         }
         const intptr_t s = UI::ImGuiBackend::ImageTrial(Ops::CopyState, c.h, nullptr);

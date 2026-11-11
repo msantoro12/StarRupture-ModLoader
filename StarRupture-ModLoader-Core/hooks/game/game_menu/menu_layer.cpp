@@ -73,8 +73,7 @@ namespace Hooks::GameMenu
 
 	uint64_t ReadMenuLayer(SDK::APlayerController* pc, bool* buildMenuActive)
 	{
-		if (buildMenuActive)
-			*buildMenuActive = false;
+		*buildMenuActive = false;
 		if (!pc)
 			return 0;
 		SDK::UCommonActivatableWidgetContainerBase* layer = FindMenuLayer(pc);
@@ -101,7 +100,7 @@ namespace Hooks::GameMenu
 			else if (w->IsA(SDK::UCrUW_BuildingMenu::StaticClass()))
 			{
 				kinds[i] = UIState::MenuKind::BuildMenu;
-				if (buildMenuActive && w->bIsActive)
+				if (w->bIsActive)
 					*buildMenuActive = true;
 			}
 			else if (w->IsA(SDK::UCrUW_ResearchTerminalPanel::StaticClass())

@@ -292,19 +292,19 @@ void InitClientUI()
             menuBits = Hooks::GameMenu::ReadMenuLayer(pc, &buildMenuActive);
 
         // Whether a game screen has the mouse cursor up, for the ImGui host's
-        // mouse sharing (ShouldShareGameMouseNow). The build menu is one although
-        // the controller's bShowMouseCursor stays off there; its close animation
-        // does not count (buildMenuActive).
+        // mouse sharing (ShouldShareGameMouseNow). The build menu is one whether
+        // or not the game raises bShowMouseCursor there; its close animation does
+        // not count (buildMenuActive).
         const bool cursorFlag = pc && pc->bShowMouseCursor;
         const bool cursorUp   = cursorFlag || buildMenuActive;
         Hooks::GameMenu::SetGameCursorShown(cursorUp);
 
-        static bool s_cursorFromBuildMenu = false;
-        if (s_cursorFromBuildMenu != (cursorUp && !cursorFlag))
+        static bool s_buildMenuActive = false;
+        if (s_buildMenuActive != buildMenuActive)
         {
-            s_cursorFromBuildMenu = !s_cursorFromBuildMenu;
-            LogToFile::Debug("[UI] Build menu %s: the cursor is %s", s_cursorFromBuildMenu ? "opened" : "closed",
-                             s_cursorFromBuildMenu ? "reported up" : "left to the game");
+            s_buildMenuActive = buildMenuActive;
+            LogToFile::Debug("[UI] Build menu %s (the game's cursor flag is %s)",
+                             buildMenuActive ? "active" : "no longer active", cursorFlag ? "on" : "off");
         }
 
         // The plugins' UI state (IPluginGameMenu::GetUIState) as of this tick.

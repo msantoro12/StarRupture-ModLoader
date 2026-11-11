@@ -285,17 +285,33 @@ void InitClientUI()
         SDK::UWorld* currentWorld = SdkGlobals::GetWorld();
         SDK::APlayerController* pc = currentWorld
             ? SDK::UGameplayStatics::GetPlayerController(currentWorld, 0) : nullptr;
+        // The menu layer is read only while a plugin wants it.
+        bool     buildMenuActive = false;
+        uint64_t menuBits        = 0;
+        if (pc && UIState::MenuReadWanted())
+            menuBits = Hooks::GameMenu::ReadMenuLayer(pc, &buildMenuActive);
+
         // Whether a game screen has the mouse cursor up, for the ImGui host's
-        // mouse sharing (ShouldShareGameMouseNow).
-        Hooks::GameMenu::SetGameCursorShown(pc && pc->bShowMouseCursor);
+        // mouse sharing (ShouldShareGameMouseNow). The build menu is one although
+        // the controller's bShowMouseCursor stays off there; its close animation
+        // does not count (buildMenuActive).
+        const bool cursorFlag = pc && pc->bShowMouseCursor;
+        const bool cursorUp   = cursorFlag || buildMenuActive;
+        Hooks::GameMenu::SetGameCursorShown(cursorUp);
+
+        static bool s_cursorFromBuildMenu = false;
+        if (s_cursorFromBuildMenu != (cursorUp && !cursorFlag))
+        {
+            s_cursorFromBuildMenu = !s_cursorFromBuildMenu;
+            LogToFile::Debug("[UI] Build menu %s: the cursor is %s", s_cursorFromBuildMenu ? "opened" : "closed",
+                             s_cursorFromBuildMenu ? "reported up" : "left to the game");
+        }
 
         // The plugins' UI state (IPluginGameMenu::GetUIState) as of this tick.
-        // The menu layer is read only while a plugin wants it.
-        uint64_t uiState = 0;
+        uint64_t uiState = menuBits;
         if (ReloadPolicy::GameplayWorldRunning())  uiState |= PLUGIN_UI_IN_GAMEPLAY;
         if (Hooks::GameMenu::IsPauseMenuOpen())    uiState |= PLUGIN_UI_PAUSE_MENU;
         if (Hooks::GameMenu::IsGameCursorShown())  uiState |= PLUGIN_UI_CURSOR_UP;
-        if (pc && UIState::MenuReadWanted())       uiState |= Hooks::GameMenu::ReadMenuLayer(pc);
         UIState::Publish(uiState);
 
         // Whether a game menu widget is under the cursor, for the widgets that

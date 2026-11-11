@@ -110,7 +110,12 @@ namespace Hooks::GameMenu
 	// those) for this controller's local player, read from the game's CommonUI
 	// menu layer. 0 when nothing is on it; a screen that is closing still
 	// counts, until its close transition has ended. Game thread only.
-	uint64_t ReadMenuLayer(SDK::APlayerController* pc);
+	//
+	// buildMenuActive, when given, is set to whether the build menu is on the
+	// layer AND still the active screen (not closing): the build menu does not
+	// raise the controller's bShowMouseCursor, so the tick treats it as a
+	// cursor screen of its own.
+	uint64_t ReadMenuLayer(SDK::APlayerController* pc, bool* buildMenuActive = nullptr);
 
 	// Whether the cursor is over a visible, hit-testable widget of that same
 	// menu layer (UWidget::IsHovered on each screen on it). True when the layer

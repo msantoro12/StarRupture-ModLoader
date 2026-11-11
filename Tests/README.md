@@ -225,6 +225,8 @@ registry's `ProcessWindowMessage`, as the overlay's window procedure hands them 
   key and mouse buttons are true while typing. A key with a keybind gives the callback's answer on
   its first poll, and the callback still skips the press. A key with no keybind and no poll skips
   the game's text-focus scan.
+- The InputKey hook's key lookup (`NameToModKey` and `ShouldBlock`, which the hook calls with the event's own key name): a key's name finds that key whatever else is held, names with no mod key (mouse wheel, gamepad buttons and axes) are never blocked, a plain wheel notch survives a blocked LeftControl, holding one blocked key does not block another key, and a combo blocks only under its own modifiers.
+- `ForgetPluginBlocking`: an unloading plugin's blocking goes, another plugin's blocking of the same key stays, and a plugin whose name starts the same is left alone.
 
 ```
 msbuild Tests\KeyAndThreadTests\KeyAndThreadTests.vcxproj /p:Configuration="Client Release" /p:Platform=x64

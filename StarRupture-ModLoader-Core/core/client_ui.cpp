@@ -1,6 +1,7 @@
 #ifdef MODLOADER_CLIENT_BUILD
 
 #include "client_ui.h"
+#include "image_trial.h"
 #include "ui_state.h"
 #include "input_arbitration.h"
 #include "core/sdk_globals.h"
@@ -9,6 +10,7 @@
 #include "../hooks/game/text_input_focus/text_input_focus.h"
 #include "../hooks/game/world_begin_play/world_begin_play.h"
 #include "../hooks/game/engine_tick/engine_tick.h"
+#include "../hooks/game/experience_load_complete/experience_load_complete.h"
 #include "../hooks/game/slate_present/slate_present.h"
 #include "../hooks/game/game_menu/game_menu.h"
 #include "../hooks/game/game_menu/game_menu_registry.h"
@@ -281,6 +283,7 @@ void InitClientUI()
         const bool isMainMenu = ReloadPolicy::IsMainMenuWorldName(worldName);
         UI::Overlay::SetVisible(isMainMenu);
         UI::GlobalSettings::SetWorldName(worldName ? worldName : "");
+        if (isMainMenu) ImageTrial::OnMenu(); else ImageTrial::OnGameWorld();
 
         // What the auto-updater replaced this boot, and any plugin whose hooks
         // did not resolve. The failure one opens second so it takes focus -- it
@@ -297,6 +300,7 @@ void InitClientUI()
 
     static auto s_onTick = [](float)
     {
+        ImageTrial::Tick();
         Hooks::GameMenu::Tick();
 
         // Look up the current world fresh every tick -- a cached pointer can
@@ -358,6 +362,7 @@ void InitClientUI()
         UI::GlobalSettings::SetPlayerPosition(loc.X, loc.Y, loc.Z, true);
     };
     Hooks::EngineTick::RegisterPluginCallback(s_onTick);
+    Hooks::ExperienceLoadComplete::RegisterPluginCallback(&ImageTrial::OnWorldLoaded);
 }
 
 void ShutdownClientUI()

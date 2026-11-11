@@ -1,3 +1,7 @@
 - The mouse wheel no longer stops working after it was first used while a blocked mod key was held
 - Keys a mod blocks are released when the mod is unloaded
+- Mod windows no longer flicker while a save loads, and blink less after Alt-Tab
+- After a graphics crash the mod windows come back by themselves after one launch
+- The log says more about graphics crashes and icon copy failures
+- Mod overlay buttons can now be clicked while the build menu is open
 - Full release notes are on GitHub and Nexus

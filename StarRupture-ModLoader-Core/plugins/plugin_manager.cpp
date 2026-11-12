@@ -47,6 +47,7 @@
 #include "UI/modloader_window.h"
 #include "UI/plugin_panel_registry.h"
 #include "UI/plugin_widget_registry.h"
+#include "UI/image_library.h"
 #include "UI/global_settings.h"
 #include "UI/toast.h"
 #endif
@@ -1057,6 +1058,10 @@ namespace PluginManager
 		// kept across an unload, so a callback the plugin did not unregister
 		// itself would still match this plugin and be called into freed memory.
 		UI::PluginPanelRegistry::ForgetConfigCallbacks(&p.self);
+
+		// The image sets it said it draws from. Its images stay: they belong to
+		// the session, not to the plugin.
+		ImageLibrary::ForgetPlugin(&p.self);
 #endif
 	}
 

@@ -883,8 +883,14 @@
 //      drawn most recently first, drops a request nobody has drawn lately,
 //      and past its memory cap evicts the image drawn least recently; Get
 //      asks for an evicted image again.
-//      Item, Path, Get and State are callable from any thread, render
-//      callbacks included, and return at once. Get and State take no lock.
+//      Item, Path, Get, State and Canonical are callable from any thread, render
+//      callbacks included, and return at once. Get, State and Canonical take
+//      no lock. Item, Path and FromTexture only hand out the id; the image is
+//      read when Get is called for it (or by preload, for a set in use).
+//      FromTexture gives the same id as Path of the texture's object path,
+//      and Canonical maps any id to the one id of its image: the id of the
+//      texture path for an item that has been resolved, the id itself before
+//      that, so a plugin can compare images by id.
 //      UseSets records which sets of images the plugin draws from, for
 //      background preload.
 //      A plugin built for v76 is refused by a loader that ends at 75. The
@@ -3695,9 +3701,9 @@ struct IPluginPak
 //
 // THREADING RULES
 // ---------------
-// Item, Path, Get, State and UseSets can be called from any thread, including
-// an ImGui render callback, and return at once. FromTexture reads a game
-// object, so it is game thread only.
+// Item, Path, Get, State, UseSets and Canonical can be called from any thread,
+// including an ImGui render callback, and return at once. FromTexture reads a
+// game object, so it is game thread only.
 // ---------------------------------------------------------------------------
 
 // An id names one game image for the whole session. 0 is never valid.
@@ -3705,7 +3711,7 @@ typedef uint32_t PluginImageId;
 
 enum PluginImageState : int32_t
 {
-	PLUGIN_IMAGE_NONE     = 0, // id 0, unknown, failed, over the cap, no version map rows on this build, or the library is off
+	PLUGIN_IMAGE_NONE     = 0, // id 0, unknown, not asked for yet (Get asks), failed, over the cap, no version map rows on this build, or the library is off
 	PLUGIN_IMAGE_WAITING  = 1, // asked for, being read
 	PLUGIN_IMAGE_READY    = 2, // Get returns a texture
 	PLUGIN_IMAGE_NO_IMAGE = 3, // the item or building resolved and has no image
@@ -3720,10 +3726,12 @@ enum PluginImageSet : uint32_t
 struct IPluginImages
 {
 	// Any thread. Returns at once. The same name or path always gives the same id.
+	// These only hand out the id; Get is what asks for the image.
 	PluginImageId (*Item)(const IPluginSelf* self, const char* uniqueItemName);
 	PluginImageId (*Path)(const IPluginSelf* self, const char* textureObjectPath); // "/Game/.../T_X.T_X"
 
 	// Game thread only (returns 0 and logs once elsewhere). Keeps no pointer.
+	// The same id as Path gives for the texture's object path.
 	PluginImageId (*FromTexture)(const IPluginSelf* self, SDK::UTexture2D* texture);
 
 	// Any thread, render callbacks included. Null until READY. Valid for this frame only:
@@ -3735,6 +3743,13 @@ struct IPluginImages
 	// The sets this plugin draws from, for background preload (PluginImageSet
 	// bits). 0 clears. Dropped when the plugin unloads.
 	void (*UseSets)(const IPluginSelf* self, uint32_t sets);
+
+	// Any thread, no lock. The one id for the image that id names: for an id from
+	// Item, the id of its texture path once the item has been resolved, and the
+	// id unchanged before that. A path id, PLUGIN_IMAGE_NONE (0) and an unknown
+	// id come back unchanged. Two ids name the same image when their Canonical
+	// values are equal.
+	PluginImageId (*Canonical)(PluginImageId id);
 };
 
 static_assert(sizeof(PluginImageId) == 4, "v76 layout");
@@ -3744,7 +3759,8 @@ static_assert(offsetof(IPluginImages, FromTexture) == 16, "v76 layout");
 static_assert(offsetof(IPluginImages, Get)         == 24, "v76 layout");
 static_assert(offsetof(IPluginImages, State)       == 32, "v76 layout");
 static_assert(offsetof(IPluginImages, UseSets)     == 40, "v76 layout");
-static_assert(sizeof(IPluginImages)                == 48, "v76 layout");
+static_assert(offsetof(IPluginImages, Canonical)   == 48, "v76 layout");
+static_assert(sizeof(IPluginImages)                == 56, "v76 layout");
 
 struct IPluginHooks
 {

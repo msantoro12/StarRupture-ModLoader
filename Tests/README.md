@@ -378,8 +378,9 @@ It checks:
   are dropped.
 - The byte cap and the count cap evict the least recently seen image, equal stamps evict the lower id
   first, a copy over the cap is refused, and an evicted image is asked for again when it is drawn.
-- Aliased ids are one image, `ReleaseAll` hands back every kept copy, and the plugin interface reaches
-  the same table.
+- Handing out an id (`Item`, `Path`) asks for nothing: only drawing it does.
+- Aliased ids are one image, `Canonical` gives the one id for them, `ReleaseAll` hands back every kept
+  copy, and the plugin interface reaches the same table.
 - Readers on another thread see a consistent state while the table changes.
 
 ```

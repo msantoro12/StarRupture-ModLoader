@@ -218,6 +218,14 @@ struct Rig
         host.clockUs = 1000 * 1000;
         items.clockUs = &host.clockUs;
         buildings.clockUs = &host.clockUs;
+        library.SetNow(host.clockUs / 1000);
+    }
+
+    // A plugin draws the image behind an id: Get is what asks for it.
+    PluginImageId Want(PluginImageId id)
+    {
+        library.Get(id);
+        return id;
     }
 
     // One engine tick, a millisecond later than the last.
@@ -234,7 +242,7 @@ struct Rig
     PluginImageId Loaded(const char* path)
     {
         host.loaded.insert(path);
-        return library.Path(path);
+        return Want(library.Path(path));
     }
 };
 
@@ -449,7 +457,7 @@ static void UnavailableTurnsTheLibraryOff()
     Rig rig;
     const PluginImageId a = rig.Loaded(kA);
     const PluginImageId b = rig.Loaded(kB);
-    const PluginImageId item = rig.library.Item("Item_X");
+    const PluginImageId item = rig.Want(rig.library.Item("Item_X"));
     rig.host.readResult[kA] = ReadResult::Unavailable;
     rig.host.readResult[kB] = ReadResult::Unavailable;
     rig.Tick();
@@ -458,7 +466,7 @@ static void UnavailableTurnsTheLibraryOff()
     CHECK(rig.library.State(item) == PLUGIN_IMAGE_NONE);
     const size_t reads = rig.host.reads.size();
 
-    const PluginImageId late = rig.library.Path("/Game/UI/T_Late.T_Late");
+    const PluginImageId late = rig.Want(rig.library.Path("/Game/UI/T_Late.T_Late"));
     rig.Tick(3);
     CHECK(rig.host.reads.size() == reads);   // nothing is read any more
     CHECK(rig.library.State(late) == PLUGIN_IMAGE_NONE);
@@ -467,7 +475,7 @@ static void UnavailableTurnsTheLibraryOff()
 static void APathNotInMemoryIsLoadedThenRead()
 {
     Rig rig;
-    const PluginImageId a = rig.library.Path(kA);
+    const PluginImageId a = rig.Want(rig.library.Path(kA));
     rig.Tick();
     CHECK(rig.host.loads.size() == 1);
     CHECK(rig.host.reads.size() == 2);   // not there, then there
@@ -479,7 +487,7 @@ static void ALoadedTextureThatIsNotReadableYetIsRetried()
 {
     Rig rig;
     rig.host.readAfterLoad = ReadResult::NotYet;
-    const PluginImageId a = rig.library.Path(kA);
+    const PluginImageId a = rig.Want(rig.library.Path(kA));
     rig.Tick();
     CHECK(rig.host.loads.size() == 1);
     CHECK(rig.library.State(a) == PLUGIN_IMAGE_WAITING);
@@ -493,9 +501,9 @@ static void ALoadedTextureThatIsNotReadableYetIsRetried()
 static void LoadResultsEndTheRequest()
 {
     Rig rig;
-    const PluginImageId missing = rig.library.Path("/Game/UI/T_Missing.T_Missing");
-    const PluginImageId fault = rig.library.Path("/Game/UI/T_Fault.T_Fault");
-    const PluginImageId unsupported = rig.library.Path("/Game/UI/T_Unsupported.T_Unsupported");
+    const PluginImageId missing = rig.Want(rig.library.Path("/Game/UI/T_Missing.T_Missing"));
+    const PluginImageId fault = rig.Want(rig.library.Path("/Game/UI/T_Fault.T_Fault"));
+    const PluginImageId unsupported = rig.Want(rig.library.Path("/Game/UI/T_Unsupported.T_Unsupported"));
     rig.host.loadResult["/Game/UI/T_Missing.T_Missing"] = LoadResult::Missing;
     rig.host.loadResult["/Game/UI/T_Fault.T_Fault"] = LoadResult::Fault;
     rig.host.loadResult["/Game/UI/T_Unsupported.T_Unsupported"] = LoadResult::Unsupported;
@@ -513,7 +521,7 @@ static void ALoadThatFindsNothingIsNoImage()
     // The load said it loaded, and the texture is still not there.
     Rig rig;
     rig.host.readAfterLoad = ReadResult::NotLoaded;
-    const PluginImageId a = rig.library.Path(kA);
+    const PluginImageId a = rig.Want(rig.library.Path(kA));
     rig.Tick(2);
     CHECK(rig.library.State(a) == PLUGIN_IMAGE_NO_IMAGE);
 }
@@ -521,9 +529,9 @@ static void ALoadThatFindsNothingIsNoImage()
 static void OneLoadPerTick()
 {
     Rig rig;
-    const PluginImageId a = rig.library.Path(kA);
-    const PluginImageId b = rig.library.Path(kB);
-    const PluginImageId c = rig.library.Path(kC);
+    const PluginImageId a = rig.Want(rig.library.Path(kA));
+    const PluginImageId b = rig.Want(rig.library.Path(kB));
+    const PluginImageId c = rig.Want(rig.library.Path(kC));
     rig.host.readAfterLoad = ReadResult::NotYet;   // keeps the reads from ending the tick
     rig.Tick();
     CHECK(rig.host.loads.size() == 1);
@@ -572,16 +580,47 @@ static void AnItemBecomesTheImageOfItsIconTexture()
     Rig rig;
     rig.items.Add("Item_X", kA);
     rig.host.loaded.insert(kA);
-    const PluginImageId item = rig.library.Item("Item_X");
+    const PluginImageId item = rig.Want(rig.library.Item("Item_X"));
 
     rig.Tick(3);
-    const PluginImageId path = rig.library.Path(kA);
+    const PluginImageId path = rig.Want(rig.library.Path(kA));
     CHECK(rig.library.State(item) == PLUGIN_IMAGE_READY);
     CHECK(rig.library.State(path) == PLUGIN_IMAGE_READY);
     CHECK(rig.host.reads.size() == 1 && rig.host.reads[0] == kA);   // one read, one copy
     CHECK(rig.library.CountKept() == 1);
     CHECK(rig.library.Get(item) != nullptr && rig.library.Get(item) == rig.library.Get(path));
     CHECK(rig.library.ImageCount() == 2);   // the item and the path it made
+    CHECK(rig.library.Canonical(item) == path && rig.library.Canonical(path) == path);
+}
+
+static void RegisteringIdsReadsNothing()
+{
+    Rig rig;
+    rig.items.Add("Item_X", kA);
+    rig.host.loaded.insert(kA);
+    rig.host.loaded.insert(kB);
+
+    // Item and Path only hand out ids: no request, no list, no read, however long the pump runs.
+    std::vector<PluginImageId> ids;
+    for (int i = 0; i < 20; ++i)
+    {
+        ids.push_back(rig.library.Item(("Item_" + std::to_string(i)).c_str()));
+        ids.push_back(rig.library.Path(i % 2 ? kA : kB));
+    }
+    ids.push_back(rig.library.Item("Item_X"));
+    rig.Tick(300);
+    CHECK(rig.host.reads.empty() && rig.host.loads.empty());
+    CHECK(rig.items.lists == 0 && rig.items.reads.empty());
+    CHECK(rig.library.CountKept() == 0);
+    for (const PluginImageId id : ids)
+        CHECK(rig.library.State(id) == PLUGIN_IMAGE_NONE);
+
+    // Drawing one of them is what asks.
+    const PluginImageId item = ids.back();
+    rig.Want(item);
+    rig.Tick(5);
+    CHECK(rig.host.reads.size() == 1 && rig.host.reads[0] == kA);
+    CHECK(rig.library.State(item) == PLUGIN_IMAGE_READY);
 }
 
 static void AnItemIsAskedForByAnyCase()
@@ -589,7 +628,7 @@ static void AnItemIsAskedForByAnyCase()
     Rig rig;
     rig.items.Add("Item_X", kA);
     rig.host.loaded.insert(kA);
-    const PluginImageId item = rig.library.Item("  item_x ");
+    const PluginImageId item = rig.Want(rig.library.Item("  item_x "));
     rig.Tick(3);
     CHECK(rig.library.State(item) == PLUGIN_IMAGE_READY);
 }
@@ -598,7 +637,7 @@ static void AnItemWithNoIconIsNoImage()
 {
     Rig rig;
     rig.items.items.push_back({ "Item_Empty", "", ImageLookup::ItemRead::NoIcon });
-    const PluginImageId item = rig.library.Item("Item_Empty");
+    const PluginImageId item = rig.Want(rig.library.Item("Item_Empty"));
     rig.Tick(2);
     CHECK(rig.library.State(item) == PLUGIN_IMAGE_NO_IMAGE);
     CHECK(rig.host.reads.empty());
@@ -611,9 +650,9 @@ static void AnItemWhoseIconIsAPlaceholderIsNoImage()
     rig.items.Add("Item_White", "/Engine/EngineResources/WhiteSquareTexture.WhiteSquareTexture");
     rig.items.Add("Item_Grid", "/Engine/EngineMaterials/DefaultWhiteGrid.DefaultWhiteGrid");
     rig.items.Add("Item_NoItem", "/Game/UI/Icons/T_NoItem_White_Icon.T_NoItem_White_Icon");
-    const PluginImageId white = rig.library.Item("Item_White");
-    const PluginImageId grid = rig.library.Item("Item_Grid");
-    const PluginImageId noItem = rig.library.Item("Item_NoItem");
+    const PluginImageId white = rig.Want(rig.library.Item("Item_White"));
+    const PluginImageId grid = rig.Want(rig.library.Item("Item_Grid"));
+    const PluginImageId noItem = rig.Want(rig.library.Item("Item_NoItem"));
     rig.Tick(3);
     CHECK(rig.library.State(white) == PLUGIN_IMAGE_NO_IMAGE);
     CHECK(rig.library.State(grid) == PLUGIN_IMAGE_NO_IMAGE);
@@ -626,8 +665,8 @@ static void AnItemWhoseIconIsAPlaceholderIsNoImage()
 static void APathToAPlaceholderIsNoImage()
 {
     Rig rig;
-    const PluginImageId white = rig.library.Path("/Engine/EngineResources/WhiteSquareTexture.WhiteSquareTexture");
-    const PluginImageId placeholder = rig.library.Path("Texture2D'/Game/Scene/WhitePlaceholder.WhitePlaceholder'");
+    const PluginImageId white = rig.Want(rig.library.Path("/Engine/EngineResources/WhiteSquareTexture.WhiteSquareTexture"));
+    const PluginImageId placeholder = rig.Want(rig.library.Path("Texture2D'/Game/Scene/WhitePlaceholder.WhitePlaceholder'"));
     rig.Tick(3);
     CHECK(rig.library.State(white) == PLUGIN_IMAGE_NO_IMAGE);
     CHECK(rig.library.State(placeholder) == PLUGIN_IMAGE_NO_IMAGE);
@@ -644,7 +683,7 @@ static void AnItemThatIsNotInTheGameIsNoneOnceTheListIsRead()
 {
     Rig rig;
     rig.items.Add("Item_X", kA);
-    const PluginImageId unknown = rig.library.Item("Item_Nobody");
+    const PluginImageId unknown = rig.Want(rig.library.Item("Item_Nobody"));
     rig.Tick(2);
     CHECK(rig.library.State(unknown) == PLUGIN_IMAGE_NONE);
     CHECK(rig.pump.GetStats().failed == 1);
@@ -658,7 +697,7 @@ static void AnItemWaitsWhileTheListIsStillBeingRead()
     for (int i = 0; i < 5; ++i)
         rig.items.Add("Item_" + std::to_string(i), kA);
     rig.host.loaded.insert(kA);
-    const PluginImageId last = rig.library.Item("Item_4");
+    const PluginImageId last = rig.Want(rig.library.Item("Item_4"));
     rig.Tick(3);
     CHECK(rig.items.reads.size() == 3);
     CHECK(rig.library.State(last) == PLUGIN_IMAGE_WAITING);   // not in the index yet
@@ -677,7 +716,7 @@ static void TheItemIndexReadsNothingUntilAnItemIsAskedFor()
     CHECK(rig.items.lists == 0);
     CHECK(rig.items.reads.empty());
 
-    rig.library.Item("Item_X");
+    rig.Want(rig.library.Item("Item_X"));
     rig.Tick(2);
     CHECK(rig.items.lists == 1);
     CHECK(rig.items.reads.size() == 1);
@@ -691,7 +730,7 @@ static void TheItemIndexIsBuiltOnceAndStopsWhenNobodyWaits()
         rig.items.Add("Item_" + std::to_string(i), kA);
     rig.host.loaded.insert(kA);
 
-    rig.library.Item("Item_1");
+    rig.Want(rig.library.Item("Item_1"));
     rig.Tick(4);
     const size_t readSoFar = rig.items.reads.size();
     CHECK(readSoFar < 6);   // stopped when the item was found
@@ -699,7 +738,7 @@ static void TheItemIndexIsBuiltOnceAndStopsWhenNobodyWaits()
     CHECK(rig.items.reads.size() == readSoFar);   // nobody waits: no more reads
 
     // A later item goes on from there, and the first is not read again.
-    const PluginImageId later = rig.library.Item("Item_5");
+    const PluginImageId later = rig.Want(rig.library.Item("Item_5"));
     rig.Tick(8);
     CHECK(rig.library.State(later) == PLUGIN_IMAGE_READY);
     CHECK(rig.items.lists == 1);
@@ -713,7 +752,7 @@ static void TheItemIndexSpendsTheBudgetPerTick()
     rig.items.readCostUs = 1500;
     for (int i = 0; i < 10; ++i)
         rig.items.Add("Item_" + std::to_string(i), kA);
-    rig.library.Item("Item_Nobody");
+    rig.Want(rig.library.Item("Item_Nobody"));
     rig.Tick();
     CHECK(rig.items.reads.size() == 2);
     rig.Tick();
@@ -724,7 +763,7 @@ static void TheItemIndexSpendsTheBudgetPerTick()
     slow.items.readCostUs = 5 * ImageLookup::kItemBudgetUs;
     for (int i = 0; i < 4; ++i)
         slow.items.Add("Item_" + std::to_string(i), kA);
-    slow.library.Item("Item_Nobody");
+    slow.Want(slow.library.Item("Item_Nobody"));
     slow.Tick();
     CHECK(slow.items.reads.size() == 1);
     slow.Tick();
@@ -738,7 +777,7 @@ static void ManyItemsAskedForAreHeldWithoutCostingReads()
     rig.host.loaded.insert(kA);
     std::vector<PluginImageId> ids;
     for (int i = 0; i < 30; ++i)
-        ids.push_back(rig.library.Item(("Item_" + std::to_string(i)).c_str()));
+        ids.push_back(rig.Want(rig.library.Item(("Item_" + std::to_string(i)).c_str())));
     const PluginImageId b = rig.Loaded(kB);
     rig.Tick(4);
     CHECK(rig.library.State(b) == PLUGIN_IMAGE_READY);
@@ -751,13 +790,13 @@ static void WhenTheListCannotBeMadeItemsAreNone()
 {
     Rig rig;
     rig.items.listable = false;
-    const PluginImageId item = rig.library.Item("Item_X");
+    const PluginImageId item = rig.Want(rig.library.Item("Item_X"));
     rig.Tick(2);
     CHECK(rig.library.State(item) == PLUGIN_IMAGE_NONE);
     CHECK(rig.pump.GetStats().failed == 1);
 
     // Asked again later: the list is not made again, and the item is none at once.
-    const PluginImageId later = rig.library.Item("Item_Y");
+    const PluginImageId later = rig.Want(rig.library.Item("Item_Y"));
     rig.Tick(2);
     CHECK(rig.library.State(later) == PLUGIN_IMAGE_NONE);
     CHECK(rig.items.lists == 1);
@@ -777,7 +816,7 @@ static void AnItemTheEngineCannotReadEndsTheIndex()
     Rig rig;
     rig.items.items.push_back({ "Item_A", "", ImageLookup::ItemRead::Unavailable });
     rig.items.Add("Item_X", kA);
-    const PluginImageId item = rig.library.Item("Item_X");
+    const PluginImageId item = rig.Want(rig.library.Item("Item_X"));
     rig.Tick(2);
     CHECK(rig.library.State(item) == PLUGIN_IMAGE_NONE);
 }
@@ -788,8 +827,8 @@ static void AnItemThatCannotBeReadIsSkipped()
     rig.items.items.push_back({ "Item_Broken", "", ImageLookup::ItemRead::Skipped });
     rig.items.Add("Item_X", kA);
     rig.host.loaded.insert(kA);
-    const PluginImageId item = rig.library.Item("Item_X");
-    const PluginImageId broken = rig.library.Item("Item_Broken");
+    const PluginImageId item = rig.Want(rig.library.Item("Item_X"));
+    const PluginImageId broken = rig.Want(rig.library.Item("Item_Broken"));
     rig.Tick(3);
     CHECK(rig.library.State(item) == PLUGIN_IMAGE_READY);
     CHECK(rig.library.State(broken) == PLUGIN_IMAGE_NONE);
@@ -801,7 +840,7 @@ static void WaitingItemsEndWhenTheGpuGoes()
     rig.items.readCostUs = ImageLookup::kItemBudgetUs;
     for (int i = 0; i < 5; ++i)
         rig.items.Add("Item_" + std::to_string(i), kA);
-    const PluginImageId item = rig.library.Item("Item_4");
+    const PluginImageId item = rig.Want(rig.library.Item("Item_4"));
     rig.Tick(2);
     CHECK(rig.library.State(item) == PLUGIN_IMAGE_WAITING);
 
@@ -816,7 +855,7 @@ static void WaitingItemsEndAtShutdown()
     rig.items.readCostUs = ImageLookup::kItemBudgetUs;
     for (int i = 0; i < 5; ++i)
         rig.items.Add("Item_" + std::to_string(i), kA);
-    const PluginImageId item = rig.library.Item("Item_4");
+    const PluginImageId item = rig.Want(rig.library.Item("Item_4"));
     rig.Tick(2);
     CHECK(rig.library.State(item) == PLUGIN_IMAGE_WAITING);
 
@@ -901,7 +940,7 @@ static void TheGpuGoingAwayDropsEverythingWithoutFreeing()
     const PluginImageId b = rig.Loaded(kB);
     rig.host.copyState = CopyState::Pending;
     rig.Tick();   // B in flight
-    const PluginImageId c = rig.library.Path(kC);
+    const PluginImageId c = rig.Want(rig.library.Path(kC));
 
     rig.host.ready = false;
     rig.Tick();
@@ -940,7 +979,7 @@ static void ShutdownFreesWhatTheLibraryKeeps()
     CHECK(rig.library.CountKept() == 0);
 
     const size_t reads = rig.host.reads.size();
-    rig.library.Path("/Game/UI/T_Late.T_Late");
+    rig.Want(rig.library.Path("/Game/UI/T_Late.T_Late"));
     rig.Tick(4);
     CHECK(rig.host.reads.size() == reads);   // does nothing after shutdown
 
@@ -1263,7 +1302,7 @@ static void PreloadPausesWhileAnImageSeenIsWaitingAndResumes()
     // A plugin draws an image that is not readable yet.
     rig.host.loaded.insert(kA);
     rig.host.readResult[kA] = ReadResult::NotYet;
-    const PluginImageId a = rig.library.Path(kA);
+    const PluginImageId a = rig.Want(rig.library.Path(kA));
     rig.library.Get(a);
 
     rig.Tick(30);
@@ -1514,6 +1553,7 @@ int main()
     RunTest("one read started per tick", OneReadStartedPerTick);
     RunTest("requests looked at per tick are capped", RequestsLookedAtPerTickAreCapped);
     RunTest("an item becomes the image of its icon texture", AnItemBecomesTheImageOfItsIconTexture);
+    RunTest("registering ids reads nothing", RegisteringIdsReadsNothing);
     RunTest("an item is asked for by any case", AnItemIsAskedForByAnyCase);
     RunTest("an item with no icon is no image", AnItemWithNoIconIsNoImage);
     RunTest("an item whose icon is a placeholder is no image", AnItemWhoseIconIsAPlaceholderIsNoImage);

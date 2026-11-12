@@ -39,10 +39,10 @@ namespace ImageLibrary
 	// 4096 slots for every plugin together.
 	inline constexpr uint32_t kCountCap = 2048;
 
-	// How long after it was last drawn (Get) or asked for an image counts as
-	// seen lately, in milliseconds. A request that has not been seen lately is
-	// dropped, unless the image belongs to a set a plugin uses.
-	inline constexpr uint64_t kSeenLatelyMs = 5000;
+	// How long after it was last drawn (Get) an image counts as seen lately, in
+	// milliseconds. A request that has not been seen lately is dropped, unless
+	// the image belongs to a set a plugin uses.
+	inline constexpr uint64_t kSeenLatelyMs = 500;
 
 	// ---- Table geometry ---------------------------------------------------
 	// Ids index chunks of images that are allocated once and never move, so a
@@ -95,11 +95,17 @@ namespace ImageLibrary
 
 		// ---- Plugin side ---------------------------------------------------
 
-		// Any thread. The same name or path always gives the same id. Asking
-		// is a request: the image is read, unless nobody draws it. 0 for an
-		// empty name or when the table is full.
+		// Any thread. The same name or path always gives the same id. Only hands
+		// out the id: the image is asked for by Get, not by these. 0 for an empty
+		// name or when the table is full.
 		PluginImageId Item(const char* uniqueItemName);
 		PluginImageId Path(const char* textureObjectPath);
+
+		// Any thread, no lock. The one id of the image id names: the id of the
+		// texture path for an item once the item has been resolved to its
+		// texture, id itself before that and for any id that is not an alias
+		// (a path id, 0, an unknown id).
+		PluginImageId Canonical(PluginImageId id) const;
 
 		// Any thread, no lock. Marks the image as seen, and asks for it again
 		// if it is not kept (evicted, or its request was dropped).
@@ -159,9 +165,9 @@ namespace ImageLibrary
 		// The union of the sets the plugins use now.
 		uint32_t UsedSets() const;
 
-		// A member of the sets: the image at a texture path, in the sets. Unlike
-		// Path it is not asked for, so it waits idle until preload reaches it or
-		// a plugin draws it. The same path always gives the same id.
+		// A member of the sets: the image at a texture path, in the sets. It waits
+		// idle until preload reaches it or a plugin draws it. The same path always
+		// gives the same id as Path.
 		PluginImageId PathInSet(const char* textureObjectPath, uint32_t sets);
 
 		// The next member of a used set that is not kept and not asked for, in the
@@ -237,7 +243,7 @@ namespace ImageLibrary
 		const Entry* Find(PluginImageId id) const;
 		Entry*       Resolve(Entry* e);
 		const Entry* Resolve(const Entry* e) const;
-		PluginImageId IdFor(Kind kind, const std::string& key, const char* name, bool ask = true);
+		PluginImageId IdFor(Kind kind, const std::string& key, const char* name);
 		void  Ask(Entry& e, PluginImageId id);   // lock held
 		void  Drain();                           // lock held
 		void  Trim(std::vector<Released>& evicted);   // lock held

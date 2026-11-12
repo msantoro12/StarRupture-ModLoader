@@ -150,7 +150,7 @@ namespace ImageLibrary
 		return const_cast<Library*>(this)->Resolve(const_cast<Entry*>(e));
 	}
 
-	PluginImageId Library::IdFor(Kind kind, const std::string& key, const char* name, bool ask)
+	PluginImageId Library::IdFor(Kind kind, const std::string& key, const char* name)
 	{
 		if (key.empty())
 			return 0;
@@ -176,11 +176,9 @@ namespace ImageLibrary
 		Entry& e = chunk->entries[index % kIdsPerChunk];
 		e.kind = kind;
 		e.name = kind == Kind::Item ? CanonicalName(name) : CanonicalPath(name);
-		e.lastSeen.store(ask ? m_now.load(std::memory_order_relaxed) : 0, std::memory_order_relaxed);
-		e.state.store(ask ? kWaiting : kIdle, std::memory_order_relaxed);
-		e.queued = ask;
-		if (ask)
-			m_queue.push_back(id);
+		e.lastSeen.store(0, std::memory_order_relaxed);
+		e.state.store(kIdle, std::memory_order_relaxed);
+		e.queued = false;
 		m_ids.emplace(mapKey, id);
 		m_count.store(id, std::memory_order_release);
 		return id;
@@ -194,6 +192,15 @@ namespace ImageLibrary
 	PluginImageId Library::Path(const char* textureObjectPath)
 	{
 		return IdFor(Kind::Path, NormalizeObjectPath(textureObjectPath), textureObjectPath);
+	}
+
+	PluginImageId Library::Canonical(PluginImageId id) const
+	{
+		const Entry* e = Find(id);
+		if (!e)
+			return id;
+		const PluginImageId target = e->target.load(std::memory_order_acquire);
+		return target ? target : id;
 	}
 
 	PluginTextureHandle Library::Get(PluginImageId id)
@@ -506,7 +513,7 @@ namespace ImageLibrary
 
 	PluginImageId Library::PathInSet(const char* textureObjectPath, uint32_t sets)
 	{
-		const PluginImageId id = IdFor(Kind::Path, NormalizeObjectPath(textureObjectPath), textureObjectPath, false);
+		const PluginImageId id = IdFor(Kind::Path, NormalizeObjectPath(textureObjectPath), textureObjectPath);
 		if (id != 0)
 			AddToSets(id, sets);
 		return id;
@@ -657,6 +664,7 @@ namespace ImageLibrary
 		PluginTextureHandle GetThunk(PluginImageId id)                 { return Instance().Get(id); }
 		int StateThunk(PluginImageId id)                               { return Instance().State(id); }
 		void UseSetsThunk(const IPluginSelf* self, uint32_t sets)      { Instance().UseSets(self, sets); }
+		PluginImageId CanonicalThunk(PluginImageId id)                 { return Instance().Canonical(id); }
 
 		// A texture is named by its object path, which needs the engine to read.
 		std::atomic<FromTextureFn> s_fromTexture{ nullptr };
@@ -682,6 +690,7 @@ namespace ImageLibrary
 			GetThunk,
 			StateThunk,
 			UseSetsThunk,
+			CanonicalThunk,
 		};
 		return &table;
 	}

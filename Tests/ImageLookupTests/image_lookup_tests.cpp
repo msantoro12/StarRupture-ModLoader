@@ -353,7 +353,13 @@ static void ATextureIsTheImageOfItsPath()
     const PluginImageId id = rig.lookup.FromTexture(&rig.a);
     CHECK(id != 0);
     CHECK(id == rig.library.Path("/Game/UI/T_A.T_A"));   // the id a plugin asking by path gets
-    CHECK(rig.library.State(id) == PLUGIN_IMAGE_WAITING);
+    CHECK(id == rig.library.Path("/Game/UI/T_A"));
+    CHECK(id == rig.library.Path("Texture2D'/Game/UI/T_A.T_A'"));
+    CHECK(id == rig.lookup.FromTexture(&rig.a));   // from the cache too
+    CHECK(rig.library.Canonical(id) == id);
+    CHECK(rig.library.State(id) == PLUGIN_IMAGE_NONE);   // an id, not a request
+    ImageLibrary::Request request;
+    CHECK(!rig.library.TakeNext(request));
 }
 
 static void ATextureIsAskedForOnceInTheEngine()

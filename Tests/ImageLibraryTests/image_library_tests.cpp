@@ -50,6 +50,13 @@ static PluginImageId ReadNext(Library& lib, uint64_t bytes, std::vector<Released
     return request.id;
 }
 
+// A plugin draws the image behind an id: Get is what asks for it.
+static PluginImageId Wanted(Library& lib, PluginImageId id)
+{
+    lib.Get(id);
+    return id;
+}
+
 static const IPluginSelf* Self(int i)
 {
     static char selves[4];
@@ -113,8 +120,8 @@ static void IdsAreStableAndNeverZero()
 static void TheRequestKeepsTheNameAsAskedFor()
 {
     Library lib;
-    const PluginImageId id = lib.Path("Texture2D'/Game/UI/T_Icon.T_Icon'");
-    const PluginImageId item = lib.Item("  Iron_Plate ");
+    const PluginImageId id = Wanted(lib, lib.Path("Texture2D'/Game/UI/T_Icon.T_Icon'"));
+    const PluginImageId item = Wanted(lib, lib.Item("  Iron_Plate "));
     (void)lib.Item("iron_plate");
 
     Request first;
@@ -143,7 +150,7 @@ static void StatesFollowTheRead()
     Library lib;
     std::vector<Released> evicted;
 
-    const PluginImageId a = lib.Item("a");
+    const PluginImageId a = Wanted(lib, lib.Item("a"));
     CHECK(lib.State(a) == PLUGIN_IMAGE_WAITING);
     CHECK(lib.Get(a) == nullptr);
 
@@ -162,13 +169,13 @@ static void StatesFollowTheRead()
     CHECK(!lib.Publish(a, Texture(a), 100, evicted));
     CHECK(lib.BytesKept() == 100);
 
-    const PluginImageId none = lib.Item("none");
+    const PluginImageId none = Wanted(lib, lib.Item("none"));
     CHECK(lib.TakeNext(request) && request.id == none);
     lib.PublishNoImage(none);
     CHECK(lib.State(none) == PLUGIN_IMAGE_NO_IMAGE);
     CHECK(lib.Get(none) == nullptr);
 
-    const PluginImageId bad = lib.Item("bad");
+    const PluginImageId bad = Wanted(lib, lib.Item("bad"));
     CHECK(lib.TakeNext(request) && request.id == bad);
     lib.Fail(bad);
     CHECK(lib.State(bad) == PLUGIN_IMAGE_NONE);
@@ -177,7 +184,7 @@ static void StatesFollowTheRead()
     CHECK(!lib.TakeNext(request));
 
     // A read that cannot be done now goes back in the queue, still waiting.
-    const PluginImageId later = lib.Item("later");
+    const PluginImageId later = Wanted(lib, lib.Item("later"));
     CHECK(lib.TakeNext(request) && request.id == later);
     lib.Requeue(later);
     CHECK(lib.State(later) == PLUGIN_IMAGE_WAITING);
@@ -193,7 +200,7 @@ static void StateDoesNotMarkSeen()
 {
     Library lib;
     lib.SetNow(0);
-    const PluginImageId a = lib.Item("a");
+    const PluginImageId a = Wanted(lib, lib.Item("a"));
     lib.SetNow(kSeenLatelyMs + 1);
     CHECK(lib.State(a) == PLUGIN_IMAGE_WAITING);
     Request request;
@@ -204,18 +211,19 @@ static void StateDoesNotMarkSeen()
 static void SeenImagesAreReadFirst()
 {
     Library lib;
-    const PluginImageId a = lib.Item("a");
-    const PluginImageId b = lib.Item("b");
-    const PluginImageId c = lib.Item("c");
-    const PluginImageId d = lib.Item("d");
+    lib.SetNow(100000);
+    const PluginImageId a = Wanted(lib, lib.Item("a"));
+    const PluginImageId b = Wanted(lib, lib.Item("b"));
+    const PluginImageId c = Wanted(lib, lib.Item("c"));
+    const PluginImageId d = Wanted(lib, lib.Item("d"));
 
-    lib.SetNow(1000);
+    lib.SetNow(100100);
     lib.Get(a);
-    lib.SetNow(2000);
+    lib.SetNow(100200);
     lib.Get(c);
-    lib.SetNow(3000);
+    lib.SetNow(100300);
 
-    // c was seen last, then a. b and d were only asked for, at time 0; the
+    // c was seen last, then a. b and d were only asked for, at the start; the
     // lower id goes first among equals.
     Request request;
     CHECK(lib.TakeNext(request) && request.id == c);
@@ -228,8 +236,8 @@ static void SeenImagesAreReadFirst()
 static void RequestsNobodyDrewAreDropped()
 {
     Library lib;
-    const PluginImageId seen = lib.Item("seen");
-    const PluginImageId unseen = lib.Item("unseen");
+    const PluginImageId seen = Wanted(lib, lib.Item("seen"));
+    const PluginImageId unseen = Wanted(lib, lib.Item("unseen"));
 
     lib.SetNow(kSeenLatelyMs);
     lib.Get(seen);
@@ -334,10 +342,10 @@ static void ByteCapEvictsLeastRecentlySeen()
     lib.SetCaps(300, 100);
     std::vector<Released> evicted;
 
-    const PluginImageId a = lib.Item("a");
-    const PluginImageId b = lib.Item("b");
-    const PluginImageId c = lib.Item("c");
-    const PluginImageId d = lib.Item("d");
+    const PluginImageId a = Wanted(lib, lib.Item("a"));
+    const PluginImageId b = Wanted(lib, lib.Item("b"));
+    const PluginImageId c = Wanted(lib, lib.Item("c"));
+    const PluginImageId d = Wanted(lib, lib.Item("d"));
 
     // Read in id order, then draw them in the order c, a, b so that c is the
     // oldest by the time the cap is hit.
@@ -359,7 +367,7 @@ static void ByteCapEvictsLeastRecentlySeen()
     CHECK(lib.BytesKept() == 300 && lib.CountKept() == 3);
 
     // A big one pushes out as many as it takes, oldest first: a (30), b (40), d (50).
-    const PluginImageId big = lib.Item("big");
+    const PluginImageId big = Wanted(lib, lib.Item("big"));
     lib.SetNow(60);
     lib.Get(big);
     evicted.clear();
@@ -375,9 +383,9 @@ static void CountCapEvictsLeastRecentlySeen()
     lib.SetCaps(1000000, 2);
     std::vector<Released> evicted;
 
-    const PluginImageId a = lib.Item("a");
-    const PluginImageId b = lib.Item("b");
-    const PluginImageId c = lib.Item("c");
+    const PluginImageId a = Wanted(lib, lib.Item("a"));
+    const PluginImageId b = Wanted(lib, lib.Item("b"));
+    const PluginImageId c = Wanted(lib, lib.Item("c"));
     lib.SetNow(1);
     ReadNext(lib, 10, evicted);
     ReadNext(lib, 10, evicted);
@@ -396,9 +404,9 @@ static void EqualStampsEvictTheLowerIdFirst()
     Library lib;
     lib.SetCaps(1000000, 2);
     std::vector<Released> evicted;
-    const PluginImageId a = lib.Item("a");
-    lib.Item("b");
-    lib.Item("c");
+    const PluginImageId a = Wanted(lib, lib.Item("a"));
+    Wanted(lib, lib.Item("b"));
+    Wanted(lib, lib.Item("c"));
     for (int i = 0; i < 3; ++i)
         ReadNext(lib, 10, evicted);
     CHECK(evicted.size() == 1 && evicted[0].id == a);
@@ -409,8 +417,8 @@ static void ACopyOverTheByteCapIsRefused()
     Library lib;
     lib.SetCaps(100, 10);
     std::vector<Released> evicted;
-    const PluginImageId small = lib.Item("small");
-    const PluginImageId huge = lib.Item("huge");
+    const PluginImageId small = Wanted(lib, lib.Item("small"));
+    const PluginImageId huge = Wanted(lib, lib.Item("huge"));
     ReadNext(lib, 50, evicted);
 
     Request request;
@@ -429,8 +437,8 @@ static void AnEvictedImageIsAskedForAgainByGet()
     lib.SetCaps(100, 1);
     std::vector<Released> evicted;
 
-    const PluginImageId a = lib.Item("a");
-    const PluginImageId b = lib.Item("b");
+    const PluginImageId a = Wanted(lib, lib.Item("a"));
+    const PluginImageId b = Wanted(lib, lib.Item("b"));
     lib.SetNow(1);
     ReadNext(lib, 10, evicted);
     lib.SetNow(2); lib.Get(b);
@@ -457,9 +465,9 @@ static void ReleaseAllHandsBackEveryKeptCopy()
 {
     Library lib;
     std::vector<Released> evicted;
-    const PluginImageId a = lib.Item("a");
-    const PluginImageId b = lib.Item("b");
-    const PluginImageId c = lib.Item("c");
+    const PluginImageId a = Wanted(lib, lib.Item("a"));
+    const PluginImageId b = Wanted(lib, lib.Item("b"));
+    const PluginImageId c = Wanted(lib, lib.Item("c"));
     lib.SetNow(1);
     lib.Get(a); lib.Get(b); lib.Get(c);
     ReadNext(lib, 10, evicted);
@@ -485,13 +493,13 @@ static void ANewCapEvictsOnTheNextPublish()
 {
     Library lib;
     std::vector<Released> evicted;
-    lib.Item("a");
-    lib.Item("b");
+    Wanted(lib, lib.Item("a"));
+    Wanted(lib, lib.Item("b"));
     ReadNext(lib, 100, evicted);
     ReadNext(lib, 100, evicted);
     CHECK(evicted.empty());
     lib.SetCaps(150, 10);
-    lib.Item("c");
+    Wanted(lib, lib.Item("c"));
     ReadNext(lib, 10, evicted);
     CHECK(evicted.size() == 1 && evicted[0].id == 1);   // equal stamps: the lower id
     CHECK(lib.BytesKept() == 110 && lib.CountKept() == 2);
@@ -511,8 +519,8 @@ static void AliasedIdsAreOneImage()
     Library lib;
     std::vector<Released> evicted;
 
-    const PluginImageId item = lib.Item("iron_plate");
-    const PluginImageId path = lib.Path("/Game/UI/T_Iron.T_Iron");
+    const PluginImageId item = Wanted(lib, lib.Item("iron_plate"));
+    const PluginImageId path = Wanted(lib, lib.Path("/Game/UI/T_Iron.T_Iron"));
     CHECK(lib.Alias(item, path));
     CHECK(!lib.Alias(item, path));   // once
 
@@ -530,7 +538,7 @@ static void AliasedIdsAreOneImage()
     // Drawing through either id keeps the one image seen.
     lib.SetCaps(100, 10);
     lib.SetNow(5);
-    const PluginImageId other = lib.Item("other");
+    const PluginImageId other = Wanted(lib, lib.Item("other"));
     lib.SetNow(6); lib.Get(item);
     lib.SetNow(7); lib.Get(other);
     CHECK(ReadNext(lib, 100, evicted) == other);   // the image seen through item is the older
@@ -544,13 +552,103 @@ static void AliasedIdsAreOneImage()
     CHECK(!lib.TakeNext(request));
 }
 
+static void CanonicalNamesTheOneImage()
+{
+    Library lib;
+    std::vector<Released> evicted;
+    const PluginImageId item = lib.Item("iron_plate");
+    const PluginImageId path = lib.Path("/Game/UI/T_Iron.T_Iron");
+    const PluginImageId other = lib.Item("other");
+
+    // Before the item is resolved to its texture, every id stands for itself.
+    CHECK(lib.Canonical(item) == item);
+    CHECK(lib.Canonical(path) == path);
+    CHECK(lib.Canonical(0) == 0);
+    CHECK(lib.Canonical(777) == 777);
+    CHECK(lib.Canonical(0xFFFFFFFFu) == 0xFFFFFFFFu);
+
+    // Resolved: the item names the path's image.
+    lib.Get(item);
+    Request request;
+    CHECK(lib.TakeNext(request) && request.id == item);
+    lib.Requeue(item);
+    CHECK(lib.Alias(item, path));
+    CHECK(lib.Canonical(item) == path);
+    CHECK(lib.Canonical(path) == path);
+    CHECK(lib.Canonical(other) == other);
+
+    // A path id from the other side agrees: the same asset is the same id.
+    CHECK(lib.Canonical(item) == lib.Canonical(lib.Path("texture2d'/game/ui/t_iron'")));
+
+    // Reading and keeping the image change nothing.
+    CHECK(lib.TakeNext(request) && request.id == path);
+    CHECK(lib.Publish(path, Texture(path), 100, evicted));
+    CHECK(lib.Canonical(item) == path && lib.Canonical(path) == path);
+
+    // An alias of an alias lands on the end of the chain.
+    const PluginImageId second = lib.Item("iron_plate_2");
+    lib.Get(second);
+    CHECK(lib.TakeNext(request) && request.id == second);
+    lib.Requeue(second);
+    CHECK(lib.Alias(second, item));
+    CHECK(lib.Canonical(second) == path);
+
+    // Through the table plugins hold.
+    IPluginImages* table = GetInterface();
+    const PluginImageId tItem = table->Item(Self(0), "Canonical_Item");
+    const PluginImageId tPath = table->Path(Self(0), "/Game/UI/T_Canonical");
+    CHECK(table->Canonical(tItem) == tItem && table->Canonical(tPath) == tPath);
+    CHECK(table->Canonical(0) == 0 && table->Canonical(0x7FFFFFFFu) == 0x7FFFFFFFu);
+    Library& shared = Instance();
+    shared.Get(tItem);
+    CHECK(shared.TakeNext(request) && request.id == tItem);
+    shared.Requeue(tItem);
+    CHECK(shared.Alias(tItem, tPath));
+    CHECK(table->Canonical(tItem) == tPath);
+}
+
+static void RegisteringIsNotRequesting()
+{
+    Library lib;
+    std::vector<PluginImageId> ids;
+    for (int i = 0; i < 40; ++i)
+    {
+        lib.SetNow(100000 + i);
+        ids.push_back(lib.Item(("item_" + std::to_string(i)).c_str()));
+        ids.push_back(lib.Path(("/Game/UI/T_" + std::to_string(i)).c_str()));
+    }
+    CHECK(lib.ImageCount() == 80);
+
+    // Pump for a while: nothing is queued, nothing is read.
+    Request request;
+    for (int tick = 0; tick < 200; ++tick)
+    {
+        lib.SetNow(100000 + 10 * tick);
+        CHECK(!lib.TakeNext(request));
+        CHECK(!lib.TakePreload(request));
+        CHECK(!lib.SeenWaiting());
+    }
+    for (const PluginImageId id : ids)
+        CHECK(lib.State(id) == PLUGIN_IMAGE_NONE);   // State does not ask either
+
+    // Asking again for a registered name is still only an id.
+    CHECK(lib.Item("item_3") == ids[6] && lib.Path("/Game/UI/T_3") == ids[7]);
+    CHECK(!lib.TakeNext(request));
+
+    // Only Get asks.
+    lib.SetNow(200000);
+    CHECK(lib.Get(ids[6]) == nullptr);
+    CHECK(lib.TakeNext(request) && request.id == ids[6] && request.kind == Kind::Item);
+    CHECK(!lib.TakeNext(request));
+}
+
 static void AliasRefusals()
 {
     Library lib;
     std::vector<Released> evicted;
-    const PluginImageId a = lib.Item("a");
-    const PluginImageId b = lib.Item("b");
-    const PluginImageId c = lib.Item("c");
+    const PluginImageId a = Wanted(lib, lib.Item("a"));
+    const PluginImageId b = Wanted(lib, lib.Item("b"));
+    const PluginImageId c = Wanted(lib, lib.Item("c"));
     CHECK(!lib.Alias(a, a));
     CHECK(!lib.Alias(a, 0));
     CHECK(!lib.Alias(0, a));
@@ -566,7 +664,7 @@ static void AliasRefusals()
 
     // An alias of an alias lands on the end of the chain.
     CHECK(lib.Alias(b, c));
-    const PluginImageId d = lib.Item("d");
+    const PluginImageId d = Wanted(lib, lib.Item("d"));
     CHECK(lib.Alias(d, b));
     CHECK(lib.TakeNext(request) && request.id == c);
     CHECK(lib.Publish(c, Texture(c), 10, evicted));
@@ -585,8 +683,9 @@ static void InterfaceReachesTheSameTable()
     CHECK(id != 0 && id == table->Item(Self(1), "interface_item"));
     CHECK(id == Instance().Item("interface_item"));
     CHECK(table->Path(Self(0), "/Game/UI/T_I") == Instance().Path("/game/ui/t_i.t_i"));
-    CHECK(table->State(id) == PLUGIN_IMAGE_WAITING);
+    CHECK(table->State(id) == PLUGIN_IMAGE_NONE);   // handing out an id asks for nothing
     CHECK(table->Get(id) == nullptr);
+    CHECK(table->State(id) == PLUGIN_IMAGE_WAITING);
     CHECK(table->Get(0) == nullptr && table->State(0) == PLUGIN_IMAGE_NONE);
     CHECK(table->FromTexture(Self(0), nullptr) == 0);
 
@@ -827,7 +926,7 @@ static void SeenWaitingCountsOnlyImagesDrawnLately()
     CHECK(!lib.SeenWaiting());   // not drawn for a while
 
     // A request that was asked for and drawn counts until it is answered.
-    const PluginImageId drawn = lib.Path(kPathB);
+    const PluginImageId drawn = Wanted(lib, lib.Path(kPathB));
     CHECK(lib.SeenWaiting());
     CHECK(lib.TakeNext(request) && request.id == drawn);
     CHECK(lib.SeenWaiting());   // taken, not answered
@@ -844,8 +943,8 @@ static void PreloadStopsWhenAnotherImageWouldNotFit()
     CHECK(lib.PreloadHasRoom());
     std::vector<Released> evicted;
     lib.SetNow(100000);
-    const PluginImageId a = lib.Path(kPathA);
-    const PluginImageId b = lib.Path(kPathB);
+    const PluginImageId a = Wanted(lib, lib.Path(kPathA));
+    const PluginImageId b = Wanted(lib, lib.Path(kPathB));
     Request request;
     CHECK(lib.TakeNext(request) && lib.Publish(request.id, Texture(request.id), 349524, evicted));
     CHECK(lib.PreloadHasRoom());
@@ -857,7 +956,7 @@ static void PreloadStopsWhenAnotherImageWouldNotFit()
     Library few;
     few.SetCaps(1000000000, 1);
     few.SetNow(100000);
-    few.Path(kPathA);
+    Wanted(few, few.Path(kPathA));
     CHECK(few.TakeNext(request) && few.Publish(request.id, Texture(request.id), 100, evicted));
     CHECK(!few.PreloadHasRoom());
 }
@@ -871,9 +970,9 @@ static void PreloadStaysStoppedOnceAnImageHasBeenEvicted()
     Library roomy;
     roomy.SetCaps(1000000000, 2);
     roomy.SetNow(100000);
-    roomy.Path(kPathA);
+    Wanted(roomy, roomy.Path(kPathA));
     roomy.SetNow(100001);
-    roomy.Path(kPathB);
+    Wanted(roomy, roomy.Path(kPathB));
     CHECK(roomy.TakeNext(request) && roomy.Publish(request.id, Texture(request.id), 100, evicted));
     CHECK(roomy.TakeNext(request) && roomy.Publish(request.id, Texture(request.id), 100, evicted));
     roomy.SetCaps(1000000000, 100);
@@ -883,11 +982,11 @@ static void PreloadStaysStoppedOnceAnImageHasBeenEvicted()
     Library full;
     full.SetCaps(1000000000, 2);
     full.SetNow(100000);
-    full.Path(kPathA);
+    Wanted(full, full.Path(kPathA));
     full.SetNow(100001);
-    full.Path(kPathB);
+    Wanted(full, full.Path(kPathB));
     full.SetNow(100002);
-    full.Path(kPathC);
+    Wanted(full, full.Path(kPathC));
     // The most recently asked is read first, so the third read is the oldest and is the one pushed out.
     for (int i = 0; i < 3; ++i)
     {
@@ -905,7 +1004,7 @@ static void PreloadedImagesNobodyDrewAreEvictedFirst()
     Library lib;
     lib.SetCaps(1000000, 2);
     lib.SetNow(100000);
-    const PluginImageId drawn = lib.Path(kPathA);
+    const PluginImageId drawn = Wanted(lib, lib.Path(kPathA));
     const PluginImageId member = lib.PathInSet(kPathB, PLUGIN_IMAGE_SET_ITEMS);
     lib.UseSets(Self(0), PLUGIN_IMAGE_SET_ITEMS);
     std::vector<Released> evicted;
@@ -917,7 +1016,7 @@ static void PreloadedImagesNobodyDrewAreEvictedFirst()
     CHECK(lib.Publish(member, Texture(member), 100, evicted));
 
     lib.SetNow(100100);
-    const PluginImageId newer = lib.Path(kPathC);
+    const PluginImageId newer = Wanted(lib, lib.Path(kPathC));
     CHECK(lib.TakeNext(request) && request.id == newer);
     CHECK(lib.Publish(newer, Texture(newer), 100, evicted));
     CHECK(evicted.size() == 1 && evicted[0].id == member);   // never drawn: first out, though read later
@@ -975,11 +1074,11 @@ static void AnAliasCarriesItsSetsToTheImage()
 {
     Library lib;
     lib.SetNow(100000);
-    const PluginImageId item = lib.Item("iron_plate");
+    const PluginImageId item = Wanted(lib, lib.Item("iron_plate"));
     lib.AddToSets(item, PLUGIN_IMAGE_SET_ITEMS);
     Request request;
     CHECK(lib.TakeNext(request) && request.id == item);
-    const PluginImageId path = lib.Path(kPathA);
+    const PluginImageId path = Wanted(lib, lib.Path(kPathA));
     CHECK(lib.TakeNext(request) && request.id == path);
     lib.Requeue(path);
     lib.Requeue(item);
@@ -1011,6 +1110,8 @@ int main()
     RunTest("ReleaseAll hands back every kept copy", ReleaseAllHandsBackEveryKeptCopy);
     RunTest("the byte cap follows the video budget", ByteCapFollowsTheVideoBudget);
     RunTest("aliased ids are one image", AliasedIdsAreOneImage);
+    RunTest("Canonical names the one image", CanonicalNamesTheOneImage);
+    RunTest("registering an id is not requesting the image", RegisteringIsNotRequesting);
     RunTest("alias refusals", AliasRefusals);
     RunTest("the interface reaches the same table", InterfaceReachesTheSameTable);
     RunTest("readers see consistent states while the table changes", ReadersSeeConsistentStatesWhileTheTableChanges);

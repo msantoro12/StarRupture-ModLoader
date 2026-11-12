@@ -12,17 +12,16 @@ namespace ImageShrink
 	namespace
 	{
 		// Each stored pixel is the average of the source pixels under it: ratio is source
-		// pixels per stored pixel, and a ratio over 2 takes several bilinear taps (each
-		// covering a 2x2 block) spread across the footprint. Colour is averaged
-		// premultiplied, so a transparent pixel's colour does not tint its neighbours.
+		// pixels per stored pixel, and the footprint is read as a grid of single pixels,
+		// one per source pixel it covers (at most 16 a side). Each pixel is premultiplied
+		// before it is averaged, so a transparent pixel's colour does not tint its
+		// neighbours; a filtered read would average the colours first.
 		const char* const kShader = R"(
 cbuffer Constants : register(b0)
 {
-	float2 srcTexel;   // 1 / source size
 	float2 ratio;      // source size / stored size
 };
 Texture2D<float4> source : register(t0);
-SamplerState linearClamp : register(s0);
 
 struct VSOut
 {
@@ -40,25 +39,27 @@ VSOut vs(uint id : SV_VertexID)
 
 float4 ps(VSOut i) : SV_Target
 {
-	int2 taps = clamp((int2)ceil(ratio * 0.5), 1, 16);
+	uint width, height;
+	source.GetDimensions(width, height);
+	int2 last = int2(width, height) - 1;
+	int2 reads = clamp((int2)ceil(ratio), 1, 16);
 	float4 sum = 0;
-	for (int y = 0; y < taps.y; ++y)
+	for (int y = 0; y < reads.y; ++y)
 	{
-		for (int x = 0; x < taps.x; ++x)
+		for (int x = 0; x < reads.x; ++x)
 		{
-			float2 offset = ((float2(x, y) + 0.5) / taps - 0.5) * ratio;
-			float4 c = source.SampleLevel(linearClamp, i.uv + offset * srcTexel, 0);
+			float2 at = (floor(i.pos.xy) + (float2(x, y) + 0.5) / reads) * ratio;
+			float4 c = source.Load(int3(min((int2)at, last), 0));
 			sum += float4(c.rgb * c.a, c.a);
 		}
 	}
-	sum /= (taps.x * taps.y);
+	sum /= (reads.x * reads.y);
 	return float4(sum.a > 0 ? sum.rgb / sum.a : 0, sum.a);
 }
 )";
 
 		struct Constants
 		{
-			float srcTexel[2];
 			float ratio[2];
 		};
 
@@ -98,22 +99,10 @@ float4 ps(VSOut i) : SV_Target
 		params[1].DescriptorTable.pDescriptorRanges   = &range;
 		params[1].ShaderVisibility                    = D3D12_SHADER_VISIBILITY_PIXEL;
 
-		D3D12_STATIC_SAMPLER_DESC sampler = {};
-		sampler.Filter           = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
-		sampler.AddressU         = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
-		sampler.AddressV         = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
-		sampler.AddressW         = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
-		sampler.ComparisonFunc   = D3D12_COMPARISON_FUNC_ALWAYS;
-		sampler.BorderColor      = D3D12_STATIC_BORDER_COLOR_TRANSPARENT_BLACK;
-		sampler.MaxLOD           = D3D12_FLOAT32_MAX;
-		sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-
 		D3D12_ROOT_SIGNATURE_DESC rootDesc = {};
 		rootDesc.NumParameters     = _countof(params);
 		rootDesc.pParameters       = params;
-		rootDesc.NumStaticSamplers = 1;
-		rootDesc.pStaticSamplers   = &sampler;
-		rootDesc.Flags             = D3D12_ROOT_SIGNATURE_FLAG_DENY_VERTEX_SHADER_ROOT_ACCESS |
+		rootDesc.Flags            = D3D12_ROOT_SIGNATURE_FLAG_DENY_VERTEX_SHADER_ROOT_ACCESS |
 		                             D3D12_ROOT_SIGNATURE_FLAG_DENY_HULL_SHADER_ROOT_ACCESS |
 		                             D3D12_ROOT_SIGNATURE_FLAG_DENY_DOMAIN_SHADER_ROOT_ACCESS |
 		                             D3D12_ROOT_SIGNATURE_FLAG_DENY_GEOMETRY_SHADER_ROOT_ACCESS;
@@ -250,7 +239,6 @@ float4 ps(VSOut i) : SV_Target
 			list->RSSetScissorRects(1, &scissor);
 
 			const Constants constants = {
-				{ 1.0f / from.width, 1.0f / from.height },
 				{ static_cast<float>(from.width) / to.width, static_cast<float>(from.height) / to.height } };
 			list->SetGraphicsRoot32BitConstants(0, sizeof(constants) / 4, &constants, 0);
 			list->SetGraphicsRootDescriptorTable(1, { srvGpu.ptr + static_cast<UINT64>(first + k) * m_srvSize });

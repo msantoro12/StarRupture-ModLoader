@@ -7,8 +7,9 @@
 // engine resource.
 //
 // Compiled into the host DLL. The pipeline is modelled on the ImGui DX12
-// backend's own: one root signature with a linear clamp sampler, a full-screen
-// triangle, a pixel shader compiled at start-up.
+// backend's own: one root signature, a full-screen triangle, a pixel shader
+// compiled at start-up. The shader reads single pixels (no sampler) so it can
+// average premultiplied colour.
 //
 // Not thread-safe: the caller serialises Create, Record and Release.
 

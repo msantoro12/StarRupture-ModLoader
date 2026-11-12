@@ -281,7 +281,7 @@ namespace ImageLibrary
 		}
 	}
 
-	bool Library::TakeNext(Request& out, bool pathsOnly)
+	bool Library::TakeNext(Request& out)
 	{
 		std::lock_guard<std::mutex> lock(m_lock);
 		Drain();
@@ -304,11 +304,6 @@ namespace ImageLibrary
 				e->state.store(kIdle, std::memory_order_release);
 				m_queue[i] = m_queue.back();
 				m_queue.pop_back();
-				continue;
-			}
-			if (pathsOnly && e->kind != Kind::Path)
-			{
-				++i;
 				continue;
 			}
 
@@ -531,7 +526,18 @@ namespace ImageLibrary
 		void UseSetsThunk(const IPluginSelf* self, uint32_t sets)      { Instance().UseSets(self, sets); }
 
 		// A texture is named by its object path, which needs the engine to read.
-		PluginImageId FromTextureThunk(const IPluginSelf*, SDK::UTexture2D*) { return 0; }
+		std::atomic<FromTextureFn> s_fromTexture{ nullptr };
+
+		PluginImageId FromTextureThunk(const IPluginSelf*, SDK::UTexture2D* texture)
+		{
+			const FromTextureFn fn = s_fromTexture.load(std::memory_order_acquire);
+			return fn ? fn(texture) : 0;
+		}
+	}
+
+	void SetFromTexture(FromTextureFn fn)
+	{
+		s_fromTexture.store(fn, std::memory_order_release);
 	}
 
 	IPluginImages* GetInterface()

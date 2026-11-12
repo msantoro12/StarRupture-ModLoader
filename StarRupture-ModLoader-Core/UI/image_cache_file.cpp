@@ -179,13 +179,36 @@ namespace ImageCache
 		return "?";
 	}
 
+	namespace
+	{
+		bool FitsList(const std::string& text)
+		{
+			return !text.empty() && text.size() <= kMaxPathLength;
+		}
+	}
+
+	// What does not fit the limits ParseSets and ParseNames enforce is left out, so one bad entry
+	// cannot make a whole list unreadable.
 	std::vector<uint8_t> SerializeSets(const SetList& sets)
 	{
+		SetList kept;
+		for (const SetEntry& entry : sets)
+		{
+			if (kept.size() >= kMaxSets)
+				break;
+			SetEntry fit;
+			fit.set = entry.set;
+			for (const std::string& path : entry.paths)
+				if (FitsList(path) && fit.paths.size() < kMaxSetPaths)
+					fit.paths.push_back(path);
+			kept.push_back(std::move(fit));
+		}
+
 		std::vector<uint8_t> out;
 		Put32(out, kSetListMagic);
 		Put32(out, kRevision);
-		Put32(out, static_cast<uint32_t>(sets.size()));
-		for (const SetEntry& entry : sets)
+		Put32(out, static_cast<uint32_t>(kept.size()));
+		for (const SetEntry& entry : kept)
 		{
 			Put32(out, entry.set);
 			Put32(out, static_cast<uint32_t>(entry.paths.size()));
@@ -253,11 +276,16 @@ namespace ImageCache
 
 	std::vector<uint8_t> SerializeNames(const NameList& names)
 	{
+		NameList kept;
+		for (const NamePair& pair : names)
+			if (kept.size() < kMaxNames && FitsList(pair.name) && FitsList(pair.path))
+				kept.push_back(pair);
+
 		std::vector<uint8_t> out;
 		Put32(out, kNameListMagic);
 		Put32(out, kRevision);
-		Put32(out, static_cast<uint32_t>(names.size()));
-		for (const NamePair& pair : names)
+		Put32(out, static_cast<uint32_t>(kept.size()));
+		for (const NamePair& pair : kept)
 		{
 			Put32(out, static_cast<uint32_t>(pair.name.size()));
 			out.insert(out.end(), pair.name.begin(), pair.name.end());
@@ -339,11 +367,31 @@ namespace ImageCache
 		return name + suffix;
 	}
 
+	namespace
+	{
+		uint64_t HashNumber(uint64_t hash, uint64_t value)
+		{
+			uint8_t bytes[8];
+			for (int i = 0; i < 8; ++i)
+				bytes[i] = static_cast<uint8_t>(value >> (8 * i));
+			return Fnv1a(hash, bytes, sizeof(bytes));
+		}
+
+		uint64_t HashStamp(uint64_t hash, const FileStamp& stamp)
+		{
+			return HashNumber(HashNumber(hash, stamp.size), stamp.writeTime);
+		}
+	}
+
 	uint64_t HashPakSet(std::vector<PakEntry> paks)
 	{
 		std::sort(paks.begin(), paks.end(), [](const PakEntry& a, const PakEntry& b)
 		{
-			return a.path != b.path ? a.path < b.path : a.mountPoint < b.mountPoint;
+			if (a.path != b.path)
+				return a.path < b.path;
+			if (a.mountPoint != b.mountPoint)
+				return a.mountPoint < b.mountPoint;
+			return a.order < b.order;
 		});
 
 		uint64_t hash = kFnvBasis;
@@ -354,7 +402,25 @@ namespace ImageCache
 			hash = Fnv1a(hash, &separator, 1);
 			hash = Fnv1a(hash, pak.mountPoint.data(), pak.mountPoint.size());
 			hash = Fnv1a(hash, &separator, 1);
+			hash = HashNumber(hash, static_cast<uint32_t>(pak.order));
+			hash = HashNumber(hash, static_cast<uint32_t>(pak.numFiles));
+			hash = HashStamp(hash, pak.pak);
+			hash = HashStamp(hash, pak.utoc);
+			hash = HashStamp(hash, pak.ucas);
 		}
 		return hash;
+	}
+
+	bool IsTransientPath(const std::string& normalizedPath)
+	{
+		// The package is what comes before the first '.': "/engine/transient" in
+		// "/engine/transient.texture2d_12".
+		const std::string package = normalizedPath.substr(0, normalizedPath.find('.'));
+		const auto is = [&package](const char* name)
+		{
+			const size_t n = strlen(name);
+			return package.size() >= n && _strnicmp(package.c_str(), name, n) == 0;
+		};
+		return (package.size() == 17 && is("/engine/transient")) || is("/memory/");
 	}
 }

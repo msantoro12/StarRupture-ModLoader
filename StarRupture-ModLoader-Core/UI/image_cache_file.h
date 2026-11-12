@@ -2,7 +2,7 @@
 
 // The image library's files on disk: one file per stored image, and one list of the
 // images in each set. This is the format and the rules that name a folder; writing
-// the files is image_cache_writer.h, and reading them back at launch is the next stage.
+// the files is image_cache_writer.h, and reading them back is image_cache_reader.h.
 //
 // No engine, no D3D and no file I/O here, so every rule is testable with plain bytes.
 //
@@ -52,7 +52,7 @@ namespace ImageCache
 
 	// Bumped whenever either file layout or the stored pixels change. It is part of the
 	// folder key, so a new revision starts a new folder.
-	inline constexpr uint32_t kRevision = 1;
+	inline constexpr uint32_t kRevision = 2;
 
 	inline constexpr uint32_t kHeaderBytes   = 48;
 	inline constexpr uint32_t kMaxPathLength = 1024;
@@ -148,12 +148,35 @@ namespace ImageCache
 	// A folder name that is valid on Windows and says what is in the key.
 	std::wstring FolderName(const FolderKey& key);
 
-	// A hash of the mounted pak set. Order does not matter; each entry is a pak path and the
-	// mount point it is mounted at.
+	// What a file looked like when the key was taken: its size and last-write time. Both zero
+	// for a file that is not there (a pak without .utoc/.ucas).
+	struct FileStamp
+	{
+		uint64_t size      = 0;
+		uint64_t writeTime = 0;   // FILETIME ticks
+	};
+
+	// One mounted pak, with everything that decides which pixels the game shows from it: where it
+	// is and where it is mounted, its read order, and the size and time of the pak file and of the
+	// .utoc/.ucas beside it (a pak updated in place under the same name changes them).
 	struct PakEntry
 	{
 		std::string path;
 		std::string mountPoint;
+		int32_t     order    = 0;
+		int32_t     numFiles = 0;
+		FileStamp   pak;
+		FileStamp   utoc;
+		FileStamp   ucas;
 	};
+
+	// A hash of the mounted pak set. The order the list comes in does not matter; each pak's own
+	// read order is part of the hash, so two paks that swap priority give another value.
 	uint64_t HashPakSet(std::vector<PakEntry> paks);
+
+	// Whether a normalised object path names an object the engine makes at run time (the transient
+	// package, "/Engine/Transient.Texture2D_12", and in-memory packages under "/Memory/"). Such a
+	// name is handed out again for a different texture in the next session, so nothing is saved
+	// under it or served for it.
+	bool IsTransientPath(const std::string& normalizedPath);
 }

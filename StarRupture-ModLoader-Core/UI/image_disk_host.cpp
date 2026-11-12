@@ -13,16 +13,17 @@
 #include "memory_scanner/scan_cache.h"
 #include "plugins/pak_registry.h"
 
+#include <atomic>
 #include <mutex>
 
 namespace ImageDisk
 {
 	namespace
 	{
-		// Where every game build's folder goes, under the loader's own data folder.
+		// Where every game build's folder goes, under the loader's own data folder. Worker only.
 		std::wstring CacheRoot()
 		{
-			return GetExeDir() + L"ModLoader\\image-cache\\";
+			return GetModLoaderDirPath(L"image-cache\\");
 		}
 
 		void LogLine(const std::string& line)
@@ -50,113 +51,70 @@ namespace ImageDisk
 			return CacheRoot() + ImageCache::FolderName(key);
 		}
 
-		// The mounted pak set as it is now. Paks mounted later give later files another folder.
-		uint64_t MountedPakHash()
+		// The mounted paks as the loader lists them: memory only, no file access.
+		bool ListMountedPaks(std::vector<ImageCache::PakEntry>& paks)
 		{
 			IPluginPak* const pak = PakRegistry::GetInterface();
-			if (!pak)
-				return 0;
-			const int total = pak->GetMountedInto(nullptr, nullptr, 0);
-			if (total <= 0)
-				return 0;
-			std::vector<PluginPakInfo> infos(static_cast<size_t>(total));
-			const int filled = pak->GetMountedInto(nullptr, infos.data(), total);
+			if (!pak || !pak->IsAvailable())
+				return false;
 
-			std::vector<ImageCache::PakEntry> paks;
-			for (int i = 0; i < filled && i < total; ++i)
-				paks.push_back({ infos[static_cast<size_t>(i)].pakPath, infos[static_cast<size_t>(i)].mountPoint });
-			return ImageCache::HashPakSet(std::move(paks));
+			// One call with room to spare (a buffer kept between calls: this runs for every image
+			// filed); a second only when the list is longer than that.
+			static std::vector<PluginPakInfo> infos(64);
+			int total = pak->GetMountedInto(nullptr, infos.data(), static_cast<int>(infos.size()));
+			if (total > static_cast<int>(infos.size()))
+			{
+				infos.resize(static_cast<size_t>(total) + 16);
+				total = pak->GetMountedInto(nullptr, infos.data(), static_cast<int>(infos.size()));
+			}
+			if (total <= 0 || total > static_cast<int>(infos.size()))
+				return false;
+
+			for (int i = 0; i < total; ++i)
+			{
+				const PluginPakInfo& info = infos[static_cast<size_t>(i)];
+				ImageCache::PakEntry entry;
+				entry.path       = info.pakPath;
+				entry.mountPoint = info.mountPoint;
+				entry.order      = info.order;
+				entry.numFiles   = info.numFiles;
+				paks.push_back(std::move(entry));
+			}
+			return true;
 		}
 
-		// The folder of this session. The key of the mounted pak set is taken once, when the disk part
-		// is first used (the pump's first tick, which is after every plugin's PluginInit has mounted
-		// its paks: the main thread is held until then), and every file read, written or tidied goes by
-		// it. It is looked at again at most every kPakCheckMs; if the pak set has changed, the disk part
-		// goes off for the rest of the session: images read from the game after a pak was mounted might
-		// differ from what the key stands for, and must never be saved under it. Files written before
-		// the change were read under the set they are filed under.
-		// Folder() is for the game thread; Key() may be asked by the worker that tidies.
-		class Session
+		// The size and last-write time of a file. Worker only.
+		bool StampFile(const std::string& utf8Path, ImageCache::FileStamp& stamp)
 		{
-		public:
-			static constexpr ULONGLONG kPakCheckMs = 250;
+			const int size = MultiByteToWideChar(CP_UTF8, 0, utf8Path.c_str(), -1, nullptr, 0);
+			if (size <= 1)
+				return false;
+			std::wstring path(static_cast<size_t>(size), L'\0');
+			MultiByteToWideChar(CP_UTF8, 0, utf8Path.c_str(), -1, path.data(), size);
+			path.resize(static_cast<size_t>(size) - 1);
 
-			// The function that gives the folder, or an empty one when the disk part is off.
-			std::function<std::wstring()> Folder()
-			{
-				if (Off())
-					return {};
-				const ULONGLONG now = GetTickCount64();
-				if (!m_folder)
-				{
-					m_checkedMs = now;
-					const uint64_t pakHash = MountedPakHash();
-					{
-						std::lock_guard<std::mutex> lock(m_lock);
-						m_taken   = true;
-						m_pakHash = pakHash;
-					}
-					m_folder = [pakHash] { return FolderFor(pakHash); };
-				}
-				else if (now - m_checkedMs >= kPakCheckMs)
-				{
-					m_checkedMs = now;
-					if (MountedPakHash() != Hash())
-					{
-						{
-							std::lock_guard<std::mutex> lock(m_lock);
-							m_off = true;
-						}
-						LogToFile::Warn("[Images] The mounted paks changed: the image cache is not used for the rest of this session");
-						return {};
-					}
-				}
-				return m_folder;
-			}
+			WIN32_FILE_ATTRIBUTE_DATA data = {};
+			if (!GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &data) || (data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY))
+				return false;
+			stamp.size      = (static_cast<uint64_t>(data.nFileSizeHigh) << 32) | data.nFileSizeLow;
+			stamp.writeTime = (static_cast<uint64_t>(data.ftLastWriteTime.dwHighDateTime) << 32) | data.ftLastWriteTime.dwLowDateTime;
+			return true;
+		}
 
-			// Any thread. The pak set key the session works under; false before it is taken and once the
-			// disk part is off.
-			bool Key(uint64_t& pakHash) const
-			{
-				std::lock_guard<std::mutex> lock(m_lock);
-				pakHash = m_pakHash;
-				return m_taken && !m_off;
-			}
-
-		private:
-			bool Off() const
-			{
-				std::lock_guard<std::mutex> lock(m_lock);
-				return m_off;
-			}
-
-			uint64_t Hash() const
-			{
-				std::lock_guard<std::mutex> lock(m_lock);
-				return m_pakHash;
-			}
-
-			mutable std::mutex            m_lock;
-			bool                          m_taken = false;
-			bool                          m_off   = false;
-			uint64_t                      m_pakHash = 0;
-			ULONGLONG                     m_checkedMs = 0;      // game thread only
-			std::function<std::wstring()> m_folder;             // game thread only
-		};
-
-		Session& TheSession()
+		// The folder of this session. Its key is the mounted pak set, taken once, when the disk part is
+		// first used (the pump's first tick, which is after every plugin's PluginInit has mounted its
+		// paks: the main thread is held until then); every file read, written or tidied goes by it. The
+		// set is looked at again at most every 250 ms, and every time an image is filed. If it has
+		// changed, the disk part goes off for the rest of the session: images read from the game after a
+		// pak was mounted might differ from what the key stands for, and must never be saved under it.
+		PakSession& TheSession()
 		{
-			static Session* const session = new Session();
+			static PakSession* const session = new PakSession(&ListMountedPaks, &StampFile, &FolderFor,
+				[](const std::string& line) { LogToFile::Warn("%s", line.c_str()); });
 			return *session;
 		}
 
-		// The folder this session reads and writes, for the worker that tidies. Empty before the key is
-		// taken and once the disk part is off, so the tidy job then touches nothing.
-		std::wstring SessionFolder()
-		{
-			uint64_t pakHash = 0;
-			return TheSession().Key(pakHash) ? FolderFor(pakHash) : std::wstring();
-		}
+		std::atomic<uint32_t> g_cleared{ 0 };
 
 		class EngineUploader final : public ImageCache::Uploader
 		{
@@ -184,9 +142,15 @@ namespace ImageDisk
 				}
 			}
 
+			// Looked at again every time: this is called as an image is filed.
 			std::function<std::wstring()> CacheFolder() override
 			{
-				return TheSession().Folder();
+				return TheSession().Folder(GetTickCount64(), true);
+			}
+
+			uint32_t ClearCount() const override
+			{
+				return g_cleared.load();
 			}
 		};
 	}
@@ -208,11 +172,11 @@ namespace ImageDisk
 		{
 			ImageCache::Writer& writer = EngineWriter();
 			// The session's key is taken here if it has not been, so the tidy job below has a folder to keep.
-			TheSession().Folder();
+			TheSession().Folder(GetTickCount64(), false);
 			// Old folders, leftovers and the size cap are looked after once, as the first job. It asks the
 			// session for the folder when it runs, and does nothing when the disk part is off by then.
 			writer.Submit(ImageCache::Care::TidyJob(&CacheRoot,
-				[&writer] { return writer.Off() ? std::wstring() : SessionFolder(); }, &LogLine));
+				[&writer] { return writer.Off() ? std::wstring() : TheSession().CurrentFolder(); }, &LogLine));
 			return new DiskSaver(ImageLibrary::Instance(), *host, writer);
 		}();
 		return saver;
@@ -222,7 +186,7 @@ namespace ImageDisk
 	{
 		static EngineUploader* const uploader = new EngineUploader();
 		static ImageCache::Reader* const reader = new ImageCache::Reader(
-			[] { return TheSession().Folder(); }, *uploader,
+			[] { return TheSession().Folder(GetTickCount64(), false); }, *uploader,
 			[](const std::string& line) { LogToFile::Info("%s", line.c_str()); });
 		return reader;
 	}
@@ -230,7 +194,10 @@ namespace ImageDisk
 	bool ClearCache()
 	{
 		if (EngineWriter().Submit(ImageCache::Care::ClearJob(&CacheRoot, &LogLine)))
+		{
+			++g_cleared;
 			return true;
+		}
 		LogToFile::Info("[Images] Image cache not cleared: the job could not be queued");
 		return false;
 	}

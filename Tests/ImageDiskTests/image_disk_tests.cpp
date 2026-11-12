@@ -585,29 +585,6 @@ static void TestWriterOffOnUnusableFolder()
     CHECK(temp.Files(L"\\fine").empty());
 }
 
-static void TestWriterOffOnReadOnlyFile()
-{
-    // A read-only file in the way of the rename is an access error on the folder's files.
-    TempFolder temp;
-    LogCollector log;
-    CreateDirectoryW(temp.path.c_str(), nullptr);
-    const std::wstring name = temp.path + L"\\ro.img";
-    HANDLE h = CreateFileW(name.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_READONLY, nullptr);
-    DWORD wrote = 0;
-    WriteFile(h, "ab", 2, &wrote, nullptr);
-    CloseHandle(h);
-
-    Writer writer(log.Sink());
-    CHECK(writer.Submit(BytesJob(temp.path, "ro.img", { 1, 2, 3 })));
-    CHECK(WaitFor([&] { return writer.Off(); }));
-    CHECK(log.Count() == 1);
-    writer.Stop();
-
-    // The tmp file is not left behind.
-    CHECK(temp.Files().size() == 1);
-    SetFileAttributesW(name.c_str(), FILE_ATTRIBUTE_NORMAL);
-}
-
 static void TestWriterQueueIsBounded()
 {
     TempFolder temp;
@@ -1437,6 +1414,585 @@ static void TestReaderStopKeepsFinishedResults()
 
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// The key of the pak set, the session that holds it, and run-time objects
+
+static void TestPakHashCoversWhatDecidesPixels()
+{
+    PakEntry a;
+    a.path = "C:/Game/Content/Paks/~mods/a.pak";
+    a.mountPoint = "../../../StarRupture/Content/";
+    a.order = 3;
+    a.numFiles = 10;
+    a.pak = { 1000, 777 };
+    PakEntry b = a;
+    b.path = "C:/Game/Content/Paks/~mods/b.pak";
+    b.order = 4;
+    const uint64_t hash = HashPakSet({ a, b });
+    CHECK(HashPakSet({ b, a }) == hash);
+
+    // The same name with other contents: another size, another time, other .utoc/.ucas.
+    PakEntry grown = a;
+    grown.pak.size += 1;
+    CHECK(HashPakSet({ grown, b }) != hash);
+    PakEntry touched = a;
+    touched.pak.writeTime += 1;
+    CHECK(HashPakSet({ touched, b }) != hash);
+    PakEntry toc = a;
+    toc.utoc = { 5, 5 };
+    CHECK(HashPakSet({ toc, b }) != hash);
+    PakEntry cas = a;
+    cas.ucas = { 5, 5 };
+    CHECK(HashPakSet({ cas, b }) != hash);
+    PakEntry files = a;
+    files.numFiles += 1;
+    CHECK(HashPakSet({ files, b }) != hash);
+
+    // Two paks that swap priority.
+    PakEntry swappedA = a, swappedB = b;
+    swappedA.order = b.order;
+    swappedB.order = a.order;
+    CHECK(HashPakSet({ swappedA, swappedB }) != hash);
+
+    // The size and the time do not run into each other.
+    PakEntry x = a, y = a;
+    x.pak = { 1, 2 };
+    y.pak = { 2, 1 };
+    CHECK(HashPakSet({ x }) != HashPakSet({ y }));
+}
+
+static void TestTransientPath()
+{
+    CHECK(IsTransientPath("/engine/transient.texture2d_12"));
+    CHECK(IsTransientPath("/engine/transient.texture2d_0"));
+    CHECK(IsTransientPath("/Engine/Transient.Texture2D_7"));
+    CHECK(IsTransientPath("/memory/untitled_1.texture"));
+    CHECK(!IsTransientPath("/game/ui/t_icon.t_icon"));
+    CHECK(!IsTransientPath("/engine/engineresources/whitesquaretexture.whitesquaretexture"));
+    CHECK(!IsTransientPath("/engine/transients/t_x.t_x"));
+    CHECK(!IsTransientPath("/game/memory/t_x.t_x"));
+    CHECK(!IsTransientPath(""));
+}
+
+static void TestListSerializersKeepWhatParses()
+{
+    // One entry the parser would refuse must not make the whole list unreadable.
+    SetList sets;
+    sets.push_back({ PLUGIN_IMAGE_SET_ITEMS, { "/game/a.a", "", std::string(kMaxPathLength + 1, 'x'), "/game/b.b" } });
+    SetList read;
+    const std::vector<uint8_t> setFile = SerializeSets(sets);
+    CHECK(ParseSets(setFile.data(), setFile.size(), read) == Parsed::Ok);
+    CHECK(read.size() == 1 && read[0].paths == (std::vector<std::string>{ "/game/a.a", "/game/b.b" }));
+
+    NameList names;
+    names.push_back({ "iron plate", "/game/a.a" });
+    names.push_back({ "", "/game/b.b" });
+    names.push_back({ "copper", std::string(kMaxPathLength + 1, 'x') });
+    NameList readNames;
+    const std::vector<uint8_t> nameFile = SerializeNames(names);
+    CHECK(ParseNames(nameFile.data(), nameFile.size(), readNames) == Parsed::Ok);
+    CHECK(readNames.size() == 1 && readNames[0].name == "iron plate");
+}
+
+// A pak list the test changes, and file stamps it controls.
+struct FakePaks
+{
+    std::vector<PakEntry> paks;
+    bool listable = true;
+    bool pakMissing = false;
+    uint64_t size = 100;
+    int listCalls = 0;
+    std::atomic<int> stampCalls{ 0 };
+    LogCollector log;
+
+    ImageDisk::PakSession Session(uint64_t recheckMs = 250)
+    {
+        return ImageDisk::PakSession(
+            [this](std::vector<PakEntry>& out) { ++listCalls; out = paks; return listable; },
+            [this](const std::string& path, FileStamp& stamp)
+            {
+                ++stampCalls;
+                if (pakMissing)
+                    return false;
+                if (path.size() < 4 || path.compare(path.size() - 4, 4, ".pak") != 0)
+                    return false;   // no .utoc or .ucas
+                stamp = { size, 9 };
+                return true;
+            },
+            [](uint64_t hash) { return L"root\\" + std::to_wstring(hash); },
+            log.Sink(), recheckMs);
+    }
+};
+
+static std::vector<PakEntry> TwoPaks()
+{
+    PakEntry a;
+    a.path = "C:/Game/Paks/a.pak";
+    a.mountPoint = "../../../Game/";
+    a.order = 1;
+    PakEntry b = a;
+    b.path = "C:/Game/Paks/b.pak";
+    b.order = 2;
+    return { a, b };
+}
+
+static void TestPakSessionUnlistableIsOff()
+{
+    FakePaks fake;
+    fake.paks = TwoPaks();
+    fake.listable = false;
+    ImageDisk::PakSession session = fake.Session();
+    CHECK(!session.Folder(0, false));
+    CHECK(session.CurrentFolder().empty());
+    CHECK(!session.Folder(1000, true));
+    CHECK(fake.log.Count() == 1);   // one line, then quiet
+    CHECK(fake.listCalls == 1);     // and no key from a part of the set, ever
+
+    // An empty list is no list either.
+    FakePaks none;
+    ImageDisk::PakSession empty = none.Session();
+    CHECK(!empty.Folder(0, false));
+    CHECK(none.log.Count() == 1);
+}
+
+static void TestPakSessionPakFileThatCannotBeReadIsOff()
+{
+    FakePaks fake;
+    fake.paks = TwoPaks();
+    fake.pakMissing = true;
+    ImageDisk::PakSession session = fake.Session();
+    const std::function<std::wstring()> folder = session.Folder(0, false);
+    CHECK(static_cast<bool>(folder));
+    CHECK(fake.stampCalls == 0);        // the game thread reads no file
+    CHECK(folder().empty());            // the worker cannot key it
+    CHECK(fake.log.Count() == 1);
+    CHECK(folder().empty());
+    CHECK(session.CurrentFolder().empty());
+    CHECK(!session.Folder(1, true));
+    CHECK(fake.log.Count() == 1);
+}
+
+static void TestPakSessionKeyFollowsTheFiles()
+{
+    FakePaks one;
+    one.paks = TwoPaks();
+    ImageDisk::PakSession first = one.Session();
+    const std::function<std::wstring()> folder = first.Folder(0, false);
+    CHECK(static_cast<bool>(folder));
+    CHECK(one.stampCalls == 0);         // taken on the worker
+    const std::wstring name = folder();
+    CHECK(!name.empty() && name.rfind(L"root\\", 0) == 0);
+    const int stamps = one.stampCalls;
+    CHECK(stamps > 0);
+    CHECK(folder() == name);            // read once
+    CHECK(one.stampCalls == stamps);
+    CHECK(first.CurrentFolder() == name);
+
+    // The same names with another pak size: another folder.
+    FakePaks two;
+    two.paks = TwoPaks();
+    two.size = 101;
+    ImageDisk::PakSession second = two.Session();
+    CHECK(second.Folder(0, false)() != name);
+
+    // The same paks with their priorities swapped: another folder.
+    FakePaks three;
+    three.paks = TwoPaks();
+    std::swap(three.paks[0].order, three.paks[1].order);
+    ImageDisk::PakSession third = three.Session();
+    CHECK(third.Folder(0, false)() != name);
+
+    // The same set: the same folder.
+    FakePaks four;
+    four.paks = TwoPaks();
+    ImageDisk::PakSession fourth = four.Session();
+    CHECK(fourth.Folder(0, false)() == name);
+    CHECK(one.log.Count() == 0);
+}
+
+static void TestPakSessionJobUnderAnOldKeyIsNotFiled()
+{
+    FakePaks fake;
+    fake.paks = TwoPaks();
+    ImageDisk::PakSession session = fake.Session();
+    const std::function<std::wstring()> before = session.Folder(0, false);
+    CHECK(!before().empty());
+
+    // Inside the interval the set is not listed again...
+    const int calls = fake.listCalls;
+    CHECK(static_cast<bool>(session.Folder(100, false)));
+    CHECK(fake.listCalls == calls);
+
+    // ...but a caller that files an image asks for a look every time. A pak mounted just now:
+    PakEntry added = fake.paks[0];
+    added.path = "C:/Game/Paks/c.pak";
+    added.order = 3;
+    fake.paks.push_back(added);
+    CHECK(!session.Folder(101, true));
+    CHECK(fake.log.Count() == 1);
+
+    // The job made earlier gives no folder when the worker reaches it, and nothing else does.
+    CHECK(before().empty());
+    CHECK(session.CurrentFolder().empty());
+    CHECK(!session.Folder(102, false));
+    CHECK(fake.log.Count() == 1);
+}
+
+static void TestPakSessionLooksAgainOnTheInterval()
+{
+    FakePaks fake;
+    fake.paks = TwoPaks();
+    ImageDisk::PakSession session = fake.Session(250);
+    CHECK(static_cast<bool>(session.Folder(0, false)));
+    fake.paks.pop_back();
+    CHECK(static_cast<bool>(session.Folder(249, false)));    // not looked at yet
+    CHECK(!session.Folder(250, false));                       // looked at: the set changed
+    CHECK(fake.log.Count() == 1);
+
+    // A set that cannot be listed any more cannot be vouched for either.
+    FakePaks lost;
+    lost.paks = TwoPaks();
+    ImageDisk::PakSession other = lost.Session(250);
+    CHECK(static_cast<bool>(other.Folder(0, false)));
+    lost.listable = false;
+    CHECK(!other.Folder(0, true));
+    CHECK(lost.log.Count() == 1);
+}
+
+static void TestWriterBusyFileDoesNotSwitchOff()
+{
+    // A read-only file in the way of the rename: this one file is skipped, saving goes on.
+    TempFolder temp;
+    LogCollector log;
+    CreateDirectoryW(temp.path.c_str(), nullptr);
+    const std::wstring name = temp.path + L"\\ro.img";
+    HANDLE h = CreateFileW(name.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_READONLY, nullptr);
+    DWORD wrote = 0;
+    WriteFile(h, "ab", 2, &wrote, nullptr);
+    CloseHandle(h);
+
+    Writer writer(log.Sink());
+    CHECK(writer.Submit(BytesJob(temp.path, "ro.img", { 1, 2, 3 })));
+    CHECK(writer.Submit(BytesJob(temp.path, "next.img", { 7, 7 })));
+    CHECK(WaitFor([&] { return temp.Read(L"next.img").size() == 2; }));
+    CHECK(!writer.Off());
+    CHECK(log.Count() == 0);
+    CHECK(writer.Submit(BytesJob(temp.path, "more.img", { 8 })));
+    CHECK(WaitFor([&] { return temp.Read(L"more.img").size() == 1; }));
+    writer.Stop();
+
+    // The temp file is not left behind, and the file in the way is as it was.
+    CHECK(temp.Files().size() == 3);
+    CHECK(temp.Read(L"ro.img").size() == 2);
+    SetFileAttributesW(name.c_str(), FILE_ATTRIBUTE_NORMAL);
+}
+
+static void TestWriterFileHeldByAnotherHandleIsRetried()
+{
+    // Something (a scanner, a reader without share-delete) holds the file for a moment.
+    TempFolder temp;
+    LogCollector log;
+    CreateDirectoryW(temp.path.c_str(), nullptr);
+    const std::wstring name = temp.path + L"\\held.img";
+    HANDLE h = CreateFileW(name.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    DWORD wrote = 0;
+    WriteFile(h, "ab", 2, &wrote, nullptr);
+
+    Writer writer(log.Sink());
+    CHECK(writer.Submit(BytesJob(temp.path, "held.img", { 1, 2, 3 })));
+    // Let it fail once, then let go: the later tries write the file.
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    CloseHandle(h);
+    CHECK(WaitFor([&] { return temp.Read(L"held.img").size() == 3; }));
+    CHECK(!writer.Off());
+    CHECK(log.Count() == 0);
+    writer.Stop();
+    CHECK(temp.Files().size() == 1);
+}
+
+static void TestWriterFolderClosedToNewFilesSwitchesOff()
+{
+    // The file stays busy and a new file cannot be made either (a directory has the probe's name):
+    // now it is the folder that is closed.
+    TempFolder temp;
+    LogCollector log;
+    CreateDirectoryW(temp.path.c_str(), nullptr);
+    CreateDirectoryW((temp.path + L"\\probe." + std::to_wstring(GetCurrentProcessId()) + L".tmp").c_str(), nullptr);
+    const std::wstring name = temp.path + L"\\ro.img";
+    HANDLE h = CreateFileW(name.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_READONLY, nullptr);
+    DWORD wrote = 0;
+    WriteFile(h, "ab", 2, &wrote, nullptr);
+    CloseHandle(h);
+
+    Writer writer(log.Sink());
+    CHECK(writer.Submit(BytesJob(temp.path, "ro.img", { 1, 2, 3 })));
+    CHECK(WaitFor([&] { return writer.Off(); }));
+    CHECK(log.Count() == 1);
+    writer.Stop();
+    SetFileAttributesW(name.c_str(), FILE_ATTRIBUTE_NORMAL);
+}
+
+static void TestWriterDropsAJobWithNoFolder()
+{
+    // The folder function gives nothing once the job's key is no longer the session's.
+    TempFolder temp;
+    LogCollector log;
+    Writer writer(log.Sink());
+    std::atomic<bool> made{ false };
+    Job stale;
+    stale.folder = [] { return std::wstring(); };
+    stale.name   = "stale.img";
+    stale.make   = [&made] { made = true; return std::vector<uint8_t>{ 1 }; };
+    CHECK(writer.Submit(std::move(stale)));
+    CHECK(writer.Submit(BytesJob(temp.path, "marker.img", { 1 })));
+    CHECK(WaitFor([&] { return temp.Read(L"marker.img").size() == 1; }));
+    writer.Stop();
+    CHECK(!made.load());
+    CHECK(temp.Files().size() == 1);
+    CHECK(!writer.Off());
+}
+
+static void TestWriterKeepsAQueuedClearWhenItSwitchesOff()
+{
+    TempFolder temp;
+    LogCollector log;
+    CreateDirectoryW(temp.path.c_str(), nullptr);
+    {
+        HANDLE h = CreateFileW((temp.path + L"\\blocked").c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+        CloseHandle(h);
+    }
+
+    std::atomic<bool> started{ false };
+    std::atomic<bool> release{ false };
+    std::atomic<bool> cleared{ false };
+    Writer writer(log.Sink());
+
+    Job hold;
+    hold.folder = [&temp] { return temp.path; };
+    hold.name   = "hold.img";
+    hold.make   = [&] { started = true; WaitFor([&] { return release.load(); }); return std::vector<uint8_t>{ 1 }; };
+    CHECK(writer.Submit(std::move(hold)));
+    CHECK(WaitFor([&] { return started.load(); }));
+
+    // Behind the held job: a write that will fail at folder level, an ordinary job, and a Clear.
+    CHECK(writer.Submit(BytesJob(temp.path + L"\\blocked\\sub", "a.img", { 1 })));
+    CHECK(writer.Submit(BytesJob(temp.path, "late.img", { 2 })));
+    Job clear;
+    clear.folder     = [&temp] { return temp.path; };
+    clear.name       = "clear";
+    clear.runWhenOff = true;
+    clear.make       = [&cleared] { cleared = true; return std::vector<uint8_t>(); };
+    CHECK(writer.Submit(std::move(clear)));
+
+    release = true;
+    CHECK(WaitFor([&] { return writer.Off(); }));
+    CHECK(WaitFor([&] { return cleared.load(); }));
+    writer.Stop();
+    CHECK(temp.Read(L"late.img").empty());   // dropped, as before
+}
+
+// A host whose folder the test controls.
+class ControlledHost : public FakeReadbacks
+{
+public:
+    bool folderGone = false;
+    uint32_t cleared = 0;
+    int folderAsked = 0;
+
+    std::function<std::wstring()> CacheFolder() override
+    {
+        ++folderAsked;
+        if (folderGone)
+            return {};
+        return [] { return std::wstring(L"cache\\folder"); };
+    }
+    uint32_t ClearCount() const override { return cleared; }
+};
+
+static void TestSaverNothingIsFiledOnceTheKeyIsGone()
+{
+    ImageLibrary::Library library;
+    ControlledHost host;
+    FakeSink sink;
+    ImageDisk::DiskSaver saver(library, host, sink);
+
+    host.entries[1].state = ImageDisk::Readback::Done;
+    host.entries[1].pixels = MakePixels(64, 32, 1);
+    host.entries[2].state = ImageDisk::Readback::Done;
+    host.entries[2].pixels = MakePixels(64, 32, 2);
+    host.entries[3].state = ImageDisk::Readback::Done;
+    host.entries[3].pixels = MakePixels(64, 32, 3);
+
+    saver.Begin(MakeStarted(1, "/Game/UI/T_One.T_One"));
+    saver.Poll(0);
+    CHECK(sink.jobs.size() == 1);
+
+    // A pak is mounted: the folder is asked for as the next image is filed, and the job is not made.
+    host.folderGone = true;
+    saver.Begin(MakeStarted(2, "/Game/UI/T_Two.T_Two"));
+    saver.Poll(1);
+    CHECK(sink.jobs.size() == 1);
+    CHECK(host.taken.size() == 2 && host.hadDest[1]);
+
+    // From then on a finished readback is only freed.
+    host.folderGone = false;
+    saver.Begin(MakeStarted(3, "/Game/UI/T_Three.T_Three"));
+    saver.Poll(2);
+    CHECK(sink.jobs.size() == 1);
+    CHECK(host.taken.size() == 3 && !host.hadDest[2]);
+}
+
+static void TestSaverRunTimeObjectsAreNotSaved()
+{
+    ImageLibrary::Library library;
+    ControlledHost host;
+    FakeSink sink;
+    ImageDisk::DiskSaver saver(library, host, sink);
+
+    host.entries[1].state = ImageDisk::Readback::Done;
+    host.entries[1].pixels = MakePixels(64, 32, 1);
+    saver.Begin(MakeStarted(1, "/Engine/Transient.Texture2D_12"));
+    saver.Poll(0);
+    CHECK(sink.jobs.empty());
+    CHECK(host.taken.size() == 1 && !host.hadDest[0]);   // freed, not copied
+    CHECK(host.folderAsked == 0);
+
+    // Not in the name list or the set list either.
+    saver.Name("some item", "/Engine/Transient.Texture2D_12");
+    const PluginImageId transient = library.Path("/Engine/Transient.Texture2D_12");
+    library.AddToSets(transient, PLUGIN_IMAGE_SET_ITEMS);
+    saver.Poll(ImageDisk::kSetListIntervalMs);
+    CHECK(sink.jobs.empty());
+
+    // A name for an ordinary texture still is.
+    saver.Name("iron plate", "/Game/UI/T_Iron.T_Iron");
+    saver.Poll(ImageDisk::kSetListIntervalMs * 2);
+    CHECK(sink.jobs.size() == 1);
+    if (!sink.jobs.empty())
+    {
+        const std::vector<uint8_t> file = sink.jobs[0].make();
+        NameList names;
+        CHECK(ParseNames(file.data(), file.size(), names) == Parsed::Ok);
+        CHECK(names.size() == 1 && names[0].name == "iron plate");
+    }
+}
+
+static void TestSaverListsAreWrittenAgainAfterAClear()
+{
+    ImageLibrary::Library library;
+    ControlledHost host;
+    FakeSink sink;
+    ImageDisk::DiskSaver saver(library, host, sink);
+
+    const PluginImageId a = library.Path("/Game/UI/T_A.T_A");
+    library.AddToSets(a, PLUGIN_IMAGE_SET_ITEMS);
+    saver.Name("iron plate", "/Game/UI/T_A.T_A");
+    saver.Poll(ImageDisk::kSetListIntervalMs);
+    CHECK(sink.jobs.size() == 2);   // the set list and the name list
+
+    saver.Poll(ImageDisk::kSetListIntervalMs * 2);
+    CHECK(sink.jobs.size() == 2);   // unchanged: not again
+
+    host.cleared = 1;               // the cache folder was emptied
+    saver.Poll(ImageDisk::kSetListIntervalMs * 3);
+    CHECK(sink.jobs.size() == 4);
+    saver.Poll(ImageDisk::kSetListIntervalMs * 4);
+    CHECK(sink.jobs.size() == 4);
+}
+
+static void TestReaderRunTimeObjectsAreNotServed()
+{
+    TempFolder temp;
+    const std::string key = "/engine/transient.texture2d_12";
+    Info info = MakeInfo();
+    info.path = "/Engine/Transient.Texture2D_12";
+    const std::vector<uint8_t> pixels = MakePixels(info.storedWidth, info.storedHeight, 5);
+    WriteFileIn(temp, FileName(key), Serialize(info, pixels.data(), pixels.size()));
+
+    // The names list and a set also point at it.
+    NameList names;
+    names.push_back({ "iron plate", "/game/ui/t_icon.t_icon" });
+    names.push_back({ "made", key });
+    WriteFileIn(temp, NameListFileName(), SerializeNames(names));
+    SetList sets;
+    sets.push_back({ PLUGIN_IMAGE_SET_ITEMS, { key, "/game/ui/t_icon.t_icon" } });
+    WriteFileIn(temp, SetListFileName(), SerializeSets(sets));
+
+    FakeUploader uploader;
+    Reader reader(SessionOf(temp), uploader, nullptr);
+    CHECK(Open(reader));
+    CHECK(!reader.Has(key));
+    const std::string fileName = FileName(key);
+    CHECK(temp.Read(std::wstring(fileName.begin(), fileName.end())).empty());   // removed
+
+    ImageDisk::Lists lists;
+    CHECK(reader.TakeLists(lists));
+    CHECK(lists.names.size() == 1 && lists.names[0].name == "iron plate");
+    CHECK(lists.sets.size() == 1 && lists.sets[0].paths == (std::vector<std::string>{ "/game/ui/t_icon.t_icon" }));
+    reader.Stop();
+}
+
+static void TestReaderRequestForARunTimeObjectIsNotServed()
+{
+    TempFolder temp;
+    const std::string key = "/engine/transient.texture2d_3";
+    Info info = MakeInfo();
+    info.path = key;
+    const std::vector<uint8_t> pixels = MakePixels(info.storedWidth, info.storedHeight, 5);
+    // Listed before the file existed: only a direct request can reach it.
+    CreateDirectoryW(temp.path.c_str(), nullptr);
+
+    FakeUploader uploader;
+    Reader reader(SessionOf(temp), uploader, nullptr);
+    CHECK(Open(reader));
+    const std::string name = FileName(key);
+    WriteFileIn(temp, name, Serialize(info, pixels.data(), pixels.size()));
+    CHECK(reader.Request(9, key));
+    const std::vector<ImageDisk::FileResult> got = Results(reader, 1);
+    CHECK(got.size() == 1 && got[0].outcome == ImageDisk::FileOutcome::Failed);
+    CHECK(uploader.calls == 0);
+    CHECK(temp.Files().empty());
+    reader.Stop();
+}
+
+static void TestReaderBusyFileIsNotDeleted()
+{
+    TempFolder temp;
+    Info info;
+    WriteFileIn(temp, FileName(KeyOf(MakeInfo())), Valid(&info));
+    const std::string name = FileName(KeyOf(info));
+    const std::wstring path = temp.path + L"\\" + std::wstring(name.begin(), name.end());
+
+    FakeUploader uploader;
+    Reader reader(SessionOf(temp), uploader, nullptr);
+    CHECK(Open(reader));
+
+    // Something holds the file with no sharing: it cannot be opened now, and it is not at fault.
+    HANDLE held = CreateFileW(path.c_str(), GENERIC_READ, 0, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    CHECK(held != INVALID_HANDLE_VALUE);
+    CHECK(reader.Request(10, KeyOf(info)));
+    const std::vector<ImageDisk::FileResult> got = Results(reader, 1);
+    CHECK(got.size() == 1 && got[0].outcome == ImageDisk::FileOutcome::Failed);
+    CloseHandle(held);
+    CHECK(reader.Rejected() == 0);
+    CHECK(uploader.calls == 0);
+    CHECK(temp.Files().size() == 1);
+    reader.Stop();
+}
+
+static void TestReaderWithNoFolderListsNothing()
+{
+    FakeUploader uploader;
+    Reader reader([] { return Reader::FolderFn([] { return std::wstring(); }); }, uploader, nullptr);
+    CHECK(Open(reader));
+    CHECK(reader.Poll(1) == ImageDisk::Source::State::Ready);
+    CHECK(!reader.Has("/game/ui/t_icon.t_icon"));
+    ImageDisk::Lists lists;
+    CHECK(reader.TakeLists(lists));
+    CHECK(lists.names.empty() && lists.sets.empty());
+    reader.Stop();
+}
+
 int main()
 {
     RunTest("crc32", TestCrc);
@@ -1453,11 +2009,18 @@ int main()
     RunTest("file names", TestFileName);
     RunTest("the folder changes when any input changes", TestFolderKey);
     RunTest("the pak set hash", TestPakHash);
+    RunTest("the pak set hash covers what decides the pixels", TestPakHashCoversWhatDecidesPixels);
+    RunTest("run-time object paths", TestTransientPath);
+    RunTest("the list serializers keep what parses", TestListSerializersKeepWhatParses);
     RunTest("the writer writes files and makes the folders", TestWriterWrites);
     RunTest("the writer leaves a file of the same size alone", TestWriterKeepsSameSize);
     RunTest("a job with no bytes writes nothing", TestWriterEmptyBytesWriteNothing);
     RunTest("a folder that cannot be made switches the disk part off once", TestWriterOffOnUnusableFolder);
-    RunTest("a file that cannot be replaced switches the disk part off once", TestWriterOffOnReadOnlyFile);
+    RunTest("a file held by something else is skipped, not the whole disk part", TestWriterBusyFileDoesNotSwitchOff);
+    RunTest("a file held for a moment is written on a later try", TestWriterFileHeldByAnotherHandleIsRetried);
+    RunTest("a folder closed to new files switches the disk part off once", TestWriterFolderClosedToNewFilesSwitchesOff);
+    RunTest("a job whose folder is gone is dropped unwritten", TestWriterDropsAJobWithNoFolder);
+    RunTest("a queued Clear survives the switch-off", TestWriterKeepsAQueuedClearWhenItSwitchesOff);
     RunTest("the writer's queue is bounded", TestWriterQueueIsBounded);
     RunTest("the writer refuses a job without bytes or folder", TestWriterRefusesBadJobs);
     RunTest("nothing is written after stop", TestWriterStop);
@@ -1486,6 +2049,18 @@ int main()
     RunTest("a session that ends turns the reader off", TestReaderSessionEndingTurnsItOff);
     RunTest("abandon drops the results", TestReaderAbandonDropsResults);
     RunTest("stop keeps what was finished", TestReaderStopKeepsFinishedResults);
+    RunTest("an unlistable pak set switches the disk part off", TestPakSessionUnlistableIsOff);
+    RunTest("a pak file that cannot be read switches the disk part off", TestPakSessionPakFileThatCannotBeReadIsOff);
+    RunTest("the folder key follows the pak files", TestPakSessionKeyFollowsTheFiles);
+    RunTest("a job under an old key is not filed", TestPakSessionJobUnderAnOldKeyIsNotFiled);
+    RunTest("the pak set is looked at again on the interval", TestPakSessionLooksAgainOnTheInterval);
+    RunTest("nothing is filed once the key is gone", TestSaverNothingIsFiledOnceTheKeyIsGone);
+    RunTest("run-time objects are not saved", TestSaverRunTimeObjectsAreNotSaved);
+    RunTest("the lists are written again after a clear", TestSaverListsAreWrittenAgainAfterAClear);
+    RunTest("run-time objects are not served and their files go", TestReaderRunTimeObjectsAreNotServed);
+    RunTest("a request for a run-time object is not served", TestReaderRequestForARunTimeObjectIsNotServed);
+    RunTest("a file held by something else is not deleted", TestReaderBusyFileIsNotDeleted);
+    RunTest("a session with no folder lists nothing", TestReaderWithNoFolderListsNothing);
 
     printf("\n%d checks, %d failed\n", g_checks, g_failed);
     return g_failed == 0 ? 0 : 1;

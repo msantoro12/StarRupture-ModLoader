@@ -16,7 +16,12 @@ namespace ImageDisk
 		// No ticket: every readback buffer was taken, and this image stays in memory only.
 		if (started.ticket == 0 || m_gone || m_stopped)
 			return;
-		m_pending.push_back(started);
+		Waiting waiting;
+		waiting.started = started;
+		// A run-time object's name is handed out again for another texture next session, so only
+		// its readback is freed.
+		waiting.wanted = !ImageCache::IsTransientPath(ImageLibrary::NormalizeObjectPath(started.path.c_str()));
+		m_pending.push_back(std::move(waiting));
 	}
 
 	void DiskSaver::Poll(uint64_t nowMs)
@@ -26,28 +31,45 @@ namespace ImageDisk
 
 		for (size_t i = 0; i < m_pending.size();)
 		{
-			const Started& started = m_pending[i];
+			const Started& started = m_pending[i].started;
 			const size_t bytes = static_cast<size_t>(ImageShrink::Bytes({ started.storedWidth, started.storedHeight }, started.levels));
 
-			// With the disk part off the readback is only freed.
-			std::vector<uint8_t> pixels;
-			if (!m_sink.Off())
-				pixels.resize(bytes);
+			// With no use for the pixels (the disk part is off, or this image is not saved) the
+			// readback is only freed.
+			const bool wanted = m_pending[i].wanted && !m_folderOff && !m_sink.Off();
+			if (wanted && m_scratch.size() < bytes)
+				m_scratch.resize(bytes);
 
-			const Readback state = m_host.Take(started.ticket, pixels.empty() ? nullptr : pixels.data(), bytes);
+			const Readback state = m_host.Take(started.ticket, wanted ? m_scratch.data() : nullptr, bytes);
 			if (state == Readback::Pending)
 			{
 				++i;
 				continue;
 			}
-			if (state == Readback::Done && !pixels.empty())
-				Finish(started, std::move(pixels));
+			if (state == Readback::Done && wanted)
+			{
+				// The pak set is looked at as the pixels are filed. An empty function means the
+				// session's key is gone: nothing is queued, and nothing more is copied.
+				std::function<std::wstring()> folder = m_host.CacheFolder();
+				if (folder)
+					Finish(started, std::vector<uint8_t>(m_scratch.begin(), m_scratch.begin() + static_cast<std::ptrdiff_t>(bytes)), std::move(folder));
+				else
+					m_folderOff = true;
+			}
 			m_pending.erase(m_pending.begin() + static_cast<std::ptrdiff_t>(i));
 		}
 
 		if (nowMs >= m_nextSetCheckMs)
 		{
 			m_nextSetCheckMs = nowMs + kSetListIntervalMs;
+			// A cleared cache has lost both lists: they are written again.
+			const uint32_t cleared = m_host.ClearCount();
+			if (cleared != m_clearSeen)
+			{
+				m_clearSeen = cleared;
+				m_lastSets.clear();
+				m_namesChanged = !m_names.empty();
+			}
 			WriteSetList();
 			WriteNameList();
 		}
@@ -55,7 +77,7 @@ namespace ImageDisk
 
 	void DiskSaver::Name(const std::string& name, const std::string& path)
 	{
-		if (m_stopped || name.empty() || path.empty())
+		if (m_stopped || name.empty() || path.empty() || ImageCache::IsTransientPath(ImageLibrary::NormalizeObjectPath(path.c_str())))
 			return;
 		std::string& kept = m_names[name];
 		if (kept != path)
@@ -65,7 +87,7 @@ namespace ImageDisk
 		}
 	}
 
-	void DiskSaver::Finish(const Started& started, std::vector<uint8_t>&& pixels)
+	void DiskSaver::Finish(const Started& started, std::vector<uint8_t>&& pixels, std::function<std::wstring()> folder)
 	{
 		const std::string key = ImageLibrary::NormalizeObjectPath(started.path.c_str());
 		if (key.empty())
@@ -82,7 +104,7 @@ namespace ImageDisk
 
 		const auto data = std::make_shared<std::vector<uint8_t>>(std::move(pixels));
 		ImageCache::Job job;
-		job.folder = m_host.CacheFolder();
+		job.folder = std::move(folder);
 		job.name   = ImageCache::FileName(key);
 		job.make   = [info, data] { return ImageCache::Serialize(info, data->data(), data->size()); };
 		m_sink.Submit(std::move(job));
@@ -100,7 +122,7 @@ namespace ImageDisk
 			ImageCache::SetEntry entry;
 			entry.set = 1u << bit;
 			for (const ImageLibrary::SetMember& member : members)
-				if (member.sets & entry.set)
+				if ((member.sets & entry.set) && !ImageCache::IsTransientPath(ImageLibrary::NormalizeObjectPath(member.path.c_str())))
 					entry.paths.push_back(member.path);
 			if (entry.paths.empty())
 				continue;
@@ -113,6 +135,8 @@ namespace ImageDisk
 
 		ImageCache::Job job;
 		job.folder  = m_host.CacheFolder();
+		if (!job.folder)
+			return;
 		job.name    = ImageCache::SetListFileName();
 		job.replace = true;
 		job.make    = [sets] { return ImageCache::SerializeSets(sets); };
@@ -133,6 +157,8 @@ namespace ImageDisk
 
 		ImageCache::Job job;
 		job.folder  = m_host.CacheFolder();
+		if (!job.folder)
+			return;
 		job.name    = ImageCache::NameListFileName();
 		job.replace = true;
 		job.make    = [names] { return ImageCache::SerializeNames(names); };
@@ -151,5 +177,136 @@ namespace ImageDisk
 		m_stopped = true;
 		m_pending.clear();
 		m_sink.Stop();
+	}
+
+	// ---- The session's folder key ---------------------------------------------
+
+	struct PakSession::State
+	{
+		Stamp    stamp;
+		FolderOf folderOf;
+		Log      log;
+
+		std::mutex                        lock;
+		bool                              off = false;
+		std::vector<ImageCache::PakEntry> paks;   // set before the state is shared; the worker adds the stamps
+
+		std::mutex keyLock;                       // held by the worker that reads the file stamps
+		bool       keyed = false;
+		uint64_t   key   = 0;
+
+		bool IsOff()
+		{
+			std::lock_guard<std::mutex> guard(lock);
+			return off;
+		}
+
+		void SwitchOff(const std::string& why)
+		{
+			{
+				std::lock_guard<std::mutex> guard(lock);
+				if (off)
+					return;
+				off = true;
+			}
+			if (log)
+				log("[Images] " + why + ": the image cache is not used for the rest of this session");
+		}
+
+		// "x.pak" -> "x.utoc": the files an IoStore pak keeps beside it.
+		static std::string Sibling(const std::string& pak, const char* extension)
+		{
+			const size_t dot = pak.find_last_of('.');
+			const size_t slash = pak.find_last_of("/\\");
+			const bool hasExtension = dot != std::string::npos && (slash == std::string::npos || dot > slash);
+			return (hasExtension ? pak.substr(0, dot) : pak) + extension;
+		}
+
+		// Worker only: reads the file stamps the first time.
+		std::wstring Folder()
+		{
+			if (IsOff())
+				return {};
+			{
+				std::lock_guard<std::mutex> guard(keyLock);
+				if (!keyed)
+				{
+					for (ImageCache::PakEntry& pak : paks)
+					{
+						if (!stamp(pak.path, pak.pak))
+						{
+							SwitchOff("A mounted pak file could not be read (" + pak.path + ")");
+							return {};
+						}
+						stamp(Sibling(pak.path, ".utoc"), pak.utoc);
+						stamp(Sibling(pak.path, ".ucas"), pak.ucas);
+					}
+					key   = ImageCache::HashPakSet(paks);
+					keyed = true;
+				}
+			}
+			return IsOff() ? std::wstring() : folderOf(key);
+		}
+	};
+
+	PakSession::PakSession(List list, Stamp stamp, FolderOf folderOf, Log log, uint64_t recheckMs)
+		: m_list(std::move(list)), m_stamp(std::move(stamp)), m_folderOf(std::move(folderOf)), m_log(std::move(log)), m_recheckMs(recheckMs)
+	{
+	}
+
+	std::shared_ptr<PakSession::State> PakSession::Current() const
+	{
+		std::lock_guard<std::mutex> guard(m_lock);
+		return m_state;
+	}
+
+	std::function<std::wstring()> PakSession::Folder(uint64_t nowMs, bool recheck)
+	{
+		const std::shared_ptr<State> state = Current();
+		if (state && state->IsOff())
+			return {};
+
+		std::vector<ImageCache::PakEntry> paks;
+		if (!state)
+		{
+			const auto fresh = std::make_shared<State>();
+			fresh->stamp    = m_stamp;
+			fresh->folderOf = m_folderOf;
+			fresh->log      = m_log;
+			m_checkedMs = nowMs;
+			const bool listed = m_list && m_list(paks) && !paks.empty();
+			if (listed)
+			{
+				m_shallow   = ImageCache::HashPakSet(paks);
+				fresh->paks = std::move(paks);
+				m_folder    = [fresh] { return fresh->Folder(); };
+			}
+			else
+				fresh->SwitchOff("The mounted paks cannot be listed");
+
+			// Shared only now: a worker never sees a state without its pak set.
+			{
+				std::lock_guard<std::mutex> guard(m_lock);
+				m_state = fresh;
+			}
+			if (!listed)
+				return {};
+		}
+		else if (recheck || nowMs - m_checkedMs >= m_recheckMs)
+		{
+			m_checkedMs = nowMs;
+			if (!m_list(paks) || ImageCache::HashPakSet(paks) != m_shallow)
+			{
+				state->SwitchOff("The mounted paks changed");
+				return {};
+			}
+		}
+		return m_folder;
+	}
+
+	std::wstring PakSession::CurrentFolder()
+	{
+		const std::shared_ptr<State> state = Current();
+		return state ? state->Folder() : std::wstring();
 	}
 }

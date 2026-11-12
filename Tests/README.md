@@ -358,6 +358,9 @@ The bookkeeping behind `IPluginImGuiTextures::LoadFromUTexture2D` (`UI/icon_copy
 - The protection choice: full with the version map rows (the heap or the resource is made resident),
   reduced with no rows or a heap pointer that does not check out (the copy still runs, and the source
   itself is still made resident).
+- The device check on the engine's texture (`VtableIsFrom`): a resource whose virtual table is not in the
+  module of a D3D12 resource the loader made itself is refused before anything is called on it, and so
+  are a null table and an unplaceable one.
 
 ```
 msbuild Tests\IconCopyTests\IconCopyTests.vcxproj /p:Configuration="Client Release" /p:Platform=x64
@@ -379,7 +382,10 @@ It checks:
 - The order requests are served in: images seen lately first, then set members; requests nobody drew
   are dropped.
 - The byte cap and the count cap evict the least recently seen image, equal stamps evict the lower id
-  first, a copy over the cap is refused, and an evicted image is asked for again when it is drawn.
+  first, a copy over the cap is refused, and an evicted image is asked for again when it is drawn. An image
+  seen within the last half second is never evicted.
+- `RoomFor` counts the free slots under both caps plus the kept images not seen lately, and `HasQueued`
+  tells whether any image is waiting to be read.
 - Handing out an id (`Item`, `Path`) asks for nothing: only drawing it does.
 - Aliased ids are one image, `Canonical` gives the one id for them, `ReleaseAll` hands back every kept
   copy, and the plugin interface reaches the same table.
@@ -401,8 +407,14 @@ asked for, against a fake host and a fake item list, so no GPU and no engine are
 - A started read is published when its copy is done; the shrink makes the stored size and counts the
   levels; the temporary copy is let go once the shrink starts; a shrink with no room is tried again, and
   one that fails ends as NONE.
-- Not yet and busy are requeued, a path not in memory is loaded then read, and the per-tick limits on
-  reads, loads and requests looked at hold.
+- Not yet and busy are requeued (a not-yet image is given up on after 10 seconds), a path not in memory is
+  loaded then read, and the per-tick limits on reads, requests looked at and package loads (one in all, items
+  and sets included) hold.
+- A preload image whose file fails goes back to preload, not into the queue for drawn images.
+- A caught engine fault, or a copy the backend says is unavailable, turns the game's reads off once with one log
+  line and no call back into the engine; the images that have a file are still served and the rest end as NONE.
+- Newcomers are admitted only as far as there is room: images drawn lately are never cycled out for them, and
+  while there is no room nothing is read and no file is loaded for the ones waiting.
 - Items are held until the item list knows them, then follow the icon's path. An item with no icon, a
   placeholder icon or a placeholder path ends as NO_IMAGE; an item the game does not have ends as NONE.
 - Registering an image reads nothing; only drawing it does. The item and building sets are listed only
@@ -452,19 +464,30 @@ and no game. It checks:
 - A file with a bad magic, another revision, a truncated or lengthened body, a changed byte, or a header
   that disagrees with itself (too many levels, a size out of range) is refused.
 - The folder name changes when the game build, the pak set, the format revision or the stored size changes,
-  and the pak set hash does not depend on the order.
+  and the pak set hash does not depend on the order the paks are listed in. The hash covers each pak's path,
+  mount point, read order and file count, and the size and last-write time of the pak, its `.utoc` and its
+  `.ucas`.
+- The session's pak set: a set that cannot be listed, or a pak file that cannot be read, switches the disk
+  part off with one log line and never gives a partial key; a changed set switches it off for the rest of the
+  session, and a job queued under the old key is not filed. The set is looked at once in each tick that files
+  an image, and the game thread reads no file stamp.
 - The writer, on a real temporary folder: the folders are made, no temporary file is left, a file of the
-  same size is left alone, a folder that cannot be written switches the disk part off with one log line,
-  the queue is bounded, and nothing is written after stop.
+  same size is left alone, a folder that cannot be written (write protected, full, closed to new files)
+  switches the disk part off with one log line, a file another program holds open is retried and then
+  skipped without switching it off, the queue is bounded, a job with no folder is dropped, a queued clear
+  survives a switch-off, and nothing is written after stop.
 - The saver, on a fake readback: a finished copy becomes a file, a copy with no readback or a lost one makes
-  none, a full queue drops the image, and the set list and the name list are written when they change.
+  none, a full queue drops the image, and the set list and the name list are written when they change and
+  again after a clear. Textures the game makes while it runs (`/Engine/Transient`, `/Memory/`) are not saved
+  and are left out of both lists.
 - The name list reads back as it was written, and a bad one is refused.
 - The reader (`UI/image_cache_reader`), on a real temporary folder and a fake uploader: it lists the folder and
   its two lists; a good file becomes a texture of the file's own bytes; a corrupt file, a file of another
   image or one of the wrong size is rejected, deleted and counted; an upload that fails keeps the file; a
   file gone after the listing fails; an off session reads nothing; and stop keeps what was finished. A file
   served from disk gets a new last-write time (so the size cap counts it as used), and one that could not be
-  served does not.
+  served does not. A file another program holds open is not deleted, a run-time object's file is not served
+  and is deleted, and a session with no folder lists nothing.
 
 ```
 msbuild Tests\ImageDiskTests\ImageDiskTests.vcxproj /p:Configuration="Client Release" /p:Platform=x64
@@ -516,7 +539,9 @@ of levels and the colour on every level, and times the pass on the GPU.
 
 It also records the readback of the stored copy (`UI/image_readback_gpu.cpp`) in the same command list and
 checks that the bytes of every level equal the pixels the shrink produced, and that the readback ring gives
-no ticket when full and gives a slot back when it is fetched or cancelled.
+no ticket when full and gives a slot back when it is fetched or cancelled, including after a failed signal.
+An sRGB source is shrunk through a raw (non-sRGB) view of its bytes, so a mid grey is stored as it was, not
+brightened.
 
 Last, it uploads pixels laid out as a saved file holds them (`UI/image_upload_gpu.cpp`), reads the texture
 back and checks that every level equals the bytes that went in.

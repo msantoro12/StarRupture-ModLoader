@@ -270,8 +270,8 @@ place in the loader instead of each copying game textures itself. A mod reaches 
   If a mod mounts a pak after the game has started, saved pictures are not used for the rest of that
   launch.
 - **Preload images from the game** in the [Settings tab](#settings-tab) is off by default. On, the
-  loader reads the picture sets that mods list one at a time, and pauses while a picture on screen
-  is waiting or video memory is short. The **Clear image cache** button is under it.
+  loader reads the pictures that mods list from the game one at a time, and pauses while a picture on
+  screen is waiting or video memory is short. The **Clear image cache** button is under it.
 - On a game build whose version object map (v map) has no rows for the texture layout, pictures show as
   placeholders. See [VersionMap.md](VersionMap.md#native-members-the-image-library-reads).
 

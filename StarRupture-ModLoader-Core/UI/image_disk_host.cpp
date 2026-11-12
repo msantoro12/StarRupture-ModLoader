@@ -3,6 +3,7 @@
 
 #ifdef MODLOADER_CLIENT_BUILD
 
+#include "UI/image_cache_care.h"
 #include "UI/imgui_backend.h"
 #include "core/startup_utils.h"
 #include "core/version_check.h"
@@ -17,7 +18,18 @@ namespace ImageDisk
 {
 	namespace
 	{
-		// The folder the files of this game build go in, under the loader's own data folder:
+		// Where every game build's folder goes, under the loader's own data folder.
+		std::wstring CacheRoot()
+		{
+			return GetExeDir() + L"ModLoader\\image-cache\\";
+		}
+
+		void LogLine(const std::string& line)
+		{
+			LogToFile::Info("%s", line.c_str());
+		}
+
+		// The folder the files of this game build go in:
 		// image-cache\<build, pak set, revision, stored size>. Made by the worker.
 		std::wstring FolderFor(uint64_t pakHash)
 		{
@@ -34,7 +46,7 @@ namespace ImageDisk
 			key.section    = section;
 			key.pakHash    = pakHash;
 			key.storedSize = ImageLibrary::kStoredSize;
-			return GetExeDir() + L"ModLoader\\image-cache\\" + ImageCache::FolderName(key);
+			return CacheRoot() + ImageCache::FolderName(key);
 		}
 
 		// The mounted pak set as it is now. Paks mounted later give later files another folder.
@@ -76,13 +88,35 @@ namespace ImageDisk
 		};
 	}
 
-	// Never destroyed: the pump can still be asked at process exit.
+	namespace
+	{
+		// Never destroyed: the pump can still be asked at process exit.
+		ImageCache::Writer& EngineWriter()
+		{
+			static ImageCache::Writer* const writer = new ImageCache::Writer([](const std::string& line) { LogToFile::Warn("%s", line.c_str()); });
+			return *writer;
+		}
+	}
+
 	Saver* EngineSaver()
 	{
 		static EngineHost* const host = new EngineHost();
-		static ImageCache::Writer* const writer = new ImageCache::Writer([](const std::string& line) { LogToFile::Warn("%s", line.c_str()); });
-		static DiskSaver* const saver = new DiskSaver(ImageLibrary::Instance(), *host, *writer);
+		static DiskSaver* const saver = [&]
+		{
+			ImageCache::Writer& writer = EngineWriter();
+			// Old folders, leftovers and the size cap are looked after once, as the first job.
+			writer.Submit(ImageCache::Care::TidyJob(&CacheRoot, host->CacheFolder(), &LogLine));
+			return new DiskSaver(ImageLibrary::Instance(), *host, writer);
+		}();
 		return saver;
+	}
+
+	bool ClearCache()
+	{
+		if (EngineWriter().Submit(ImageCache::Care::ClearJob(&CacheRoot, &LogLine)))
+			return true;
+		LogToFile::Info("[Images] Image cache not cleared: the saver is busy or off");
+		return false;
 	}
 }
 

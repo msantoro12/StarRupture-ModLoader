@@ -10,6 +10,7 @@
 #include "config/config_manager.h"
 #include "config/config_edit.h"
 #include "global_settings.h"
+#include "image_disk.h"
 #include "theme.h"
 #include "named_entry_utils.h"
 #include "update_notice_window.h"
@@ -1813,6 +1814,16 @@ namespace UI::ModLoaderWindow
                 "images from the game in the background, one at a time, and pauses\n"
                 "whenever an image on screen is waiting or memory is short. Off, each\n"
                 "image is read when it is first drawn. Takes effect at once.");
+        }
+
+        if (ImGui::Button("Clear image cache"))
+            ImageDisk::ClearCache();
+        if (ImGui::IsItemHovered())
+        {
+            ImGui::SetTooltip(
+                "Deletes the images the loader saved on disk. Images already loaded\n"
+                "stay for this session, and the next launch saves them again. Use it\n"
+                "if the cache is taking too much space or an image looks wrong.");
         }
 
         ImGui::Spacing();

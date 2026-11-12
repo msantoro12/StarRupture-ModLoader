@@ -240,6 +240,9 @@
     <ClInclude Include="UI\image_cache_writer.h">
       <Filter>Source Files\UI\modloader</Filter>
     </ClInclude>
+    <ClInclude Include="UI\image_cache_care.h">
+      <Filter>Source Files\UI\modloader</Filter>
+    </ClInclude>
     <ClInclude Include="UI\image_disk.h">
       <Filter>Source Files\UI\modloader</Filter>
     </ClInclude>
@@ -711,6 +714,9 @@
       <Filter>Source Files\UI\modloader</Filter>
     </ClCompile>
     <ClCompile Include="UI\image_cache_writer.cpp">
+      <Filter>Source Files\UI\modloader</Filter>
+    </ClCompile>
+    <ClCompile Include="UI\image_cache_care.cpp">
       <Filter>Source Files\UI\modloader</Filter>
     </ClCompile>
     <ClCompile Include="UI\image_disk.cpp">

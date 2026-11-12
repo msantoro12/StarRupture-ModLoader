@@ -1,4 +1,5 @@
 #include "UI/image_cache_writer.h"
+#include "UI/image_cache_care.h"
 
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -150,7 +151,10 @@ namespace ImageCache
 		path += name;
 
 		if (!job.replace && SameSizeExists(path, bytes.size()))
+		{
+			Care::Touch(path);   // in use again: the size cap deletes the least recently used first
 			return true;
+		}
 
 		if (const DWORD error = MakeFolders(folder))
 		{

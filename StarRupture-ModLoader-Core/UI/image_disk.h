@@ -94,4 +94,9 @@ namespace ImageDisk
 
 	// The loader's saver, on the loader's worker. Client builds only (image_disk_host.cpp).
 	Saver* EngineSaver();
+
+	// The "Clear image cache" option: queues deleting everything in the cache folder on the same
+	// worker. Any thread, and no file I/O here. False when the job was not queued (queue full, or
+	// the disk part is off). Images already in memory stay; the next launch saves them again.
+	bool ClearCache();
 }

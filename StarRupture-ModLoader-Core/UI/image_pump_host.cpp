@@ -13,6 +13,8 @@
 #include "utils/engine_call_utils.h"
 #include "Engine_classes.hpp"
 
+#include <atomic>
+
 namespace ImagePump
 {
 	namespace
@@ -84,11 +86,18 @@ namespace ImagePump
 				static const LONGLONG frequency = []{ LARGE_INTEGER f; QueryPerformanceFrequency(&f); return f.QuadPart; }();
 				LARGE_INTEGER now;
 				QueryPerformanceCounter(&now);
-				return static_cast<uint64_t>(now.QuadPart * 1000000 / frequency);
+				// Whole seconds and the remainder apart: the product with 1e6 overflows after days of uptime.
+				const uint64_t counts = static_cast<uint64_t>(now.QuadPart);
+				const uint64_t perSecond = static_cast<uint64_t>(frequency);
+				return counts / perSecond * 1000000 + counts % perSecond * 1000000 / perSecond;
 			}
 
 			ReadResult Read(const std::string& objectPath, Copy& out) override
 			{
+				// After a caught fault the engine may be left holding a lock: it is not called again.
+				if (ImageLookup::EngineFaulted())
+					return ReadResult::Fault;
+
 				const FindObject_t find = reinterpret_cast<FindObject_t>(Hooks::ObjectLookup::GetStaticFindObject_ByNameAddress());
 				SDK::UClass* const textureClass = SDK::UTexture2D::StaticClass();
 				if (!find || !textureClass)
@@ -104,7 +113,8 @@ namespace ImagePump
 				if (!FindSEH(find, textureClass, path.c_str(), &texture, &code))
 				{
 					LogToFile::Warn("[Images] Exception 0x%08lX finding %s", code, objectPath.c_str());
-					return ReadResult::Failed;
+					ImageLookup::NoteEngineFault();
+					return ReadResult::Fault;
 				}
 				if (!texture)
 					return ReadResult::NotLoaded;
@@ -114,7 +124,8 @@ namespace ImagePump
 				if (!CopySEH(texture, nullptr, ImageLibrary::kStoredSize, &copy, &result, &code))
 				{
 					LogToFile::Warn("[Images] Exception 0x%08lX reading %s", code, objectPath.c_str());
-					return ReadResult::Failed;
+					ImageLookup::NoteEngineFault();
+					return ReadResult::Fault;
 				}
 
 				switch (result)
@@ -138,8 +149,17 @@ namespace ImagePump
 			// the one function to replace to load in the background.
 			LoadResult Load(const std::string& objectPath) override
 			{
+				if (ImageLookup::EngineFaulted())
+					return LoadResult::Fault;
+
 				static const LoadObject_t load = reinterpret_cast<LoadObject_t>(
 					Scanner::FindPatternInMainModule("StaticLoadObject", ScanPatterns::StaticLoadObject));
+				static bool s_loggedMissing = false;
+				if (!load && !s_loggedMissing)
+				{
+					s_loggedMissing = true;
+					LogToFile::Warn("[Images] StaticLoadObject was not found: images whose texture is not in memory cannot be read here");
+				}
 				SDK::UClass* const textureClass = SDK::UTexture2D::StaticClass();
 				if (!load || !textureClass)
 					return LoadResult::Unsupported;
@@ -153,6 +173,7 @@ namespace ImagePump
 				if (!LoadSEH(load, textureClass, path.c_str(), &texture, &code))
 				{
 					LogToFile::Warn("[Images] Exception 0x%08lX loading %s", code, objectPath.c_str());
+					ImageLookup::NoteEngineFault();
 					return LoadResult::Fault;
 				}
 				return texture ? LoadResult::Loaded : LoadResult::Missing;
@@ -198,6 +219,9 @@ namespace ImagePump
 			}
 		};
 
+		// Set by the first tick, so a shutdown before it builds nothing.
+		std::atomic<Pump*> s_pump{ nullptr };
+
 		// Never destroyed: the pump can still be asked at process exit.
 		Pump& TheInstance()
 		{
@@ -215,12 +239,17 @@ namespace ImagePump
 
 	void Tick()
 	{
-		TheInstance().Tick();
+		Pump& pump = TheInstance();
+		s_pump.store(&pump, std::memory_order_release);
+		pump.Tick();
 	}
 
 	void Shutdown()
 	{
-		TheInstance().Shutdown();
+		// The engine can exit before the first tick: there is nothing to shut down then.
+		Pump* const pump = s_pump.load(std::memory_order_acquire);
+		if (pump)
+			pump->Shutdown();
 	}
 }
 

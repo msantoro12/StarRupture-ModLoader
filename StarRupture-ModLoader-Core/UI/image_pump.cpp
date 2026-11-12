@@ -11,7 +11,7 @@ namespace ImagePump
 		const char* PauseText(int pause)
 		{
 			static const char* const kText[] = { "no", "setting off", "no set in use", "reading the list", "image waiting on screen",
-				"game holds loaded images", "video memory", "cache full" };
+				"game holds loaded images", "video memory", "cache full", "game reads off" };
 			return kText[pause];
 		}
 	}
@@ -52,14 +52,14 @@ namespace ImagePump
 		// The saved names and sets come in before anything is served, so no image is read from the
 		// game that a file would have answered.
 		const bool filesLoading = PollSource(begin / 1000);
-		if (m_off)
+		if (m_gone)
 			FailQueued();
 		else if (!filesLoading)
 		{
 			uint32_t loads = 0;
 			const bool idle = Serve(loads);
-			const bool stepped = StepItems();
-			Preload(idle, stepped, loads);
+			StepItems(loads);
+			Preload(idle, loads);
 		}
 
 		const uint64_t end = m_host.NowUs();
@@ -96,6 +96,7 @@ namespace ImagePump
 		m_stats.failed += m_inFlight.size() + m_onDisk.size();
 		m_inFlight.clear();
 		m_onDisk.clear();
+		m_preloadOnDisk.clear();
 
 		m_scratch.clear();
 		m_library.ReleaseAll(m_scratch);
@@ -186,9 +187,14 @@ namespace ImagePump
 		for (const ImageDisk::FileResult& result : m_files)
 		{
 			m_onDisk.erase(result.id);
+			const bool fromPreload = m_preloadOnDisk.erase(result.id) != 0;
 			if (result.outcome != ImageDisk::FileOutcome::Texture)
 			{
-				m_library.Requeue(result.id);
+				// A preload request goes back to preload, under its rules; one that was drawn goes back in the queue.
+				if (fromPreload)
+					m_library.Defer(result.id);
+				else
+					m_library.Requeue(result.id);
 				continue;
 			}
 			if (PublishStored(result.id, result.texture, result.bytes))
@@ -271,15 +277,36 @@ namespace ImagePump
 	// True when no on-demand request was looked at, so the tick is free for preload.
 	bool Pump::Serve(uint32_t& loads)
 	{
-		uint32_t reads = 0, attempts = 0;
+		uint32_t reads = 0, attempts = 0, items = 0;
 		m_later.clear();
 
+		// A request is taken only when there is room for its image: under the caps, or in a kept
+		// image that was not drawn lately. Reads and files already under way count against it. When
+		// the images drawn fill the cache the rest wait, and nothing is read for them.
+		const uint32_t pending = static_cast<uint32_t>(m_inFlight.size() + m_onDisk.size());
+		const uint32_t room = m_library.RoomFor(pending + kAttemptsPerTick);
+		uint32_t admit = room > pending ? room - pending : 0;
+		if (admit == 0)
+		{
+			if (!m_fullLogged && m_library.HasQueued())
+			{
+				m_fullLogged = true;
+				m_host.Log("[Images] The image cache is full of images in use: other images wait until there is room");
+			}
+			return true;
+		}
+
 		ImageLibrary::Request request;
-		while (reads < kReadsPerTick && attempts < kAttemptsPerTick && m_library.TakeNext(request))
+		while (reads < kReadsPerTick && attempts < kAttemptsPerTick && admit > 0 && m_library.TakeNext(request))
 		{
 			// An item waits for the index; it costs no read, so it is no attempt.
 			if (request.kind == ImageLibrary::Kind::Item)
 			{
+				if (++items > kItemsPerTick)
+				{
+					m_later.push_back(request.id);
+					break;
+				}
 				m_held.push_back({ request.id, ImageLibrary::NormalizeItemName(request.name.c_str()) });
 				continue;
 			}
@@ -290,36 +317,44 @@ namespace ImagePump
 				++reads;
 			else if (outcome == Outcome::Later || outcome == Outcome::Busy)
 				m_later.push_back(request.id);
+			if (outcome == Outcome::Started || outcome == Outcome::Disk)
+				--admit;
 
-			if (outcome == Outcome::Busy || outcome == Outcome::Off)
+			if (outcome == Outcome::Busy)
 				break;
 		}
 
 		// Only now: a request put back at once would be handed out again.
 		for (PluginImageId id : m_later)
 			m_library.Requeue(id);
-		if (m_off)
-			FailQueued();
 		return attempts == 0;
 	}
 
-	// Reads the next slice of the item index while an item is waiting, and
-	// answers the waiting items it now knows. True when it read a slice.
-	bool Pump::StepItems()
+	// Answers the waiting items the index knows, and reads the next slice of the index while an item
+	// is still waiting. The slice loads packages, so it is the tick's one load.
+	void Pump::StepItems(uint32_t& loads)
 	{
 		if (m_held.empty())
-			return false;
+			return;
 
 		ResolveHeld();
 		if (m_held.empty())
-			return false;
+			return;
+		// The index is part of the game's reads: with those off, what it already knows has answered.
+		if (m_off)
+		{
+			FailHeld();
+			return;
+		}
+		if (loads >= kLoadsPerTick)
+			return;
 
 		const ImageLookup::ItemIndex::State before = m_items.GetState();
 		m_items.Step(ImageLookup::kItemBudgetUs, [this] { return m_host.NowUs(); });
+		++loads;
 		if (before != ImageLookup::ItemIndex::State::Failed && m_items.GetState() == ImageLookup::ItemIndex::State::Failed)
 			m_host.Log("[Images] No item can be read on this build or in this session: item images stay unavailable");
 		ResolveHeld();
-		return true;
 	}
 
 	// ---- Preload ---------------------------------------------------------------
@@ -327,7 +362,7 @@ namespace ImagePump
 	// One tick of preload: the lists of the sets in use are read (a slice a tick,
 	// one list at a time), and then, on one tick in kPreloadTickInterval and only
 	// while every rule holds, the next member of a set is read.
-	void Pump::Preload(bool idle, bool stepped, uint32_t& loads)
+	void Pump::Preload(bool idle, uint32_t& loads)
 	{
 		if (!m_host.PreloadEnabled())
 		{
@@ -341,7 +376,7 @@ namespace ImagePump
 			return;
 		}
 
-		StepSets(used, stepped);
+		StepSets(used, loads);
 
 		if (++m_preloadTick % kPreloadTickInterval != 0)
 			return;
@@ -372,47 +407,52 @@ namespace ImagePump
 				}
 
 				std::string key;
-				if (holds && !FileFor(request, key))
+				if ((holds || m_off) && !FileFor(request, key))
 				{
 					m_library.Defer(request.id);
-					m_pause = Pause::GameHolds;
-					return;
+					if (holds)
+					{
+						m_pause = Pause::GameHolds;
+						return;
+					}
+					// Only the files are read with the game off: go on to the next member.
+					m_pause = Pause::GameOff;
+					continue;
 				}
 
 				m_pause = Pause::Running;
 				const Outcome outcome = Attempt(request, loads);
 				if (outcome == Outcome::Later || outcome == Outcome::Busy)
 					m_library.Defer(request.id);
-				if (outcome != Outcome::Disk)
+				if (outcome == Outcome::Disk)
+					m_preloadOnDisk.insert(request.id);
+				else
 					break;
 			}
 		}
 	}
 
-	// Reads a slice of the list of one set that is in use and not listed yet. A
-	// slice is read for one set a tick, and not on a tick the item index has
-	// already been stepped for an item that is waiting.
-	void Pump::StepSets(uint32_t used, bool stepped)
+	// Reads a slice of the list of one set that is in use and not listed yet. A slice loads packages,
+	// so it is read for one set a tick and only on a tick that has made no load.
+	void Pump::StepSets(uint32_t used, uint32_t& loads)
 	{
 		if ((used & PLUGIN_IMAGE_SET_ITEMS) && !m_itemsListed)
-			stepped = StepSet(m_items, PLUGIN_IMAGE_SET_ITEMS, m_itemsListed, stepped, "item") || stepped;
+			StepSet(m_items, PLUGIN_IMAGE_SET_ITEMS, m_itemsListed, loads, "item");
 		if ((used & PLUGIN_IMAGE_SET_BUILDINGS) && !m_buildingsListed)
-			StepSet(m_buildings, PLUGIN_IMAGE_SET_BUILDINGS, m_buildingsListed, stepped, "building");
+			StepSet(m_buildings, PLUGIN_IMAGE_SET_BUILDINGS, m_buildingsListed, loads, "building");
 	}
 
-	// True when it read a slice. When the list is whole its images are added to
-	// the library as members of the set; when it cannot be made the set is left
-	// empty for the session.
-	bool Pump::StepSet(ImageLookup::ItemIndex& index, uint32_t set, bool& listed, bool stepped, const char* what)
+	// When the list is whole its images are added to the library as members of the set; when it
+	// cannot be made the set is left empty for the session.
+	void Pump::StepSet(ImageLookup::ItemIndex& index, uint32_t set, bool& listed, uint32_t& loads, const char* what)
 	{
 		using State = ImageLookup::ItemIndex::State;
-		bool read = false;
 		if (ApplyFileSet(set, listed, what))
-			return false;
-		if (!stepped && (index.GetState() == State::Idle || index.GetState() == State::Scanning))
+			return;
+		if (!m_off && loads < kLoadsPerTick && (index.GetState() == State::Idle || index.GetState() == State::Scanning))
 		{
 			index.Step(ImageLookup::kItemBudgetUs, [this] { return m_host.NowUs(); });
-			read = true;
+			++loads;
 		}
 
 		if (index.GetState() == State::Done)
@@ -428,7 +468,6 @@ namespace ImagePump
 			listed = true;
 			m_host.Log(std::string("[Images] The ") + what + " list cannot be read here: " + what + " images are not preloaded");
 		}
-		return read;
 	}
 
 	// Fills the set from the saved set list, when the folder had one for it: the game's list is not
@@ -453,13 +492,17 @@ namespace ImagePump
 	// is taken to hold still, have reached the limit.
 	bool Pump::GameHoldsTooMuch()
 	{
-		const uint64_t nowMs = m_host.NowUs() / 1000;
-		m_heldLoads.erase(std::remove_if(m_heldLoads.begin(), m_heldLoads.end(),
-			[&](const HeldLoad& load) { return nowMs - load.atMs >= kPreloadHeldWindowMs; }), m_heldLoads.end());
+		PruneHeldLoads(m_host.NowUs() / 1000);
 		uint64_t total = 0;
 		for (const HeldLoad& load : m_heldLoads)
 			total += load.bytes;
 		return total >= kPreloadHeldLimitBytes;
+	}
+
+	void Pump::PruneHeldLoads(uint64_t nowMs)
+	{
+		m_heldLoads.erase(std::remove_if(m_heldLoads.begin(), m_heldLoads.end(),
+			[&](const HeldLoad& load) { return nowMs - load.atMs >= kPreloadHeldWindowMs; }), m_heldLoads.end());
 	}
 
 	// Whether the adapter's local video memory in use is at the share of its
@@ -554,6 +597,14 @@ namespace ImagePump
 			return Outcome::Disk;
 		}
 
+		// With the game's reads off, only an image that has a file can be served.
+		if (m_off)
+		{
+			m_library.Fail(request.id);
+			++m_stats.failed;
+			return Outcome::Done;
+		}
+
 		Copy copy;
 		ReadResult result = m_host.Read(request.name, copy);
 
@@ -573,6 +624,10 @@ namespace ImagePump
 				++m_stats.noImage;
 				return Outcome::Done;
 			case LoadResult::Fault:
+				GameReadsOff("An engine call faulted");
+				m_library.Fail(request.id);
+				++m_stats.failed;
+				return Outcome::Done;
 			case LoadResult::Unsupported:
 				m_library.Fail(request.id);
 				++m_stats.failed;
@@ -580,27 +635,51 @@ namespace ImagePump
 			}
 		}
 
+		// Still to be read again later: the load it caused stays on record until it is.
+		bool causedLoad = false;
+		if (result != ReadResult::NotYet && result != ReadResult::Busy)
+		{
+			causedLoad = m_causedLoad.erase(request.id) != 0;
+			m_notYetSince.erase(request.id);
+		}
+
 		switch (result)
 		{
 		case ReadResult::Started:
 			m_inFlight.push_back({ request.id, copy, request.name });
-			if (m_causedLoad.erase(request.id))
+			if (causedLoad)
 			{
+				const uint64_t nowMs  = m_host.NowUs() / 1000;
 				const uint64_t width  = static_cast<uint64_t>(copy.sourceWidth > 0 ? copy.sourceWidth : copy.width);
 				const uint64_t height = static_cast<uint64_t>(copy.sourceHeight > 0 ? copy.sourceHeight : copy.height);
-				m_heldLoads.push_back({ m_host.NowUs() / 1000, width * height * ImageShrink::kBytesPerPixel });
+				PruneHeldLoads(nowMs);
+				m_heldLoads.push_back({ nowMs, width * height * ImageShrink::kBytesPerPixel });
 			}
 			return Outcome::Started;
 		case ReadResult::NotYet:
-			return Outcome::Later;
+		{
+			const uint64_t nowMs = m_host.NowUs() / 1000;
+			const auto since = m_notYetSince.emplace(request.id, nowMs).first;
+			if (nowMs - since->second < kNotYetGiveUpMs)
+				return Outcome::Later;
+			m_notYetSince.erase(since);
+			m_causedLoad.erase(request.id);
+			m_library.Fail(request.id);
+			++m_stats.failed;
+			return Outcome::Done;
+		}
 		case ReadResult::Busy:
 			return Outcome::Busy;
 		case ReadResult::Unavailable:
-			m_off = true;
+			GameReadsOff("No image can be read from the game on this build or in this session");
 			m_library.Fail(request.id);
 			++m_stats.failed;
-			m_host.Log("[Images] No image can be read on this build or in this session: images stay unavailable");
-			return Outcome::Off;
+			return Outcome::Done;
+		case ReadResult::Fault:
+			GameReadsOff("An engine call faulted");
+			m_library.Fail(request.id);
+			++m_stats.failed;
+			return Outcome::Done;
 		case ReadResult::NotLoaded:   // loaded a moment ago and not found: no texture there
 			m_library.PublishNoImage(request.id);
 			++m_stats.noImage;
@@ -613,7 +692,18 @@ namespace ImagePump
 		}
 	}
 
-	// No read can run: every request ends as NONE instead of waiting for ever.
+	// From now on the game is not read for images this session; the images that have a file in the
+	// cache folder are still served.
+	void Pump::GameReadsOff(const char* why)
+	{
+		if (m_off)
+			return;
+		m_off = true;
+		m_host.Log(std::string("[Images] ") + why + ": images are not read from the game for the rest of this session"
+			", only the ones in the cache folder");
+	}
+
+	// The GPU side is gone: every request ends as NONE instead of waiting for ever.
 	void Pump::FailQueued()
 	{
 		FailHeld();
@@ -661,6 +751,7 @@ namespace ImagePump
 			for (PluginImageId id : m_onDisk)
 				m_library.Fail(id);
 			m_onDisk.clear();
+			m_preloadOnDisk.clear();
 		}
 		LogSummary();
 		FailHeld();

@@ -32,6 +32,7 @@
 
 #include <cstdint>
 #include <string>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
@@ -39,9 +40,10 @@ namespace ImagePump
 {
 	// ---- Constants ---------------------------------------------------------
 
-	// Per tick. The trial found a read costing over 1 ms on the game thread at
-	// p95, so one image goes per tick. Package loads are synchronous, and one
-	// per tick as well.
+	// Per tick. A read was measured at over 1 ms on the game thread at p95, so
+	// one image goes per tick. Package loads are synchronous and cost far more
+	// (15 to 35 ms at p95 in the menu), so at most one runs per tick: a texture's
+	// package, or a slice of an item list, whichever comes first.
 	inline constexpr uint32_t kReadsPerTick    = 1;
 	inline constexpr uint32_t kLoadsPerTick    = 1;
 	// Requests looked at per tick, whatever came of them. Keeps a queue of
@@ -60,12 +62,12 @@ namespace ImagePump
 	// on-demand read to make.
 
 	// Preload is tried on one tick in this many: half the on-demand pace, since
-	// the trial found even one read per tick over 1 ms on the game thread.
+	// even one read per tick was measured at over 1 ms on the game thread.
 	inline constexpr uint32_t kPreloadTickInterval = 2;
 
-	// The game releases the images the library made it load in sweeps, 44 to 50
-	// seconds after the load in the trial, and some it kept for the whole run of
-	// five minutes. The full-size images the library caused and the game has not
+	// The game releases the images the library made it load in sweeps, measured at
+	// 44 to 50 seconds after the load, and some it kept for the whole run of five
+	// minutes. The full-size images the library caused and the game has not
 	// let go of, taken to be those loaded within the window, may not pass the
 	// limit. An image counts at 4 bytes a pixel of its full size, which is more
 	// than the game's compressed copy takes.
@@ -77,6 +79,13 @@ namespace ImagePump
 	inline constexpr uint32_t kPreloadVideoPercent  = 90;
 	inline constexpr uint64_t kVideoCheckIntervalMs = 1000;
 
+	// A texture that is loaded but not readable yet is asked again every tick for this long, and then
+	// ends as NONE.
+	inline constexpr uint64_t kNotYetGiveUpMs = 10 * 1000;
+
+	// Item requests moved into the wait for the item index on one tick.
+	inline constexpr uint32_t kItemsPerTick = 64;
+
 	// ---- What the pump needs from the engine and the GPU ---------------------
 
 	enum class ReadResult
@@ -86,6 +95,7 @@ namespace ImagePump
 		Busy,          // the read path is full: ask again, and not again this tick
 		Failed,        // this texture cannot be copied
 		Unavailable,   // no read can run on this build or this session
+		Fault,         // an engine call faulted: nothing more is read from the game this session
 		NotLoaded,     // no texture at that path is in memory
 	};
 
@@ -224,10 +234,10 @@ namespace ImagePump
 			std::string   key;
 		};
 
-		enum class Outcome { Started, Disk, Done, Later, Busy, Off };
+		enum class Outcome { Started, Disk, Done, Later, Busy };
 
 		// Why preload did not read on the last tick it was tried.
-		enum class Pause { Running, Off, NoSets, Listing, Screen, GameHolds, VideoMemory, Full };
+		enum class Pause { Running, Off, NoSets, Listing, Screen, GameHolds, VideoMemory, Full, GameOff };
 
 		// A full-size game image the library made the game load.
 		struct HeldLoad
@@ -246,11 +256,13 @@ namespace ImagePump
 		bool    FileFor(const ImageLibrary::Request& request, std::string& key);
 		bool    PublishStored(PluginImageId id, PluginTextureHandle texture, uint64_t bytes);
 		bool    Serve(uint32_t& loads);
-		bool    StepItems();
-		void    StepSets(uint32_t used, bool stepped);
-		bool    StepSet(ImageLookup::ItemIndex& index, uint32_t set, bool& listed, bool stepped, const char* what);
-		void    Preload(bool idle, bool stepped, uint32_t& loads);
+		void    StepItems(uint32_t& loads);
+		void    StepSets(uint32_t used, uint32_t& loads);
+		void    StepSet(ImageLookup::ItemIndex& index, uint32_t set, bool& listed, uint32_t& loads, const char* what);
+		void    Preload(bool idle, uint32_t& loads);
+		void    GameReadsOff(const char* why);
 		bool    GameHoldsTooMuch();
+		void    PruneHeldLoads(uint64_t nowMs);
 		bool    VideoFull();
 		void    ResolveHeld();
 		bool    Resolved(const HeldItem& item);
@@ -270,7 +282,7 @@ namespace ImagePump
 		bool                   m_sourceOff = false;   // the source gave up: the game is read for everything
 
 		bool m_started = false;   // the GPU side was up at least once
-		bool m_off     = false;   // no read can run any more this session
+		bool m_off     = false;   // the game is not read any more this session; files still are
 		bool m_gone    = false;   // the GPU side went away: nothing may be freed
 		bool m_stopped = false;
 
@@ -280,6 +292,9 @@ namespace ImagePump
 		std::vector<HeldItem>                 m_held;
 		// Requests the source is reading from a file, by image id.
 		std::unordered_set<PluginImageId>     m_onDisk;
+		std::unordered_set<PluginImageId>     m_preloadOnDisk;   // the ones of m_onDisk that preload asked for
+		std::unordered_map<PluginImageId, uint64_t> m_notYetSince;   // first time a read was not ready, in ms
+		bool                                  m_fullLogged = false;
 		std::vector<ImageDisk::FileResult>    m_files;
 		bool                                  m_listsTaken = false;
 		ImageCache::SetList                   m_fileSets;   // saved set lists not used yet

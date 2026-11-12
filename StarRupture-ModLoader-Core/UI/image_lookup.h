@@ -25,7 +25,7 @@ namespace ImageLookup
 	// ---- Constants ---------------------------------------------------------
 
 	// The most time one tick spends on the item index. Loading an item's
-	// package is the cost: the trial saw 15 to 35 ms at p95 in the menu, and
+	// package is the cost: measured at 15 to 35 ms at p95 in the menu, and
 	// well under a millisecond in a world. At least one item is read per tick,
 	// so a single slow package can run over once.
 	inline constexpr uint64_t kItemBudgetUs = 3000;

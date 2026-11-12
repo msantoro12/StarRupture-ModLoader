@@ -7,6 +7,7 @@
 #include "hooks/game/object_lookup/object_lookup.h"
 #include "hooks/game/object_properties/object_properties.h"
 #include "logging/log.h"
+#include "hooks/memory/engine_allocator.h"
 #include "utils/engine_call_utils.h"
 #include "utils/game_thread_dispatch.h"
 #include "Engine_classes.hpp"
@@ -16,6 +17,7 @@
 #include "AssetRegistry_classes.hpp"
 #include "AssetRegistry_parameters.hpp"
 
+#include <atomic>
 #include <initializer_list>
 #include <utility>
 #include <vector>
@@ -41,6 +43,8 @@ namespace ImageLookup
 		// on every build.
 		constexpr uint32_t kFuncNative = 0x400;
 
+		std::atomic<bool> s_faulted{ false };
+
 		// ---- Engine calls. SEH only: nothing in these owns an object that needs unwinding.
 
 		bool FindSEH(FindObject_t fn, SDK::UClass* cls, SDK::UObject* outer, const wchar_t* path, SDK::UObject** out)
@@ -52,6 +56,7 @@ namespace ImageLookup
 			}
 			__except (EngineCall::SehFilter(GetExceptionCode()))
 			{
+				s_faulted.store(true, std::memory_order_relaxed);
 				*out = nullptr;
 				return false;
 			}
@@ -66,6 +71,7 @@ namespace ImageLookup
 			}
 			__except (EngineCall::SehFilter(GetExceptionCode()))
 			{
+				s_faulted.store(true, std::memory_order_relaxed);
 				*out = nullptr;
 				return false;
 			}
@@ -80,6 +86,7 @@ namespace ImageLookup
 			}
 			__except (EngineCall::SehFilter(GetExceptionCode()))
 			{
+				s_faulted.store(true, std::memory_order_relaxed);
 				return false;
 			}
 		}
@@ -93,6 +100,7 @@ namespace ImageLookup
 			}
 			__except (EngineCall::SehFilter(GetExceptionCode()))
 			{
+				s_faulted.store(true, std::memory_order_relaxed);
 				*out = nullptr;
 				return false;
 			}
@@ -107,6 +115,7 @@ namespace ImageLookup
 			}
 			__except (EngineCall::SehFilter(GetExceptionCode()))
 			{
+				s_faulted.store(true, std::memory_order_relaxed);
 				return false;
 			}
 		}
@@ -203,6 +212,9 @@ namespace ImageLookup
 				"KismetSystemLibrary", "GetPathName", &params))
 				return false;
 			*out = params.ReturnValue.ToString();
+			// The string's buffer was allocated by the engine and is not ours to keep.
+			if (params.ReturnValue.GetDataPtr() && EngineAllocator::IsAvailable())
+				EngineAllocator::Free(const_cast<wchar_t*>(params.ReturnValue.GetDataPtr()));
 			return !out->empty() && (*out)[0] == '/';
 		}
 
@@ -214,6 +226,7 @@ namespace ImageLookup
 			}
 			__except (EngineCall::SehFilter(GetExceptionCode()))
 			{
+				s_faulted.store(true, std::memory_order_relaxed);
 				return false;
 			}
 		}
@@ -317,7 +330,9 @@ namespace ImageLookup
 				m_refs.clear();
 
 				std::string why;
-				if (!OP::IsReady())
+				if (s_faulted.load(std::memory_order_relaxed))
+					why = "an engine call faulted earlier in this session";
+				else if (!OP::IsReady())
 					why = "the game's reflection data is not ready";
 				else if (!PathNameUsable())
 					why = "the engine's path of an object cannot be used";
@@ -353,7 +368,8 @@ namespace ImageLookup
 				const FindPackage_t findPackage = reinterpret_cast<FindPackage_t>(Hooks::ObjectLookup::GetFindPackageAddress());
 				const FullyLoad_t   fullyLoad   = reinterpret_cast<FullyLoad_t>(Hooks::ObjectLookup::GetUPackage_FullyLoadAddress());
 				const LoadPackage_t loadPackage = reinterpret_cast<LoadPackage_t>(Hooks::ObjectLookup::GetLoadPackageAddress());
-				if (!findPackage || !fullyLoad || !loadPackage || !Hooks::ObjectLookup::GetStaticFindObject_ByNameAddress())
+				if (s_faulted.load(std::memory_order_relaxed) || !findPackage || !fullyLoad || !loadPackage
+					|| !Hooks::ObjectLookup::GetStaticFindObject_ByNameAddress())
 					return ItemRead::Unavailable;
 
 				const Ref& ref = m_refs[index];
@@ -365,22 +381,27 @@ namespace ImageLookup
 				// The package may be in memory already; if it is, make sure it is whole.
 				SDK::UPackage* package = nullptr;
 				if (!FindPackageSEH(findPackage, packagePath.c_str(), &package))
-					return ItemRead::Skipped;
+					return ItemRead::Unavailable;
 				if (package ? !FullyLoadSEH(fullyLoad, package) : (!LoadPackageSEH(loadPackage, packagePath.c_str(), &package) || !package))
-					return ItemRead::Skipped;
+					return s_faulted.load(std::memory_order_relaxed) ? ItemRead::Unavailable : ItemRead::Skipped;
 
 				char name[256];
 				SDK::UObject* icon = nullptr;
 				const Brush brush = ReadSEH(package, objectName.c_str(), name, static_cast<int>(sizeof(name)), &icon);
 				if (brush == Brush::Fault)
+				{
 					LogToFile::Warn("[Images] Exception reading the %s %s", Label(), ref.asset.c_str());
+					return ItemRead::Unavailable;
+				}
 				if ((brush != Brush::Texture && brush != Brush::Empty) || !name[0])
-					return ItemRead::Skipped;
+					return s_faulted.load(std::memory_order_relaxed) ? ItemRead::Unavailable : ItemRead::Skipped;
 
 				out.name = name;
 				if (brush == Brush::Empty)
 					return ItemRead::NoIcon;
-				return PathNameSEH(icon, &out.texturePath) ? ItemRead::Icon : ItemRead::Skipped;
+				if (PathNameSEH(icon, &out.texturePath))
+					return ItemRead::Icon;
+				return s_faulted.load(std::memory_order_relaxed) ? ItemRead::Unavailable : ItemRead::Skipped;
 			}
 
 		protected:
@@ -448,6 +469,7 @@ namespace ImageLookup
 				}
 				__except (EngineCall::SehFilter(GetExceptionCode()))
 				{
+					s_faulted.store(true, std::memory_order_relaxed);
 					*texture = nullptr;
 					return Brush::Fault;
 				}
@@ -494,6 +516,7 @@ namespace ImageLookup
 				}
 				__except (EngineCall::SehFilter(GetExceptionCode()))
 				{
+					s_faulted.store(true, std::memory_order_relaxed);
 					*texture = nullptr;
 					return Brush::Fault;
 				}
@@ -525,6 +548,7 @@ namespace ImageLookup
 			}
 			__except (EngineCall::SehFilter(GetExceptionCode()))
 			{
+				s_faulted.store(true, std::memory_order_relaxed);
 				return false;
 			}
 		}
@@ -534,11 +558,15 @@ namespace ImageLookup
 		public:
 			bool OnGameThread() override { return GameThreadDispatch::IsGameThread(); }
 
-			bool SlotOf(const void* texture, TextureSlot& out) override { return SlotSEH(texture, &out); }
+			bool SlotOf(const void* texture, TextureSlot& out) override
+			{
+				return !s_faulted.load(std::memory_order_relaxed) && SlotSEH(texture, &out);
+			}
 
 			bool PathOf(const void* texture, std::string& out) override
 			{
-				return PathNameSEH(const_cast<SDK::UObject*>(static_cast<const SDK::UObject*>(texture)), &out);
+				return !s_faulted.load(std::memory_order_relaxed)
+					&& PathNameSEH(const_cast<SDK::UObject*>(static_cast<const SDK::UObject*>(texture)), &out);
 			}
 
 			void Log(const std::string& line) override { LogToFile::Info("%s", line.c_str()); }
@@ -556,6 +584,16 @@ namespace ImageLookup
 	{
 		static EngineBuildingSource* const source = new EngineBuildingSource();
 		return *source;
+	}
+
+	void NoteEngineFault()
+	{
+		s_faulted.store(true, std::memory_order_relaxed);
+	}
+
+	bool EngineFaulted()
+	{
+		return s_faulted.load(std::memory_order_relaxed);
 	}
 
 	PluginImageId FromTexture(SDK::UTexture2D* texture)

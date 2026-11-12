@@ -18,4 +18,10 @@ namespace ImageLookup
 
 	// The lookup behind IPluginImages::FromTexture.
 	PluginImageId FromTexture(SDK::UTexture2D* texture);
+
+	// An engine call made for the image library faulted and was caught. The engine's own locks
+	// may be held after that, so no further call is made into it for images this session: the
+	// lookups answer "cannot" and the pump reads nothing from the game.
+	void NoteEngineFault();
+	bool EngineFaulted();
 }

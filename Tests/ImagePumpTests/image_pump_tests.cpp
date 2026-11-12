@@ -228,6 +228,13 @@ struct Rig
         return id;
     }
 
+    // Time passes between ticks, and the library's clock with it.
+    void Advance(uint64_t ms)
+    {
+        host.clockUs += ms * 1000;
+        library.SetNow(host.clockUs / 1000);
+    }
+
     // One engine tick, a millisecond later than the last.
     void Tick(uint32_t n = 1)
     {
@@ -502,18 +509,15 @@ static void LoadResultsEndTheRequest()
 {
     Rig rig;
     const PluginImageId missing = rig.Want(rig.library.Path("/Game/UI/T_Missing.T_Missing"));
-    const PluginImageId fault = rig.Want(rig.library.Path("/Game/UI/T_Fault.T_Fault"));
     const PluginImageId unsupported = rig.Want(rig.library.Path("/Game/UI/T_Unsupported.T_Unsupported"));
     rig.host.loadResult["/Game/UI/T_Missing.T_Missing"] = LoadResult::Missing;
-    rig.host.loadResult["/Game/UI/T_Fault.T_Fault"] = LoadResult::Fault;
     rig.host.loadResult["/Game/UI/T_Unsupported.T_Unsupported"] = LoadResult::Unsupported;
     rig.Tick(5);
     CHECK(rig.library.State(missing) == PLUGIN_IMAGE_NO_IMAGE);
-    CHECK(rig.library.State(fault) == PLUGIN_IMAGE_NONE);
     CHECK(rig.library.State(unsupported) == PLUGIN_IMAGE_NONE);
     CHECK(rig.pump.GetStats().noImage == 1);
-    CHECK(rig.pump.GetStats().failed == 2);
-    CHECK(rig.host.loads.size() == 3);   // each tried once
+    CHECK(rig.pump.GetStats().failed == 1);
+    CHECK(rig.host.loads.size() == 2);   // each tried once
 }
 
 static void ALoadThatFindsNothingIsNoImage()
@@ -870,16 +874,13 @@ static void EvictedCopiesAreFreedOnTheNextTick()
     rig.Tick(2);
     rig.library.SetCaps(ImageLibrary::kByteCapMax, 1);
 
-    // A is seen after B was asked for, so B is the one to go.
-    rig.host.clockUs += 1000;
+    // A has not been drawn for longer than the window, so B takes its place.
+    rig.Advance(600);
     const PluginImageId b = rig.Loaded(kB);
-    rig.host.clockUs += 1000;
-    rig.pump.Tick();
-    rig.library.Get(a);
-    rig.host.clockUs += 1000;
-    rig.pump.Tick();
-    CHECK(rig.library.State(a) == PLUGIN_IMAGE_READY);
-    CHECK(rig.library.State(b) != PLUGIN_IMAGE_READY);
+    rig.Tick();   // B starts reading
+    rig.Tick();   // B is published and A goes
+    CHECK(rig.library.State(a) != PLUGIN_IMAGE_READY);
+    CHECK(rig.library.State(b) == PLUGIN_IMAGE_READY);
     CHECK(rig.pump.GetStats().evicted == 1);
     CHECK(rig.host.freed.empty());   // not on the tick that evicted it
     rig.Tick();
@@ -892,9 +893,9 @@ static void AnEvictedImageIsReadAgainWhenDrawn()
     const PluginImageId a = rig.Loaded(kA);
     rig.Tick(2);
     rig.library.SetCaps(ImageLibrary::kByteCapMax, 1);
-    rig.host.clockUs += 1000;
+    rig.Advance(600);
     const PluginImageId b = rig.Loaded(kB);
-    rig.Tick(3);   // B is newer, so A is evicted
+    rig.Tick(3);   // A is not drawn any more, so it is the one evicted
     CHECK(rig.library.State(a) != PLUGIN_IMAGE_READY);
     CHECK(rig.library.State(b) == PLUGIN_IMAGE_READY);
     const size_t freed = rig.host.freed.size();
@@ -914,13 +915,12 @@ static void ACopyEvictedAtOnceIsFreedOnce()
     const PluginImageId a = rig.Loaded(kA);
     rig.Tick(2);
     rig.library.SetCaps(ImageLibrary::kByteCapMax, 1);
-    rig.host.clockUs += 1000;
+    rig.Advance(600);
     const PluginImageId b = rig.Loaded(kB);
-    rig.host.clockUs += 1000;
-    rig.pump.Tick();                   // B starts reading
-    rig.host.clockUs += 1000;
-    rig.library.Get(a);                // A is the more recently seen
-    rig.pump.Tick();                   // B's copy is done and published: B is the one to go
+    rig.Tick();                        // B starts reading
+    rig.Advance(600);
+    rig.library.Get(a);                // A is drawn, B has not been for a while
+    rig.Tick();                        // B's copy is done and published: it is the one to go
     CHECK(rig.library.State(b) != PLUGIN_IMAGE_READY);
     CHECK(rig.library.State(a) == PLUGIN_IMAGE_READY);
     rig.Tick(3);
@@ -993,9 +993,8 @@ static void ShutdownAlsoFreesTheEvictedWaitingForTheNextTick()
     rig.Loaded(kA);
     rig.Tick(2);
     rig.library.SetCaps(ImageLibrary::kByteCapMax, 1);
-    rig.host.clockUs += 1000;
+    rig.Advance(600);
     rig.Loaded(kB);
-    rig.host.clockUs += 1000;
     rig.pump.Tick();
     rig.pump.Tick();   // B published, A evicted, not freed yet
     CHECK(rig.host.freed.empty());
@@ -1974,6 +1973,181 @@ static void ShutdownFreesFinishedFilesNobodyCollected()
     CHECK(rig.library.State(b) == PLUGIN_IMAGE_NONE);
 }
 
+static size_t LoggedCount(const Rig& rig, const char* text)
+{
+    size_t n = 0;
+    for (const std::string& line : rig.host.logs)
+        n += line.find(text) != std::string::npos;
+    return n;
+}
+
+// A preload image whose file is bad goes back through preload, not into the queue of drawn images.
+static void APreloadFileThatFailsGoesBackToPreload()
+{
+    Rig rig;
+    FakeSource source;
+    rig.pump.SetSource(&source);
+    AddIcons(rig.items, 0, 3, "Item");
+    Prepare(rig, kItemsSet);
+    for (int i = 0; i < 3; ++i)
+        source.files.insert(Key(PathN(i)));
+
+    rig.Tick(6);
+    CHECK(source.requests.size() == 3);
+    const PluginImageId bad = rig.library.PathInSet(PathN(1).c_str(), kItemsSet);
+    source.files.erase(Key(PathN(1)));
+    source.Reject(bad);
+    source.rejected = 1;
+    rig.Tick();
+
+    // Nobody drew it, so it does not wait in the queue for the game to read it ahead of the rest.
+    CHECK(!rig.library.HasQueued());
+    CHECK(source.requests.size() == 3);
+    rig.Tick(8);
+    CHECK(!rig.library.HasQueued());
+    CHECK(rig.library.State(bad) == PLUGIN_IMAGE_READY);
+    CHECK(MemberReads(rig, 1, 1) >= 1);
+}
+
+// After the game cannot be read, the images with a file are still served.
+static void GameReadsOffStillServesFiles()
+{
+    Rig rig;
+    FakeSource source;
+    rig.pump.SetSource(&source);
+    source.files.insert(Key(kB));
+
+    const PluginImageId a = rig.Loaded(kA);
+    rig.host.readResult[kA] = ReadResult::Unavailable;
+    rig.Tick(3);
+    CHECK(rig.library.State(a) == PLUGIN_IMAGE_NONE);
+    CHECK(LoggedCount(rig, "not read from the game for the rest of this session") == 1);
+    const size_t reads = rig.host.reads.size();
+
+    const PluginImageId b = rig.Want(rig.library.Path(kB));
+    const PluginImageId c = rig.Loaded(kC);
+    RunWithFiles(rig, source, 5);
+    CHECK(rig.library.State(b) == PLUGIN_IMAGE_READY);
+    CHECK(rig.library.State(c) == PLUGIN_IMAGE_NONE);
+    CHECK(rig.host.reads.size() == reads);
+    CHECK(rig.host.loads.empty());
+    CHECK(LoggedCount(rig, "not read from the game for the rest of this session") == 1);
+}
+
+// A caught fault does the same, and a second one is not logged again.
+static void ACaughtFaultTurnsGameReadsOffOnce()
+{
+    Rig rig;
+    FakeSource source;
+    rig.pump.SetSource(&source);
+    source.files.insert(Key(kC));
+    const PluginImageId a = rig.Loaded(kA);
+    const PluginImageId b = rig.Loaded(kB);
+    rig.host.readResult[kA] = ReadResult::Fault;
+    rig.host.readResult[kB] = ReadResult::Fault;
+    rig.Tick(4);
+    CHECK(rig.library.State(a) == PLUGIN_IMAGE_NONE);
+    CHECK(rig.library.State(b) == PLUGIN_IMAGE_NONE);
+    CHECK(rig.host.reads.size() == 1);   // b was not read after a faulted
+    CHECK(LoggedCount(rig, "An engine call faulted") == 1);
+
+    const PluginImageId c = rig.Want(rig.library.Path(kC));
+    RunWithFiles(rig, source, 5);
+    CHECK(rig.library.State(c) == PLUGIN_IMAGE_READY);
+    CHECK(LoggedCount(rig, "An engine call faulted") == 1);
+}
+
+static void ALoadThatFaultsTurnsGameReadsOff()
+{
+    Rig rig;
+    const PluginImageId a = rig.Want(rig.library.Path(kA));
+    rig.host.loadResult[kA] = LoadResult::Fault;
+    rig.Tick(2);
+    CHECK(rig.library.State(a) == PLUGIN_IMAGE_NONE);
+    CHECK(LoggedCount(rig, "An engine call faulted") == 1);
+    const PluginImageId b = rig.Loaded(kB);
+    rig.Tick(3);
+    CHECK(rig.library.State(b) == PLUGIN_IMAGE_NONE);
+    CHECK(rig.host.loads.size() == 1);
+}
+
+// The list step and a texture load do not both load a package in the same tick.
+static void AtMostOnePackageLoadPerTickInTotal()
+{
+    Rig rig;
+    AddIcons(rig.items, 0, 4, "Item");
+    const PluginImageId item = rig.Want(rig.library.Item("Item0"));
+    const PluginImageId path = rig.Want(rig.library.Path(kA));
+    for (int t = 0; t < 30; ++t)
+    {
+        const int listsBefore = rig.items.lists;
+        const size_t loadsBefore = rig.host.loads.size();
+        rig.Tick();
+        CHECK((rig.items.lists - listsBefore) + (rig.host.loads.size() - loadsBefore) <= 1);
+    }
+    CHECK(rig.items.lists == 1);
+    CHECK(rig.host.loads.size() >= 1);
+    CHECK(rig.library.State(path) != PLUGIN_IMAGE_WAITING || rig.library.State(item) != PLUGIN_IMAGE_WAITING);
+}
+
+// Images drawn every frame are never evicted for newcomers; the newcomers wait, cost no reads and are admitted later.
+static void DrawnImagesAreNotCycledOutByNewcomers()
+{
+    Rig rig;
+    rig.Tick();   // the GPU comes up and sets the caps
+    rig.library.SetCaps(ImageLibrary::kByteCapMax, 3);
+    PluginImageId ids[5];
+    for (int i = 0; i < 5; ++i)
+    {
+        rig.host.loaded.insert(PathN(i));
+        ids[i] = rig.library.Path(PathN(i).c_str());
+    }
+    for (int t = 0; t < 40; ++t)
+    {
+        for (int i = 0; i < 5; ++i)
+            rig.library.Get(ids[i]);
+        rig.Advance(50);
+        rig.pump.Tick();
+    }
+    int ready = 0, waiting = 0;
+    for (int i = 0; i < 5; ++i)
+    {
+        ready   += rig.library.State(ids[i]) == PLUGIN_IMAGE_READY;
+        waiting += rig.library.State(ids[i]) == PLUGIN_IMAGE_WAITING;
+    }
+    CHECK(ready == 3);
+    CHECK(waiting == 2);
+    CHECK(rig.pump.GetStats().evicted == 0);
+    CHECK(rig.host.reads.size() == 3);   // the two that wait are not read and dropped
+    CHECK(LoggedCount(rig, "full of images in use") == 1);
+
+    // Room appears when the cap is raised: the two that waited are admitted.
+    rig.library.SetCaps(ImageLibrary::kByteCapMax, 5);
+    for (int t = 0; t < 10; ++t)
+    {
+        for (int i = 0; i < 5; ++i)
+            rig.library.Get(ids[i]);
+        rig.Advance(50);
+        rig.pump.Tick();
+    }
+    for (int i = 0; i < 5; ++i)
+        CHECK(rig.library.State(ids[i]) == PLUGIN_IMAGE_READY);
+    CHECK(rig.pump.GetStats().evicted == 0);
+}
+
+// An image that is not readable yet is given up on after a while rather than asked for for ever.
+static void ANotYetImageIsGivenUpOnAfterAWhile()
+{
+    Rig rig;
+    const PluginImageId a = rig.Loaded(kA);
+    rig.host.readResult[kA] = ReadResult::NotYet;
+    rig.Tick(5);
+    CHECK(rig.library.State(a) == PLUGIN_IMAGE_WAITING);
+    rig.Advance(11 * 1000);
+    rig.Tick(5);
+    CHECK(rig.library.State(a) == PLUGIN_IMAGE_NONE);
+}
+
 int main()
 {
     setvbuf(stdout, nullptr, _IONBF, 0);
@@ -2059,6 +2233,13 @@ int main()
     RunTest("the summary line has the cache figures", TheSummaryLineHasTheCacheFigures);
     RunTest("the GPU going away fails the files in flight", TheGpuGoingAwayFailsTheFilesInFlight);
     RunTest("shutdown frees finished files nobody collected", ShutdownFreesFinishedFilesNobodyCollected);
+    RunTest("a preload file that fails goes back to preload", APreloadFileThatFailsGoesBackToPreload);
+    RunTest("game reads off still serves files", GameReadsOffStillServesFiles);
+    RunTest("a caught fault turns game reads off once", ACaughtFaultTurnsGameReadsOffOnce);
+    RunTest("a load that faults turns game reads off", ALoadThatFaultsTurnsGameReadsOff);
+    RunTest("at most one package load per tick in total", AtMostOnePackageLoadPerTickInTotal);
+    RunTest("drawn images are not cycled out by newcomers", DrawnImagesAreNotCycledOutByNewcomers);
+    RunTest("a not yet image is given up on after a while", ANotYetImageIsGivenUpOnAfterAWhile);
 
     printf("\n%d checks, %d failed\n", g_checks, g_failed);
     return g_failed == 0 ? 0 : 1;

@@ -205,6 +205,11 @@ class bound`). A row for the running CL is required: the built offset is not use
 and a request on a build without a row is refused. If reflection is not ready, or finds the name
 ambiguous, the request fails as before.
 
+The game names its types without the prefix letter, so a plain type can share its name with a class:
+`FTexture`, the render resource behind every texture, beside the class `UTexture`. An `F` name that
+only a class carries is a plain type. An `F` name that a struct carries in another module, or a `U`
+or `A` name that a struct or a class in another module carries, is a request that missed, and fails.
+
 ## Native members the image library reads
 
 The image library reads a game texture through eight native members. Each is a field row for the

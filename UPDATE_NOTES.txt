@@ -7,3 +7,4 @@
 - New Preload images from the game setting in the Settings tab (off by default): the loader reads the item and building pictures that mods list from the game in the background, one at a time, and pauses while a picture on screen is waiting or video memory is short
 - New Clear image cache button in the Settings tab, under Preload images from the game, that deletes the saved pictures. Pictures already loaded stay for that session and the next launch saves them again
 - Eight texture members the picture read needs are now rows of the version object map, for both game builds, and the loader's older icon copy reads them when the build has all of them. On a game build with no such rows, pictures from the image library show as placeholders
+- A native member of a plain engine type that shares its name with a game class (FTexture beside UTexture) is now served from its version map row instead of being refused

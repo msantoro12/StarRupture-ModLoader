@@ -189,6 +189,9 @@ the other the running game. It covers:
 - One synthetic case for each kind of difference: a missing class, alignment, a missing member, a
   member size, a bit-field mask, a bool that stopped or started being one; a Blueprint class and a
   class of unknown kind are deferred, and a member size of 0 is not compared.
+- A type reflection did not find: an `F` name nothing or only a class carries (`FTexture` beside
+  `UTexture`) is a plain C++ type; an `F` name a struct carries, or a `U` or `A` name anything
+  carries, is a request that missed.
 
 ```
 msbuild Tests\LayoutCheckTests\LayoutCheckTests.vcxproj /p:Configuration="Client Release" /p:Platform=x64
@@ -275,7 +278,9 @@ The pattern scan, the scan cache, the game version and the log are test doubles
 - The loader's real map (`hooks/game/version_map.generated.h`) against its registry: format 2, every
   key a registry entry's, every row with that entry's kind and fingerprint. It also checks the real
   rows the image library reads (the six texture chain rows and the two heap rows, on the game builds
-  that have them), the hotbar rows and the close-menu key.
+  that have them), the hotbar rows and the close-menu key. The loader's lookup of those rows is served
+  on both builds with reflection answering as the game does: `UTexture` is a class and bounds its
+  member, and `FTexture`, whose name the class carries too, is a plain type with no class bound.
 
 ```
 msbuild Tests\VersionMapTests\VersionMapTests.vcxproj /p:Configuration="Client Release" /p:Platform=x64

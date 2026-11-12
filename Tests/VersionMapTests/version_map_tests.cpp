@@ -7,6 +7,7 @@
 #include "memory_scanner/hook_scanner_interface.h"
 #include "memory_scanner/image_info.h"
 #include "memory_scanner/version_map.h"
+#include "core/layout_check.h"
 #include "plugins/plugin_hook_report.h"
 #include "plugins/plugin_interface.h"
 #include "plugins/reload_policy.h"
@@ -102,7 +103,7 @@ namespace
 	bool g_bpLoaded = false;
 
 	// Reflection as the field tests see it: ATest is 0x50 bytes, AOther 0x10,
-	// and AChild derives from ATest.
+	// AChild derives from ATest, and UTexture is 0x140 bytes, as on the game.
 	VersionMap::LiveField FakeLive(const std::string& className, const std::string& member)
 	{
 		VersionMap::LiveField f;
@@ -141,10 +142,16 @@ namespace
 			else
 				f.error = "no parameter " + member + " in Game.WBP_Slot_C.SetSize";
 		}
+		else if (className == "UTexture" && member.empty())
+			f.size = 0x140, f.paths = { "Engine.Texture", "Engine.StreamableRenderAsset", "Engine.Object" };
 		else if (className != "ATest")
 		{
-			f.error = "no class " + className;
-			f.unreflected = true;
+			// As the game answers a type it does not find (LayoutCheck::FindType). The game names types without
+			// the prefix letter, so the class Texture (UTexture) carries the name FTexture asks for too.
+			const bool classSeen = className.size() > 1 && className.substr(1) == "Texture";
+			f.unreflected = LayoutCheck::IsPlainType(className[0], false, classSeen);
+			f.error = "no native " + std::string(className[0] == 'F' ? "struct " : "class ") + className
+				+ (f.unreflected ? std::string() : " (the name exists under another module or kind)");
 		}
 		else if (member.empty())
 			f.size = 0x50;
@@ -1489,8 +1496,8 @@ int main()
 			Check(!fieldRow(m.key, 128786), (std::string("real field rows: ") + m.key + " has no CL-128786 row").c_str());
 		}
 	}
-	// The loader's lookup of those rows (NativeFieldOffset): a native member of a type reflection does not know,
-	// with no compiled offset, so only a row for the running build serves it. Served on CL-127004 and CL-129402;
+	// The loader's lookup of those rows (NativeFieldOffset): a native member, with no compiled offset, so only a row
+	// for the running build serves it. Served on CL-127004 and CL-129402;
 	// refused on any other build, which turns the library off there and sends old icon copies to their compiled values.
 	{
 		VersionMap::SetLiveFieldSource(FakeLive);
@@ -1505,15 +1512,25 @@ int main()
 						request.candidates.push_back(FieldRow(Real::VersionMap::kFieldRows[i].gameCL,
 							Real::VersionMap::kFieldRows[i].offset, Real::VersionMap::kFieldRows[i].size));
 			e.clear();
+			TestDoubles::g_log.clear();
 			return VersionMap::SelectField("ModLoader", request, VersionMap::Exe{ cl, 0, 0 }, v, e);
 		};
 		VersionMap::FieldValue v;
 		std::string e;
 		for (const ChainRow& m : kChain)
 		{
+			// UTexture is a reflected class, so its member is bounded by it; the others are plain C++ types,
+			// FTexture among them although the game's class UTexture carries the name Texture.
+			const bool reflected = strncmp(m.key, "UTexture::", 10) == 0;
 			for (const uint32_t cl : { 127004u, 129402u })
-				Check(overlayLookup(m.key, m.size, cl, v, e) && v.offset == m.offset && v.size == m.size,
-					(std::string("chain rows: ") + m.key + " served on CL-" + std::to_string(cl)).c_str());
+			{
+				const bool served = overlayLookup(m.key, m.size, cl, v, e) && v.offset == m.offset && v.size == m.size;
+				Check(served, (std::string("chain rows: ") + m.key + " served on CL-" + std::to_string(cl)
+					+ (served ? std::string() : ", refused: " + e)).c_str());
+				Check(Logged(L"unreflected type, no class bound") != reflected,
+					(std::string("chain rows: ") + m.key + (reflected ? " is bounded by its class" : " is served with no class bound")
+					 + " on CL-" + std::to_string(cl)).c_str());
+			}
 			Check(!overlayLookup(m.key, m.size, 128786, v, e) && e.find("no row for CL-128786, and a native member has no other source") == 0,
 				(std::string("chain rows: ") + m.key + " refused on CL-128786, no compiled fallback").c_str());
 		}

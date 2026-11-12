@@ -188,6 +188,19 @@ namespace
 	}
 }
 
+// The texture chain members and heap members the icon copy reads (version_map.generated.h), same on both live builds.
+struct ChainRow { const char* key; uint32_t offset; uint32_t size; };
+static const ChainRow kChain[] = {
+	{ "UTexture::PrivateResource", 0x120, 0x8 },
+	{ "FTexture::TextureRHI", 0x10, 0x8 },
+	{ "FD3D12Texture::ResourceLocation", 0xA8, 0x78 },
+	{ "FD3D12ResourceLocation::UnderlyingResource", 0x10, 0x8 },
+	{ "FD3D12Resource::DefaultResourceState", 0x9C, 0x4 },
+	{ "FD3D12Resource::Resource", 0x20, 0x8 },
+	{ "FD3D12Resource::Heap", 0x30, 0x8 },
+	{ "FD3D12Heap::Heap", 0x20, 0x8 },
+};
+
 int main()
 {
 	TestDoubles::g_rvas = {
@@ -1456,24 +1469,34 @@ int main()
 		oldRow = fieldRow("UCrEnviroWaveTimerSubsystem::TimerActor", 127004);
 		newRow = fieldRow("UCrEnviroWaveTimerSubsystem::TimerActor", 128786);
 		Check(oldRow && oldRow->offset == 0x90 && newRow && newRow->offset == 0x98, "real field rows: TimerActor 0x90 on CL-127004, 0x98 on CL-128786");
-		// The engine heap behind a placed D3D12 resource: FD3D12Resource::Heap and the ID3D12Heap pointer in FD3D12Heap.
-		// One pointer each, measured on CL-127004.
-		for (const uint32_t cl : { 127004u })
+		// The hotbar subsystem exists only on CL-129402: a row there, none on the older builds.
+		const Real::VersionMap::FieldRow* index = fieldRow("UCrHotbarLocalPlayerSubsystem::CurrentHotbarIndex", 129402);
+		const Real::VersionMap::FieldRow* pages = fieldRow("UCrHotbarLocalPlayerSubsystem::Hotbars", 129402);
+		Check(index && index->offset == 0x48 && index->size == 0x1 && index->boolMask == 0, "real field rows: CurrentHotbarIndex is a byte at 0x48 on CL-129402");
+		Check(pages && pages->offset == 0x38 && pages->size == 0x10 && pages->boolMask == 0, "real field rows: Hotbars is a 16-byte array at 0x38 on CL-129402");
+		Check(!fieldRow("UCrHotbarLocalPlayerSubsystem::CurrentHotbarIndex", 127004) && !fieldRow("UCrHotbarLocalPlayerSubsystem::Hotbars", 127004),
+			"real field rows: the hotbar subsystem has no CL-127004 row");
+		// The members of the engine texture chain the icon copy reads, one row per live build, measured the same
+		// on CL-127004 and CL-129402 and absent from CL-128786.
+				for (const ChainRow& m : kChain)
 		{
-			const Real::VersionMap::FieldRow* resourceHeap = fieldRow("FD3D12Resource::Heap", cl);
-			const Real::VersionMap::FieldRow* heapHeap = fieldRow("FD3D12Heap::Heap", cl);
-			Check(resourceHeap && resourceHeap->offset == 0x30 && resourceHeap->size == 0x8 && resourceHeap->boolMask == 0, "real field rows: FD3D12Resource::Heap is a pointer at 0x30");
-			Check(heapHeap && heapHeap->offset == 0x20 && heapHeap->size == 0x8 && heapHeap->boolMask == 0, "real field rows: FD3D12Heap::Heap is a pointer at 0x20");
+			for (const uint32_t cl : { 127004u, 129402u })
+			{
+				const Real::VersionMap::FieldRow* row = fieldRow(m.key, cl);
+				Check(row && row->offset == m.offset && row->size == m.size && row->boolMask == 0,
+					(std::string("real field rows: ") + m.key + " on CL-" + std::to_string(cl)).c_str());
+			}
+			Check(!fieldRow(m.key, 128786), (std::string("real field rows: ") + m.key + " has no CL-128786 row").c_str());
 		}
 	}
-	// The overlay's lookup of those two rows (client_ui.cpp, NativeFieldOffset): a native member of a type
-	// reflection does not know, with no compiled offset, so only a row for the running build serves it.
-	// Served on CL-127004; refused on any other build, which sends icon copies to reduced protection.
+	// The loader's lookup of those rows (NativeFieldOffset): a native member of a type reflection does not know,
+	// with no compiled offset, so only a row for the running build serves it. Served on CL-127004 and CL-129402;
+	// refused on any other build, which turns the library off there and sends old icon copies to their compiled values.
 	{
 		VersionMap::SetLiveFieldSource(FakeLive);
-		const auto overlayLookup = [](const char* key, uint32_t cl, VersionMap::FieldValue& v, std::string& e)
+		const auto overlayLookup = [](const char* key, uint32_t size, uint32_t cl, VersionMap::FieldValue& v, std::string& e)
 		{
-			VersionMap::FieldRequest request = VersionMap::LoaderFieldRequest(key, sizeof(void*), -1);
+			VersionMap::FieldRequest request = VersionMap::LoaderFieldRequest(key, size, -1);
 			request.flags   = PLUGIN_FIELD_NATIVE;
 			request.builtCL = 0;
 			for (const Real::VersionMap::Index& index : Real::VersionMap::kFields)
@@ -1486,14 +1509,14 @@ int main()
 		};
 		VersionMap::FieldValue v;
 		std::string e;
-		Check(overlayLookup("FD3D12Resource::Heap", 127004, v, e) && v.offset == 0x30,
-			"overlay heap rows: FD3D12Resource::Heap served at 0x30 on CL-127004");
-		Check(overlayLookup("FD3D12Heap::Heap", 127004, v, e) && v.offset == 0x20,
-			"overlay heap rows: FD3D12Heap::Heap served at 0x20 on CL-127004");
-		for (const uint32_t cl : { 128786u, 129402u })
-			for (const char* key : { "FD3D12Resource::Heap", "FD3D12Heap::Heap" })
-				Check(!overlayLookup(key, cl, v, e) && e.find("no row for CL-" + std::to_string(cl) + ", and a native member has no other source") == 0,
-					(std::string("overlay heap rows: ") + key + " refused on CL-" + std::to_string(cl) + ", no compiled fallback").c_str());
+		for (const ChainRow& m : kChain)
+		{
+			for (const uint32_t cl : { 127004u, 129402u })
+				Check(overlayLookup(m.key, m.size, cl, v, e) && v.offset == m.offset && v.size == m.size,
+					(std::string("chain rows: ") + m.key + " served on CL-" + std::to_string(cl)).c_str());
+			Check(!overlayLookup(m.key, m.size, 128786, v, e) && e.find("no row for CL-128786, and a native member has no other source") == 0,
+				(std::string("chain rows: ") + m.key + " refused on CL-128786, no compiled fallback").c_str());
+		}
 		VersionMap::SetLiveFieldSource(nullptr);
 	}
 	// The real map's function rows for Build Windows Anywhere and Build Benches Anywhere: one function-start row per
@@ -1536,6 +1559,10 @@ int main()
 		oldRow = functionRow("MiniMap/FRenderCommandFence::FRenderCommandFence", 127004);
 		newRow = functionRow("MiniMap/FRenderCommandFence::FRenderCommandFence", 128786);
 		Check(oldRow && newRow && oldRow->fp == newRow->fp && oldRow->fp != 0, "real function rows: a site key's rows for both builds carry the one fingerprint");
+		oldRow = functionRow("ACrPlayerControllerBase::NativeOnInputCloseInGameMenu", 127004);
+		newRow = functionRow("ACrPlayerControllerBase::NativeOnInputCloseInGameMenu", 129402);
+		Check(oldRow && newRow && oldRow->rva == 0x07606ED0 && newRow->rva == 0x07652E60 && strcmp(oldRow->pattern, newRow->pattern) == 0 && !functionRow("ACrPlayerControllerBase::NativeOnInputCloseInGameMenu", 128786),
+			"real function rows: CloseInGameMenu has one pattern and a row on CL-127004 and CL-129402");
 		oldRow = functionRow("UCrBuildingStabilitySubsystem::OnCreateBuildingEntity", 128786);
 		newRow = functionRow("UCrBuildingStabilitySubsystem::OnDestroyBuildingEntity", 128786);
 		Check(oldRow && newRow && oldRow->rva == 0x074E7BF0 && newRow->rva == 0x074E7C30 && strcmp(oldRow->pattern, newRow->pattern) != 0,

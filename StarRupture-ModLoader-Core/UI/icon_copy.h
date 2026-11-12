@@ -107,6 +107,19 @@ namespace IconCopy
 	// The references one copy holds until its fence passes. resident is the
 	// pageable with a residency count of ours on it (the heap or the source),
 	// not a separate reference.
+	// The class check for an object found through a version map row: its vtable must be in
+	// expectedModule, the module that implements the interface for objects made on our own
+	// device. Ops::ModuleOf(address) gives the module an address is in, or null. Nothing is
+	// called on the object. An unknown expected module refuses everything.
+	template <class Ops>
+	inline bool VtableIsFrom(const void* object, const void* expectedModule)
+	{
+		if (!object || !expectedModule)
+			return false;
+		const void* const vtable = *static_cast<const void* const*>(object);
+		return vtable && Ops::ModuleOf(vtable) == expectedModule;
+	}
+
 	struct Hold
 	{
 		void* source   = nullptr;

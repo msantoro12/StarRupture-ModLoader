@@ -332,6 +332,65 @@ static void ChooseReducedOnInvalidHeap()
     CHECK(p.reduced != nullptr && std::strstr(p.reduced, "heap") != nullptr);
 }
 
+// Two stand-in modules, as address ranges: a vtable in one is "in" that module.
+static char g_moduleA[16];
+static char g_moduleB[16];
+static int  g_calls = 0;
+
+struct FakeModules
+{
+    static const void* ModuleOf(const void* address)
+    {
+        if (address >= g_moduleA && address < g_moduleA + sizeof(g_moduleA)) return g_moduleA;
+        if (address >= g_moduleB && address < g_moduleB + sizeof(g_moduleB)) return g_moduleB;
+        return nullptr;
+    }
+};
+
+// What the loader does with a pointer from a row: the call is made only when the check passes.
+struct FakeObject { const void* vtable; };
+
+static void CallIfOfModule(const FakeObject* object, const void* module)
+{
+    if (IconCopy::VtableIsFrom<FakeModules>(object, module))
+        ++g_calls;
+}
+
+static void VtableCheckRefusesAnotherModule()
+{
+    g_calls = 0;
+    const FakeObject inA = { &g_moduleA[0] };
+    const FakeObject inB = { &g_moduleB[4] };
+    CHECK(IconCopy::VtableIsFrom<FakeModules>(&inA, g_moduleA));
+    CHECK(IconCopy::VtableIsFrom<FakeModules>(&inB, g_moduleB));
+    CHECK(!IconCopy::VtableIsFrom<FakeModules>(&inA, g_moduleB));
+    CHECK(!IconCopy::VtableIsFrom<FakeModules>(&inB, g_moduleA));
+
+    // An object whose vtable is in another module is not called.
+    CallIfOfModule(&inA, g_moduleB);
+    CHECK(g_calls == 0);
+    CallIfOfModule(&inB, g_moduleB);
+    CHECK(g_calls == 1);
+}
+
+static void VtableCheckRefusesWhatItCannotPlace()
+{
+    g_calls = 0;
+    char elsewhere[4] = {};
+    const FakeObject unknown = { elsewhere };
+    const FakeObject nullVtable = { nullptr };
+    CHECK(!IconCopy::VtableIsFrom<FakeModules>(&unknown, g_moduleA));
+    CHECK(!IconCopy::VtableIsFrom<FakeModules>(&nullVtable, g_moduleA));
+    CHECK(!IconCopy::VtableIsFrom<FakeModules>(nullptr, g_moduleA));
+
+    // With no module to compare against, nothing passes.
+    const FakeObject inA = { &g_moduleA[0] };
+    CHECK(!IconCopy::VtableIsFrom<FakeModules>(&inA, nullptr));
+    CallIfOfModule(&unknown, nullptr);
+    CallIfOfModule(&inA, nullptr);
+    CHECK(g_calls == 0);
+}
+
 static void RingOldestFence()
 {
     FakeOps::Reset();
@@ -714,6 +773,8 @@ int main()
     RunTest("Choose: full protection with the rows", ChooseFullWithRows);
     RunTest("Choose: reduced without the rows, the copy still runs", ChooseReducedWithoutRows);
     RunTest("Choose: reduced when the heap does not check out", ChooseReducedOnInvalidHeap);
+    RunTest("VtableIsFrom: an object of another module is not called", VtableCheckRefusesAnotherModule);
+    RunTest("VtableIsFrom: an unplaceable vtable or no module refuses", VtableCheckRefusesWhatItCannotPlace);
     RunTest("Ring: the oldest fence in flight", RingOldestFence);
     RunTest("WaitBeforeStart: within both limits a copy starts at once", StartsAtOnceWithinBothLimits);
     RunTest("WaitBeforeStart: past the tick budget, wait for the oldest copy", OverTheTickBudgetWaitsForTheOldest);

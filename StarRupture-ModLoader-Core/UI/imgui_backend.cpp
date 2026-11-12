@@ -154,6 +154,35 @@ namespace
 	PluginTextureRecord g_pluginTextures[MAX_PLUGIN_TEXTURES] = {};
 	std::mutex          g_textureMutex;
 
+	// Set while this thread holds g_textureMutex through a TextureLock. A fault caught by
+	// ImGuiHost_TryCopyTextureLevel's handler unwinds without running destructors for sure, so the
+	// handler gives the lock back itself (ReleaseHeld); the destructor does the same on a normal exit,
+	// and whichever runs first clears the flag.
+	thread_local bool   g_textureLockHeld = false;
+
+	class TextureLock
+	{
+	public:
+		TextureLock()
+		{
+			g_textureMutex.lock();
+			g_textureLockHeld = true;
+		}
+		~TextureLock() { ReleaseHeld(); }
+		TextureLock(const TextureLock&)            = delete;
+		TextureLock& operator=(const TextureLock&) = delete;
+
+		// True when this thread held the lock and it is now released.
+		static bool ReleaseHeld()
+		{
+			if (!g_textureLockHeld)
+				return false;
+			g_textureLockHeld = false;
+			g_textureMutex.unlock();
+			return true;
+		}
+	};
+
 	// The copy queue of the saved files' upload, made on the first upload. Not the icon copy
 	// queue: it is used from the image cache's worker thread, under g_uploadMutex, which is taken
 	// before g_textureMutex. g_uploadRetire asks the worker to release it when cleanup could not.
@@ -1261,7 +1290,6 @@ static void CleanupD3D12Resources()
 		}
 	}
 	if (g_cmdList) { g_cmdList->Release();              g_cmdList = nullptr; }
-	g_cmdQueue = nullptr;        // borrowed from g_capturedQueue -- do NOT Release
 	if (g_fence) { g_fence->Release();                g_fence = nullptr; }
 	if (g_fenceEvent) { CloseHandle(g_fenceEvent);         g_fenceEvent = nullptr; }
 	if (g_rtvHeap) { g_rtvHeap->Release();              g_rtvHeap = nullptr; }
@@ -1288,6 +1316,7 @@ static void CleanupD3D12Resources()
 		}
 		g_retiringCount = 0;   // retiring records are inUse, so the loop above released them too
 		ReleaseGpuCopyContext();
+		g_cmdQueue = nullptr;  // borrowed from g_capturedQueue -- do NOT Release. Under the mutex: copies read it there
 	}
 	if (g_wicFactory) { g_wicFactory->Release(); g_wicFactory = nullptr; }
 
@@ -3022,6 +3051,7 @@ static void ReleaseIconCopies()
 		IMGUI_LOG_WARN("[ImGuiBackend] Icon copies may still be on the GPU at shutdown -- their resources are left to process exit");
 		q.ring.AbandonAll();
 		q.parked.AbandonAll();
+		g_shrink.Abandon();
 		g_readback.Abandon();
 		q = {};
 	}
@@ -3872,13 +3902,27 @@ namespace
 {
 	struct EngineSource
 	{
-		ID3D12Resource*       resource   = nullptr;  // no reference taken
+		// From the rows, a reference of ours is on it from the check until this goes out of scope,
+		// so it cannot go away before the copy takes its own. From the compiled path, none is taken.
+		ID3D12Resource*       resource   = nullptr;
+		bool                  owned      = false;
 		void*                 underlying = nullptr;  // the engine's FD3D12Resource
 		D3D12_RESOURCE_DESC   desc       = {};
 		D3D12_RESOURCE_STATES state      = D3D12_RESOURCE_STATE_COMMON;
+
+		EngineSource() = default;
+		EngineSource(const EngineSource&)            = delete;
+		EngineSource& operator=(const EngineSource&) = delete;
+		~EngineSource()
+		{
+			if (owned && resource)
+				resource->Release();
+		}
 	};
 
-	enum class Walk { Ok, NotYet, Refused };
+	// Unavailable: the rows do not lead to a resource of this device; no texture can be copied
+	// through them (logged once).
+	enum class Walk { Ok, NotYet, Refused, Unavailable };
 
 	// The part of a copy that is a single level: the whole resource (kAllLevels) or one level
 	// of it, with that level's size and the number of levels the new texture's view shows.
@@ -3928,9 +3972,56 @@ static int ReadEngineChainSEH(const void* texture, const EngineTextureChain& cha
 	}
 }
 
-// The ID3D12Resource the row FD3D12Resource::Resource gave, proven to be one: its vtable must be
-// in a loaded module and QueryInterface must accept it. 0 when it is, 1 when the pointer is null
-// (not made yet), 2 when it is not. *outResource holds no reference.
+// The module an ID3D12Resource made on our own device has its vtable in, found once, as the heap
+// probe does for heaps. A pointer read through the rows is never called unless its vtable is in it.
+namespace
+{
+	HMODULE        g_resourceModule = nullptr;
+	std::once_flag g_resourceModuleOnce;
+
+	struct ModuleOps
+	{
+		static const void* ModuleOf(const void* address)
+		{
+			HMODULE module = nullptr;
+			return GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+				static_cast<LPCWSTR>(address), &module) ? module : nullptr;
+		}
+	};
+}
+
+static void LookUpResourceModule()
+{
+	D3D12_HEAP_PROPERTIES heap = {};
+	heap.Type = D3D12_HEAP_TYPE_DEFAULT;
+	D3D12_RESOURCE_DESC desc = {};
+	desc.Dimension        = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+	desc.Width            = 4;
+	desc.Height           = 4;
+	desc.DepthOrArraySize = 1;
+	desc.MipLevels        = 1;
+	desc.Format           = DXGI_FORMAT_R8G8B8A8_UNORM;
+	desc.SampleDesc.Count = 1;
+	ID3D12Resource* probe = nullptr;
+	const HRESULT hr = g_device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc,
+		D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&probe));
+	if (SUCCEEDED(hr))
+	{
+		g_resourceModule = static_cast<HMODULE>(const_cast<void*>(ModuleOps::ModuleOf(*reinterpret_cast<void**>(probe))));
+		probe->Release();
+	}
+	if (!g_resourceModule)
+		IMGUI_LOG_WARN("[ImGuiBackend] Engine texture reads: a texture to check engine resources against could not be made "
+			"(0x%08X) -- engine textures are not copied this session", static_cast<unsigned>(hr));
+}
+
+// The ID3D12Resource the row FD3D12Resource::Resource gave, proven to be one before anything is called
+// on it: its vtable must be in the module that implements ID3D12Resource for a resource of our own
+// device, and then QueryInterface must accept it. 0 when it is, 1 when the pointer is null (not made
+// yet), 2 when it cannot be read, 3 when its vtable is in another module (a wrong row: nothing was
+// called). On 0 *outResource holds the reference QueryInterface gave, which the caller releases; it is
+// set before anything else is called on the resource, so a fault after it leaves the caller the
+// reference to release.
 // SEH only: no C++ objects with destructors in here.
 static int ResourceFromRowsSEH(void* native, ID3D12Resource** outResource, D3D12_RESOURCE_DESC* outDesc)
 {
@@ -3940,18 +4031,15 @@ static int ResourceFromRowsSEH(void* native, ID3D12Resource** outResource, D3D12
 	{
 		if (!IsValidUserPtr(native))
 			return 2;
-		void* vtable = *reinterpret_cast<void**>(native);
-		HMODULE module = nullptr;
-		if (!IsValidUserPtr(vtable) ||
-			!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-				static_cast<LPCWSTR>(vtable), &module))
+		if (!IsValidUserPtr(*reinterpret_cast<void**>(native)))
 			return 2;
+		if (!IconCopy::VtableIsFrom<ModuleOps>(native, g_resourceModule))
+			return 3;
 		ID3D12Resource* resource = nullptr;
 		if (FAILED(static_cast<IUnknown*>(native)->QueryInterface(IID_PPV_ARGS(&resource))) || !resource)
 			return 2;
-		*outDesc = resource->GetDesc();
-		resource->Release();
 		*outResource = resource;
+		*outDesc = resource->GetDesc();
 		return 0;
 	}
 	__except (AccessViolationOnly(GetExceptionCode()))
@@ -3985,12 +4073,23 @@ static Walk WalkEngineTexture(const void* texture, const char* caller, const cha
 
 	if (g_chain.fromRows)
 	{
-		switch (ResourceFromRowsSEH(native, &out->resource, &out->desc))
+		std::call_once(g_resourceModuleOnce, LookUpResourceModule);
+		const int found = ResourceFromRowsSEH(native, &out->resource, &out->desc);
+		out->owned = out->resource != nullptr;
+		switch (found)
 		{
 		case 0:
 			break;
 		case 1:
 			return Walk::NotYet;
+		case 3:
+		{
+			static std::atomic<bool> s_wrongLogged{ false };
+			if (!s_wrongLogged.exchange(true))
+				IMGUI_LOG_WARN("[ImGuiBackend] %s '%s': FD3D12Resource::Resource does not lead to a resource made by "
+					"this device's D3D12 -- engine textures are not copied (logged once)", caller, name ? name : "?");
+			return Walk::Unavailable;
+		}
 		default:
 			IMGUI_LOG_WARN("[ImGuiBackend] %s '%s': FD3D12Resource::Resource is not a D3D12 resource -- not copied",
 				caller, name ? name : "?");
@@ -4114,7 +4213,7 @@ static Prep BeginEngineCopy(const EngineSource& source, const D3D12_RESOURCE_DES
 	ID3D12Fence* residentFence = nullptr;  // a reference of ours while the request is waited for
 	UINT64       residentValue = 0;
 	{
-		std::lock_guard<std::mutex> lock(g_textureMutex);
+		TextureLock lock;
 		g_gpuCopyFailure = {};
 		if (g_shutdown || !g_cmdQueue)
 			g_gpuCopyFailure = { "shutdown", S_OK };
@@ -4201,7 +4300,7 @@ static Prep BeginEngineCopy(const EngineSource& source, const D3D12_RESOURCE_DES
 	const bool resident = WaitForFence(residentFence, residentValue, kIconResidentWaitMs);
 	if (!resident)
 	{
-		std::lock_guard<std::mutex> lock(g_textureMutex);
+		TextureLock lock;
 		ParkPendingHold(hold, residentFence, residentValue);
 		g_iconResidentBackoff.NoteTimeout(GetTickCount64());
 		static std::atomic<bool> s_slowLogged{ false };
@@ -4225,7 +4324,7 @@ static Commit CommitEngineCopy(IconCopy::PendingHold<IconCopyOps>& hold, const E
 	bool haveTick, uint64_t tick, const char* held, PluginTextureHandle* out)
 {
 	IMGUI_LOG_TRACE("[ImGuiBackend] %s: allocating SRV slot", caller);
-	std::lock_guard<std::mutex> lock(g_textureMutex);
+	TextureLock lock;
 
 	// Re-check for a name collision in case another thread registered the
 	// same name while we were doing the (unlocked) GPU resource walk above,
@@ -4419,7 +4518,7 @@ static bool IsBlockCompressed(DXGI_FORMAT format)
 
 // Try mode, for the image library: one level of an engine texture is copied into a texture of
 // that level's size, and the call never waits on the game thread.
-extern "C" __declspec(dllexport) int ImGuiHost_TryCopyTextureLevel(void* uTexture2D, const char* name, unsigned minSize, ImGuiHostCopyOut* out)
+static int TryCopyTextureLevelBody(void* uTexture2D, const char* name, unsigned minSize, ImGuiHostCopyOut* out)
 {
 	static constexpr const char* kCaller = "TryCopyTextureLevel";
 	if (!out)
@@ -4438,7 +4537,7 @@ extern "C" __declspec(dllexport) int ImGuiHost_TryCopyTextureLevel(void* uTextur
 	const uint64_t tick     = g_callbacks.GameTickCount ? g_callbacks.GameTickCount() : 0;
 	const bool     haveTick = tick != 0;
 	{
-		std::lock_guard<std::mutex> lock(g_textureMutex);
+		TextureLock lock;
 		if (g_iconCopy.fence)
 		{
 			ReclaimIconCopies();
@@ -4456,9 +4555,10 @@ extern "C" __declspec(dllexport) int ImGuiHost_TryCopyTextureLevel(void* uTextur
 	EngineSource source;
 	switch (WalkEngineTexture(uTexture2D, kCaller, name, &source))
 	{
-	case Walk::Ok:      break;
-	case Walk::NotYet:  return ImGuiHostCopy_NotYet;
-	default:            return ImGuiHostCopy_Failed;
+	case Walk::Ok:          break;
+	case Walk::NotYet:      return ImGuiHostCopy_NotYet;
+	case Walk::Unavailable: return ImGuiHostCopy_Unavailable;
+	default:                return ImGuiHostCopy_Failed;
 	}
 
 	const IconCopy::LevelPick pick = IconCopy::PickCopyLevel(static_cast<uint32_t>(source.desc.Width), source.desc.Height,
@@ -4498,6 +4598,46 @@ extern "C" __declspec(dllexport) int ImGuiHost_TryCopyTextureLevel(void* uTextur
 	default:
 		return ImGuiHostCopy_Failed;
 	}
+}
+
+// A fault in the copy is caught here, in the host, where the texture lock is given back before the
+// caller sees it: a handler further out could not release a lock whose destructor did not run. A fault
+// with the lock held leaves the copy state unknown, so copies are turned off for the session.
+static int CopyFaultFilter(DWORD code, DWORD* outCode)
+{
+	*outCode = code;
+	return (code == EXCEPTION_ACCESS_VIOLATION || code == EXCEPTION_IN_PAGE_ERROR) ? EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH;
+}
+
+// SEH only: no C++ objects with destructors in here.
+static int TryCopyTextureLevelGuardedSEH(void* uTexture2D, const char* name, unsigned minSize, ImGuiHostCopyOut* out)
+{
+	DWORD code = 0;
+	__try
+	{
+		return TryCopyTextureLevelBody(uTexture2D, name, minSize, out);
+	}
+	__except (CopyFaultFilter(GetExceptionCode(), &code))
+	{
+		*out = {};
+		if (g_textureLockHeld)
+		{
+			g_iconCopyOff = true;
+			TextureLock::ReleaseHeld();
+			IMGUI_LOG_ERROR("[ImGuiBackend] TryCopyTextureLevel: exception 0x%08lX while copying -- no more engine textures are copied this session",
+				code);
+			return ImGuiHostCopy_Unavailable;
+		}
+		IMGUI_LOG_WARN("[ImGuiBackend] TryCopyTextureLevel: exception 0x%08lX -- not copied", code);
+		return ImGuiHostCopy_Failed;
+	}
+}
+
+extern "C" __declspec(dllexport) int ImGuiHost_TryCopyTextureLevel(void* uTexture2D, const char* name, unsigned minSize, ImGuiHostCopyOut* out)
+{
+	if (!out)
+		return ImGuiHostCopy_Unavailable;
+	return TryCopyTextureLevelGuardedSEH(uTexture2D, name, minSize, out);
 }
 
 // The shrink of the image library: draws a texture the copy above made into a new texture at the
@@ -4566,7 +4706,7 @@ extern "C" __declspec(dllexport) int ImGuiHost_ShrinkTexture(PluginTextureHandle
 	sourceResource->AddRef();
 	hold.Get().source = sourceResource;
 	hold.Get().dest   = g_shrink.Record(list, static_cast<uint32_t>(entry), sourceResource,
-		ResolveTypelessForSRV(sourceDesc.Format), target, failure);
+		ImageShrink::RawViewFormat(ResolveTypelessForSRV(sourceDesc.Format)), target, failure);
 	if (!hold.Get().dest)
 	{
 		g_gpuCopyFailure = { failure.step, failure.hr };
@@ -4597,6 +4737,9 @@ extern "C" __declspec(dllexport) int ImGuiHost_ShrinkTexture(PluginTextureHandle
 	if (!GpuCopyStep("Signal", g_cmdQueue->Signal(q.fence, value)))
 	{
 		hold.Abandon();
+		// The list has run and its copy-out may still be in flight; copies are off from here, so no
+		// later list records into this slot, and giving it back keeps it from being taken for good.
+		g_readback.Cancel(readback);
 		g_iconCopyOff = true;
 		IMGUI_LOG_WARN("[ImGuiBackend] A shrink was submitted but its fence could not be signalled -- "
 			"no more engine textures are copied this session");
@@ -5413,7 +5556,11 @@ extern "C" __declspec(dllexport) void ImGuiHost_Shutdown()
 			*g_eclVtableSlot = reinterpret_cast<void*>(g_originalECL);
 			VirtualProtect(g_eclVtableSlot, sizeof(void*), oldProtect, &oldProtect);
 			g_eclVtableSlot = nullptr;
-			g_originalECL = nullptr;
+			{
+				// Copies call it under this mutex.
+				std::lock_guard<std::mutex> lock(g_textureMutex);
+				g_originalECL = nullptr;
+			}
 		}
 
 		// Restore the CreateSwapChainForHwnd vtable entry.

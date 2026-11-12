@@ -32,6 +32,24 @@ namespace ImageShrink
 		HRESULT     hr   = S_OK;
 	};
 
+	// The format a source is viewed as for the shrink. The pass averages and stores raw values, as
+	// it does for a typeless source, so an sRGB source is viewed as its UNORM twin; an sRGB view
+	// would decode to linear first and the stored image would come out darker.
+	inline DXGI_FORMAT RawViewFormat(DXGI_FORMAT format)
+	{
+		switch (format)
+		{
+		case DXGI_FORMAT_R8G8B8A8_UNORM_SRGB: return DXGI_FORMAT_R8G8B8A8_UNORM;
+		case DXGI_FORMAT_B8G8R8A8_UNORM_SRGB: return DXGI_FORMAT_B8G8R8A8_UNORM;
+		case DXGI_FORMAT_B8G8R8X8_UNORM_SRGB: return DXGI_FORMAT_B8G8R8X8_UNORM;
+		case DXGI_FORMAT_BC1_UNORM_SRGB:      return DXGI_FORMAT_BC1_UNORM;
+		case DXGI_FORMAT_BC2_UNORM_SRGB:      return DXGI_FORMAT_BC2_UNORM;
+		case DXGI_FORMAT_BC3_UNORM_SRGB:      return DXGI_FORMAT_BC3_UNORM;
+		case DXGI_FORMAT_BC7_UNORM_SRGB:      return DXGI_FORMAT_BC7_UNORM;
+		default:                              return format;
+		}
+	}
+
 	class Gpu
 	{
 	public:
@@ -40,6 +58,8 @@ namespace ImageShrink
 		// shrink that may still be on the GPU needs a slot of its own.
 		bool Create(ID3D12Device* device, uint32_t slots, Failure& failure);
 		void Release();
+		// The GPU may still be reading the descriptors: leave everything to process exit.
+		void Abandon();
 		bool Ready() const { return m_pipeline != nullptr; }
 
 		// Records the shrink of `source` (a 2D texture in the pixel-shader-resource

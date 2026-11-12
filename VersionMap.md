@@ -222,7 +222,8 @@ running CL, keyed `Class::Member`, and the loader asks for it by name; none is c
 | `FD3D12Heap::Heap` | The `ID3D12Heap` |
 
 The first six are the chain from a texture to its resource. The last two are the heap pair that checks
-the memory is resident while a texture is copied. Rows exist for CL-127004 and CL-129402.
+the memory is resident while a texture is copied. Rows exist for the game builds the loader lists in
+`hooks/game/version_map.generated.h`.
 
 A build without the whole chain gets no image from the image library; mods show a placeholder. A build
 without the two heap rows makes the resource resident instead of its heap while the copy runs.

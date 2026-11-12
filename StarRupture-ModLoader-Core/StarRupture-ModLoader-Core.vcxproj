@@ -537,6 +537,7 @@
     <ClInclude Include="utils\pak_list.h" />
     <ClInclude Include="utils\thread_utils.h" />
     <ClInclude Include="utils\mem_utils.h" />
+    <ClInclude Include="utils\engine_call_utils.h" />
     <ClInclude Include="core\globals.h" />
     <ClInclude Include="core\startup_utils.h" />
     <ClInclude Include="core\version_check.h" />

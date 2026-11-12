@@ -447,6 +447,9 @@
     <ClInclude Include="utils\mem_utils.h">
       <Filter>Source Files\utils</Filter>
     </ClInclude>
+    <ClInclude Include="utils\engine_call_utils.h">
+      <Filter>Source Files\utils</Filter>
+    </ClInclude>
     <ClInclude Include="core\globals.h">
       <Filter>Source Files\core</Filter>
     </ClInclude>

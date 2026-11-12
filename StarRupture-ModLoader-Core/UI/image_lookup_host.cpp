@@ -7,6 +7,7 @@
 #include "hooks/game/object_lookup/object_lookup.h"
 #include "hooks/game/object_properties/object_properties.h"
 #include "logging/log.h"
+#include "utils/engine_call_utils.h"
 #include "utils/game_thread_dispatch.h"
 #include "Engine_classes.hpp"
 #include "Engine_parameters.hpp"
@@ -39,26 +40,6 @@ namespace ImageLookup
 		// on every build.
 		constexpr uint32_t kFuncNative = 0x400;
 
-		// A bad pointer inside the engine reads as an access violation or a page
-		// error. Anything else (a breakpoint, a stack overflow) is not ours to swallow.
-		int SehFilter(DWORD code)
-		{
-			return (code == EXCEPTION_ACCESS_VIOLATION || code == EXCEPTION_IN_PAGE_ERROR)
-				? EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH;
-		}
-
-		std::wstring Widen(const std::string& text)
-		{
-			if (text.empty())
-				return {};
-			const int length = MultiByteToWideChar(CP_UTF8, 0, text.c_str(), static_cast<int>(text.size()), nullptr, 0);
-			if (length <= 0)
-				return {};
-			std::wstring wide(static_cast<size_t>(length), L'\0');
-			MultiByteToWideChar(CP_UTF8, 0, text.c_str(), static_cast<int>(text.size()), wide.data(), length);
-			return wide;
-		}
-
 		// ---- Engine calls. SEH only: nothing in these owns an object that needs unwinding.
 
 		bool FindSEH(FindObject_t fn, SDK::UClass* cls, SDK::UObject* outer, const wchar_t* path, SDK::UObject** out)
@@ -68,7 +49,7 @@ namespace ImageLookup
 				*out = fn(cls, outer, path, false);
 				return true;
 			}
-			__except (SehFilter(GetExceptionCode()))
+			__except (EngineCall::SehFilter(GetExceptionCode()))
 			{
 				*out = nullptr;
 				return false;
@@ -82,7 +63,7 @@ namespace ImageLookup
 				*out = fn(nullptr, path);
 				return true;
 			}
-			__except (SehFilter(GetExceptionCode()))
+			__except (EngineCall::SehFilter(GetExceptionCode()))
 			{
 				*out = nullptr;
 				return false;
@@ -96,7 +77,7 @@ namespace ImageLookup
 				fn(package);
 				return true;
 			}
-			__except (SehFilter(GetExceptionCode()))
+			__except (EngineCall::SehFilter(GetExceptionCode()))
 			{
 				return false;
 			}
@@ -109,7 +90,7 @@ namespace ImageLookup
 				*out = fn(nullptr, path, 0, nullptr, nullptr);
 				return true;
 			}
-			__except (SehFilter(GetExceptionCode()))
+			__except (EngineCall::SehFilter(GetExceptionCode()))
 			{
 				*out = nullptr;
 				return false;
@@ -123,7 +104,7 @@ namespace ImageLookup
 				object->ProcessEvent(function, params);
 				return true;
 			}
-			__except (SehFilter(GetExceptionCode()))
+			__except (EngineCall::SehFilter(GetExceptionCode()))
 			{
 				return false;
 			}
@@ -230,7 +211,7 @@ namespace ImageLookup
 			{
 				return PathNameOf(object, out);
 			}
-			__except (SehFilter(GetExceptionCode()))
+			__except (EngineCall::SehFilter(GetExceptionCode()))
 			{
 				return false;
 			}
@@ -349,8 +330,8 @@ namespace ImageLookup
 					return ItemRead::Unavailable;
 
 				const Ref& ref = m_refs[index];
-				const std::wstring packagePath = Widen(ref.package);
-				const std::wstring defaultName = Widen("Default__" + ref.asset + "_C");
+				const std::wstring packagePath = EngineCall::Widen(ref.package);
+				const std::wstring defaultName = EngineCall::Widen("Default__" + ref.asset + "_C");
 				if (packagePath.empty() || defaultName.empty())
 					return ItemRead::Skipped;
 
@@ -434,7 +415,7 @@ namespace ImageLookup
 					*texture = resource;
 					return Brush::Texture;
 				}
-				__except (SehFilter(GetExceptionCode()))
+				__except (EngineCall::SehFilter(GetExceptionCode()))
 				{
 					*texture = nullptr;
 					return Brush::Fault;
@@ -467,7 +448,7 @@ namespace ImageLookup
 				out->serial = Hooks::GObjectWalk::AllocateOrReadSerialNumber(item);
 				return true;
 			}
-			__except (SehFilter(GetExceptionCode()))
+			__except (EngineCall::SehFilter(GetExceptionCode()))
 			{
 				return false;
 			}

@@ -9,6 +9,7 @@
 #include "hooks/game/scan_patterns.h"
 #include "logging/log.h"
 #include "memory_scanner/scanner.h"
+#include "utils/engine_call_utils.h"
 #include "Engine_classes.hpp"
 
 namespace ImagePump
@@ -19,15 +20,6 @@ namespace ImagePump
 		using LoadObject_t = SDK::UObject* (__fastcall*)(SDK::UClass*, SDK::UObject*, const wchar_t*, const wchar_t*,
 		                                                 uint32_t, void*, bool, const void*);
 
-		// A bad pointer inside the engine reads as an access violation or a page
-		// error. Anything else (a breakpoint, a stack overflow) is not ours to swallow.
-		int SehFilter(DWORD code, DWORD* out)
-		{
-			*out = code;
-			return (code == EXCEPTION_ACCESS_VIOLATION || code == EXCEPTION_IN_PAGE_ERROR)
-				? EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH;
-		}
-
 		bool FindSEH(FindObject_t fn, SDK::UClass* cls, const wchar_t* path, SDK::UObject** out, DWORD* code)
 		{
 			__try
@@ -35,7 +27,7 @@ namespace ImagePump
 				*out = fn(cls, nullptr, path, false);
 				return true;
 			}
-			__except (SehFilter(GetExceptionCode(), code))
+			__except (EngineCall::SehFilter(GetExceptionCode(), code))
 			{
 				return false;
 			}
@@ -48,7 +40,7 @@ namespace ImagePump
 				*out = fn(cls, nullptr, path, nullptr, 0, nullptr, false, nullptr);
 				return true;
 			}
-			__except (SehFilter(GetExceptionCode(), code))
+			__except (EngineCall::SehFilter(GetExceptionCode(), code))
 			{
 				return false;
 			}
@@ -61,22 +53,10 @@ namespace ImagePump
 				*result = UI::ImGuiBackend::TryCopyTextureLevel(texture, name, minSize, out);
 				return true;
 			}
-			__except (SehFilter(GetExceptionCode(), code))
+			__except (EngineCall::SehFilter(GetExceptionCode(), code))
 			{
 				return false;
 			}
-		}
-
-		std::wstring Widen(const std::string& text)
-		{
-			if (text.empty())
-				return {};
-			const int length = MultiByteToWideChar(CP_UTF8, 0, text.c_str(), static_cast<int>(text.size()), nullptr, 0);
-			if (length <= 0)
-				return {};
-			std::wstring wide(static_cast<size_t>(length), L'\0');
-			MultiByteToWideChar(CP_UTF8, 0, text.c_str(), static_cast<int>(text.size()), wide.data(), length);
-			return wide;
 		}
 
 		class EngineHost final : public Host
@@ -101,7 +81,7 @@ namespace ImagePump
 				if (!find || !textureClass)
 					return ReadResult::Unavailable;
 
-				const std::wstring path = Widen(objectPath);
+				const std::wstring path = EngineCall::Widen(objectPath);
 				if (path.empty())
 					return ReadResult::Failed;
 
@@ -148,7 +128,7 @@ namespace ImagePump
 				if (!load || !textureClass)
 					return LoadResult::Unsupported;
 
-				const std::wstring path = Widen(objectPath);
+				const std::wstring path = EngineCall::Widen(objectPath);
 				if (path.empty())
 					return LoadResult::Missing;
 

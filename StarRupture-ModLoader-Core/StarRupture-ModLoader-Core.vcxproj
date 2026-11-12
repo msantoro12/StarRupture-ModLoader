@@ -491,6 +491,8 @@
     <ClInclude Include="UI\plugin_panel_registry.h" />
     <ClInclude Include="UI\plugin_widget_registry.h" />
     <ClInclude Include="UI\image_library.h" />
+    <ClInclude Include="UI\image_lookup.h" />
+    <ClInclude Include="UI\image_lookup_host.h" />
     <ClInclude Include="UI\image_pump.h" />
     <ClInclude Include="UI\image_shrink.h" />
     <ClInclude Include="UI\plugin_call_tracker.h" />
@@ -707,6 +709,12 @@
       <ExcludedFromBuild Condition="'$(Configuration)' != 'Client Debug' And '$(Configuration)' != 'Client Release' And '$(Configuration)' != 'Local SDK Client Debug' And '$(Configuration)' != 'Local SDK Client Release'">true</ExcludedFromBuild>
     </ClCompile>
     <ClCompile Include="UI\image_library.cpp">
+      <ExcludedFromBuild Condition="'$(Configuration)' != 'Client Debug' And '$(Configuration)' != 'Client Release' And '$(Configuration)' != 'Local SDK Client Debug' And '$(Configuration)' != 'Local SDK Client Release'">true</ExcludedFromBuild>
+    </ClCompile>
+    <ClCompile Include="UI\image_lookup.cpp">
+      <ExcludedFromBuild Condition="'$(Configuration)' != 'Client Debug' And '$(Configuration)' != 'Client Release' And '$(Configuration)' != 'Local SDK Client Debug' And '$(Configuration)' != 'Local SDK Client Release'">true</ExcludedFromBuild>
+    </ClCompile>
+    <ClCompile Include="UI\image_lookup_host.cpp">
       <ExcludedFromBuild Condition="'$(Configuration)' != 'Client Debug' And '$(Configuration)' != 'Client Release' And '$(Configuration)' != 'Local SDK Client Debug' And '$(Configuration)' != 'Local SDK Client Release'">true</ExcludedFromBuild>
     </ClCompile>
     <ClCompile Include="UI\image_pump.cpp">

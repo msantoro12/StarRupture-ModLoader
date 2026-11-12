@@ -123,8 +123,7 @@ namespace ImageLibrary
 		// The next image to read, or false. The most recently seen first;
 		// requests not seen lately and outside every used set are dropped on
 		// the way. The image stays WAITING until one of the four calls below.
-		// With pathsOnly, item requests stay queued and are not handed out.
-		bool TakeNext(Request& out, bool pathsOnly = false);
+		bool TakeNext(Request& out);
 
 		// The read finished. Takes the copy and its size into the table, then
 		// evicts the images seen least recently until the caps hold again;
@@ -227,6 +226,11 @@ namespace ImageLibrary
 	// The loader's table. Handed to plugins as hooks->Images.
 	Library& Instance();
 	IPluginImages* GetInterface();
+
+	// What FromTexture calls: a texture to its image. Set once by the code that
+	// can read the engine; until then FromTexture gives 0.
+	using FromTextureFn = PluginImageId (*)(SDK::UTexture2D* texture);
+	void SetFromTexture(FromTextureFn fn);
 
 	// Drop what a plugin's set interest recorded. Plugin manager, before FreeLibrary.
 	void ForgetPlugin(const IPluginSelf* self);

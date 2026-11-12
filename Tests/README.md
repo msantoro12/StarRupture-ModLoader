@@ -363,3 +363,97 @@ build\tests\icon_copy_tests.exe
 ```
 
 It prints one line per test and exits 0 when every check passes.
+
+
+## ImageLibraryTests
+
+The image library table (`UI/image_library.cpp`): ids, states and the caps, with no GPU and no engine.
+It checks:
+
+- Names are normalised, ids are stable and never zero, and the table stops handing out ids when it is
+  full. A request keeps the name it was asked with.
+- The states follow the read (NONE, WAITING, READY, NO_IMAGE); asking for the state does not mark an
+  image as seen.
+- The order requests are served in: images seen lately first, then set members; requests nobody drew
+  are dropped.
+- The byte cap and the count cap evict the least recently seen image, equal stamps evict the lower id
+  first, a copy over the cap is refused, and an evicted image is asked for again when it is drawn.
+- Aliased ids are one image, `ReleaseAll` hands back every kept copy, and the plugin interface reaches
+  the same table.
+- Readers on another thread see a consistent state while the table changes.
+
+```
+msbuild Tests\ImageLibraryTests\ImageLibraryTests.vcxproj /p:Configuration="Client Release" /p:Platform=x64
+build\tests\image_library_tests.exe
+```
+
+It prints one line per test and exits 0 when every check passes.
+
+## ImagePumpTests
+
+The image pump (`UI/image_pump.cpp`), which reads, shrinks and publishes the images the library was
+asked for, against a fake host and a fake item list, so no GPU and no engine are needed. It checks:
+
+- Nothing happens before the GPU is up; the caps follow the video budget.
+- A started read is published when its copy is done; the shrink makes the stored size and counts the
+  levels; the temporary copy is let go once the shrink starts; a shrink with no room is tried again, and
+  one that fails ends as NONE.
+- Not yet and busy are requeued, a path not in memory is loaded then read, and the per-tick limits on
+  reads, loads and requests looked at hold.
+- Items are held until the item list knows them, then follow the icon's path. An item with no icon, a
+  placeholder icon or a placeholder path ends as NO_IMAGE; an item the game does not have ends as NONE.
+- Evicted copies are freed on the next tick, a lost GPU drops everything without freeing, and shutdown
+  frees what the library keeps.
+- Nothing is logged per tick.
+
+```
+msbuild Tests\ImagePumpTests\ImagePumpTests.vcxproj /p:Configuration="Client Release" /p:Platform=x64
+build\tests\image_pump_tests.exe
+```
+
+It prints one line per test and exits 0 when every check passes.
+
+## ImageLookupTests
+
+The rules behind the image lookups (`UI/image_lookup.cpp`), against a fake engine, so no game is needed.
+It checks:
+
+- Which textures are placeholders (the engine's white stand-ins), in every form a path comes in, and
+  that a texture with the word only in its name is not.
+- The item index: it is built in steps within a time budget, finds an item by name, and reports when
+  it is done or could not be built.
+- `FromTexture`: it works on the game thread only, answers from a bounded memory of textures it has seen,
+  and checks a texture's slot before it trusts it.
+
+```
+msbuild Tests\ImageLookupTests\ImageLookupTests.vcxproj /p:Configuration="Client Release" /p:Platform=x64
+build\tests\image_lookup_tests.exe
+```
+
+It prints one line per test and exits 0 when every check passes.
+
+## ImageShrinkTests
+
+The size, level and byte rules of the shrink (`UI/image_shrink.h`), with no GPU. It checks that a larger
+image is scaled to the stored size with its proportions kept, a smaller one keeps its own size, a side never
+shrinks to nothing, the level chain runs down to one pixel, and the bytes count every level.
+
+```
+msbuild Tests\ImageShrinkTests\ImageShrinkTests.vcxproj /p:Configuration="Client Release" /p:Platform=x64
+build\tests\image_shrink_tests.exe
+```
+
+## ImageShrinkHarness
+
+The shrink pass itself (`UI/image_shrink_gpu.cpp`) on a desktop D3D12 device, with no game, window or swap
+chain. Each case builds an image like the game's (BC3, BGRA or RGBA16F, with or without smaller levels),
+copies the level the loader would copy, shrinks it, reads the result back and checks the size, the number
+of levels and the colour on every level, and times the pass on the GPU.
+
+The run ends with the debug layer's error count. It needs the Windows Graphics Tools feature; without it
+the harness says the debug layer is not available and exits 1 even though its checks passed.
+
+```
+msbuild Tests\ImageShrinkHarness\ImageShrinkHarness.vcxproj /p:Configuration="Client Release" /p:Platform=x64
+build\tests\image_shrink_harness.exe
+```

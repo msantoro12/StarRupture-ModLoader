@@ -69,6 +69,8 @@ public:
     std::vector<PluginTextureHandle>   made;          // what each started shrink made, in order
     std::vector<PluginTextureHandle>   copiesFreed;   // temporary copies let go after a shrink; not in `freed`
     int                                shrinkCalls = 0;
+    int                                prepareCalls = 0;
+    size_t                             readsAtPrepare = 0;
 
     std::vector<std::string>           reads, loads, logs;
     std::vector<PluginTextureHandle>   freed;
@@ -122,6 +124,12 @@ public:
     {
         const auto it = copyStateOf.find(texture);
         return it == copyStateOf.end() ? copyState : it->second;
+    }
+
+    void PrepareShrink() override
+    {
+        ++prepareCalls;
+        readsAtPrepare = reads.size();
     }
 
     // The host's shrink: the stored size and the full chain of levels, in a new texture.
@@ -2148,9 +2156,99 @@ static void ANotYetImageIsGivenUpOnAfterAWhile()
     CHECK(rig.library.State(a) == PLUGIN_IMAGE_NONE);
 }
 
+// The shrink pass is set up on a thread of its own and answers Busy until then. However long that
+// takes, it is not the image's fault: the image is not given up on and the game's reads stay on.
+static void AShrinkBusyForLongDoesNotGiveUpOrSwitchReadsOff()
+{
+    Rig rig;
+    const PluginImageId a = rig.Loaded(kA);
+    rig.host.shrinkResult = ShrinkResult::Busy;
+    for (int i = 0; i < 6; ++i)
+    {
+        rig.Advance(5 * 1000);
+        rig.library.Get(a);   // still drawn
+        rig.Tick();
+    }
+    CHECK(rig.library.State(a) == PLUGIN_IMAGE_WAITING);   // 30 s, three times the not-yet limit
+    CHECK(rig.pump.GetStats().failed == 0);
+    CHECK(rig.host.reads.size() == 1);                     // the copy is kept, not read again
+    CHECK(LoggedCount(rig, "not read from the game for the rest of this session") == 0);
+
+    rig.host.shrinkResult = ShrinkResult::Started;
+    rig.Tick();
+    CHECK(rig.library.State(a) == PLUGIN_IMAGE_READY);
+
+    // Games reads are still on: another image is read.
+    const PluginImageId b = rig.Loaded(kB);
+    rig.Tick(3);
+    CHECK(rig.library.State(b) == PLUGIN_IMAGE_READY);
+}
+
+// The host is told once, before the first read of the game, so the shrink is ready by the first copy.
+static void TheShrinkIsPreparedOnceBeforeTheFirstGameRead()
+{
+    Rig rig;
+    rig.Tick(2);
+    CHECK(rig.host.prepareCalls == 0);   // nothing wants the game yet
+
+    rig.Loaded(kA);
+    rig.Loaded(kB);
+    rig.Tick(5);
+    CHECK(rig.host.prepareCalls == 1);
+    CHECK(rig.host.readsAtPrepare == 0);
+    CHECK(rig.host.reads.size() == 2);
+}
+
+static size_t SlowTickLines(const Rig& rig)
+{
+    size_t n = 0;
+    for (const std::string& line : rig.host.logs)
+        n += line.rfind("[Images] Slow pump tick", 0) == 0;
+    return n;
+}
+
+// A tick over 50 ms says which phase it spent the time in; short ticks say nothing.
+static void ASlowTickNamesItsSlowestPhase()
+{
+    Rig rig;
+    rig.Loaded(kA);
+    rig.Tick(3);
+    CHECK(SlowTickLines(rig) == 0);
+
+    rig.host.readCostUs = 80 * 1000;
+    rig.Loaded(kB);
+    rig.Tick();
+    CHECK(SlowTickLines(rig) == 1);
+    const std::string line = rig.host.logs.back();
+    CHECK(line.find("serving requests") != std::string::npos);
+    CHECK(line.find("80.0 ms of it") != std::string::npos);
+    CHECK(rig.pump.GetStats().longestTickUs >= 80 * 1000);
+}
+
+static void SlowTickLinesAreCapped()
+{
+    Rig rig;
+    rig.host.readCostUs = 60 * 1000;
+    std::vector<PluginImageId> ids;
+    for (int i = 0; i < 25; ++i)
+        ids.push_back(rig.Loaded(PathN(i).c_str()));
+    for (int t = 0; t < 40; ++t)
+    {
+        for (PluginImageId id : ids)
+            rig.library.Get(id);
+        rig.Tick();
+    }
+    CHECK(rig.host.reads.size() >= 25);
+    CHECK(SlowTickLines(rig) == kSlowTickLogs);
+}
+
 int main()
 {
     setvbuf(stdout, nullptr, _IONBF, 0);
+    RunTest("a shrink busy for long does not give up or switch reads off", AShrinkBusyForLongDoesNotGiveUpOrSwitchReadsOff);
+    RunTest("the shrink is prepared once before the first game read", TheShrinkIsPreparedOnceBeforeTheFirstGameRead);
+    RunTest("a slow tick names its slowest phase", ASlowTickNamesItsSlowestPhase);
+    RunTest("slow tick lines are capped", SlowTickLinesAreCapped);
     RunTest("nothing happens before the GPU is up", NothingBeforeTheGpuIsUp);
     RunTest("caps follow the video budget", CapsFollowTheVideoBudget);
     RunTest("a started read is published when the copy is done", AStartedReadIsPublishedWhenTheCopyIsDone);

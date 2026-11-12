@@ -21,6 +21,7 @@
 #include <wrl/client.h>
 
 #include <algorithm>
+#include <chrono>
 #include <climits>
 #include <cmath>
 #include <cstdlib>
@@ -28,6 +29,7 @@
 #include <cstring>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <vector>
 
 #pragma comment(lib, "d3d12")
@@ -873,6 +875,40 @@ static void RunUploadChecks(Context& c)
     upload.Release();
 }
 
+// The set-up as the loader does it: the shrink pass and the readback buffers are made on another
+// thread while the asker sees Busy, and the objects work when the thread has ended.
+static void RunSetupThreadChecks(Context& c, ID3D12QueryHeap* queries, ID3D12Resource* queryReadback, const Case& test)
+{
+    ImageShrink::Setup setup;
+    uint32_t generation = 0;
+    CHECK(setup.Get() == ImageShrink::Setup::Answer::Busy);
+    CHECK(setup.Begin(generation));
+
+    ImageShrink::Gpu made;
+    ImageReadback::Ring madeRing;
+    bool ok = false;
+    std::thread worker([&]
+    {
+        ImageShrink::Failure failure;
+        ok = made.Create(c.device.Get(), 1, failure) && madeRing.Create(c.device.Get(), kStoredSize);
+        setup.End(generation, ok);
+    });
+    while (setup.Get() == ImageShrink::Setup::Answer::Busy)
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    worker.join();
+
+    CHECK(ok);
+    CHECK(setup.Get() == ImageShrink::Setup::Answer::Ready);
+    CHECK(made.Ready());
+    CHECK(madeRing.Ready());
+    ImageShrink::Gpu gpu = std::move(made);
+    ImageReadback::Ring ring = std::move(madeRing);
+    CHECK(!made.Ready());
+    RunCase(c, gpu, ring, queries, queryReadback, test);
+    ring.Release();
+    gpu.Release();
+}
+
 static int RunChecks(Context& c)
 {
     ImageShrink::Gpu gpu;
@@ -916,6 +952,7 @@ static int RunChecks(Context& c)
     RunRingChecks(c, gpu, ring);
     RunSrgbChecks(c, gpu);
     RunUploadChecks(c);
+    RunSetupThreadChecks(c, queries.Get(), queryReadback.Get(), cases[0]);
 
     ring.Release();
     gpu.Release();

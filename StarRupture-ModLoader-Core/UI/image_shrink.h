@@ -5,6 +5,7 @@
 // here, so the rules are testable without a GPU; the pass that draws the copy
 // is in image_shrink_gpu.h.
 
+#include <atomic>
 #include <cstdint>
 
 namespace ImageShrink
@@ -66,4 +67,59 @@ namespace ImageShrink
 		}
 		return total;
 	}
+
+	// The one-time set-up of the shrink pass and its readback buffers (shader compile, pipeline
+	// state, buffers) happens on a thread of its own, never on the game or render thread. This is
+	// the state that thread and the callers share; every call is lock-free and none waits.
+	//
+	// A shrink looks with Get: Ready, Failed (the set-up failed; for the whole session), or Busy
+	// (not finished yet, the caller asks again later). Begin is true for the one caller that moves
+	// it from the start to running, and that caller starts the thread. The thread ends with
+	// End(generation, ok). Reset is for a device that went away or a shutdown: a set-up still
+	// running is out of date and its End is ignored, so nobody waits for it.
+	class Setup
+	{
+	public:
+		enum class Answer { Ready, Busy, Failed };
+
+		Answer Get() const
+		{
+			const int state = m_state.load(std::memory_order_acquire);
+			return state == kReady ? Answer::Ready : state == kFailed ? Answer::Failed : Answer::Busy;
+		}
+
+		bool Begin(uint32_t& generation)
+		{
+			int idle = kIdle;
+			if (!m_state.compare_exchange_strong(idle, kRunning, std::memory_order_acq_rel))
+				return false;
+			generation = m_generation.load(std::memory_order_acquire);
+			return true;
+		}
+
+		// True when this set-up is still the current one, and the caller is to publish what it made
+		// and log the outcome. False: it was reset meanwhile, or had already ended; drop the work.
+		bool End(uint32_t generation, bool ok)
+		{
+			if (generation != m_generation.load(std::memory_order_acquire))
+				return false;
+			int running = kRunning;
+			return m_state.compare_exchange_strong(running, ok ? kReady : kFailed, std::memory_order_acq_rel);
+		}
+
+		// A failure stays; anything else goes back to the start with a new generation.
+		void Reset()
+		{
+			m_generation.fetch_add(1, std::memory_order_acq_rel);
+			int state = m_state.load(std::memory_order_acquire);
+			while (state != kFailed && !m_state.compare_exchange_weak(state, kIdle, std::memory_order_acq_rel))
+			{
+			}
+		}
+
+	private:
+		static constexpr int kIdle = 0, kRunning = 1, kReady = 2, kFailed = 3;
+		std::atomic<int>      m_state{ kIdle };
+		std::atomic<uint32_t> m_generation{ 0 };
+	};
 }

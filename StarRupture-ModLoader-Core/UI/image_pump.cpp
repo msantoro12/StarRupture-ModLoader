@@ -38,37 +38,75 @@ namespace ImagePump
 			GpuGone();
 		}
 
+		// One clock read ends each phase and starts the next, so a slow tick can say which one it was.
 		const uint64_t begin = m_host.NowUs();
+		uint64_t phaseUs[kPhases] = {};
+		uint64_t mark = begin;
+		const auto endPhase = [&](Phase phase)
+		{
+			const uint64_t now = m_host.NowUs();
+			phaseUs[static_cast<size_t>(phase)] = now - mark;
+			mark = now;
+		};
 		m_library.SetNow(begin / 1000);
 
 		FreeDeferred();
+		endPhase(Phase::Free);
 		if (!m_gone)
 		{
 			Collect();
 			CollectFiles();
 		}
+		endPhase(Phase::Collect);
 		if (m_saver)
 			m_saver->Poll(begin / 1000);
+		endPhase(Phase::Save);
 		// The saved names and sets come in before anything is served, so no image is read from the
 		// game that a file would have answered.
 		const bool filesLoading = PollSource(begin / 1000);
+		endPhase(Phase::Files);
+		uint32_t loads = 0;
+		bool idle = false;
 		if (m_gone)
 			FailQueued();
 		else if (!filesLoading)
+			idle = Serve(loads);
+		endPhase(Phase::Serve);
+		if (!m_gone && !filesLoading)
 		{
-			uint32_t loads = 0;
-			const bool idle = Serve(loads);
 			StepItems(loads);
+			endPhase(Phase::Items);
 			Preload(idle, loads);
+			endPhase(Phase::Preload);
 		}
 
-		const uint64_t end = m_host.NowUs();
+		const uint64_t end = mark;
 		m_stats.longestTickUs = std::max(m_stats.longestTickUs, end - begin);
+		if (end - begin > kSlowTickUs)
+			LogSlowTick(end - begin, phaseUs);
 		if (end / 1000 >= m_nextSummaryMs)
 		{
 			m_nextSummaryMs = end / 1000 + kSummaryIntervalMs;
 			LogSummary();
 		}
+	}
+
+	// Names the phase that took most of a tick that ran long. Capped, so a bad stretch cannot fill the log.
+	void Pump::LogSlowTick(uint64_t tickUs, const uint64_t (&phaseUs)[kPhases])
+	{
+		if (m_slowTickLogs >= kSlowTickLogs)
+			return;
+		++m_slowTickLogs;
+		size_t longest = 0;
+		for (size_t i = 1; i < kPhases; ++i)
+			if (phaseUs[i] > phaseUs[longest])
+				longest = i;
+		static const char* const kNames[kPhases] = { "freeing images", "collecting reads", "saving files", "reading the cache folder",
+			"serving requests", "listing items", "preload" };
+		char line[160];
+		snprintf(line, sizeof(line), "[Images] Slow pump tick: %.1f ms, %.1f ms of it in %s",
+			static_cast<double>(tickUs) / 1000.0, static_cast<double>(phaseUs[longest]) / 1000.0, kNames[longest]);
+		m_host.Log(line);
 	}
 
 	void Pump::Start()
@@ -603,6 +641,13 @@ namespace ImagePump
 			m_library.Fail(request.id);
 			++m_stats.failed;
 			return Outcome::Done;
+		}
+
+		// The first image that has to come from the game: the shrink is set up from here on.
+		if (!m_shrinkPrepared)
+		{
+			m_shrinkPrepared = true;
+			m_host.PrepareShrink();
 		}
 
 		Copy copy;

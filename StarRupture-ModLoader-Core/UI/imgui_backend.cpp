@@ -2917,10 +2917,13 @@ namespace
 		IconCopy::Parked<IconCopyOps> parked;
 	};
 	IconCopyQueue            g_iconCopy;
-	// The shrink pass of the image library, on the same queue and ring. Made on the first shrink.
+	// The shrink pass of the image library, on the same queue and ring. Made on a thread of its own
+	// (StartShrinkSetup), published under the texture mutex.
 	ImageShrink::Gpu         g_shrink;
 	// The buffers the shrink's stored copy is read back into, for the disk cache.
 	ImageReadback::Ring      g_readback;
+	// Where that set-up stands; a shrink answers Busy until it has ended.
+	ImageShrink::Setup       g_shrinkSetup;
 	IconCopy::TickBudget     g_iconTickBudget;
 	IconCopy::ResidentBackoff g_iconResidentBackoff;  // mutex held
 
@@ -3032,9 +3035,17 @@ static bool CreateIconCopyQueue()
 // process exit.
 static void ReleaseIconCopies()
 {
+	// A shrink set-up still running is out of date from here: it drops what it made.
+	g_shrinkSetup.Reset();
+
 	IconCopyQueue& q = g_iconCopy;
 	if (!q.fence)
+	{
+		// The shrink pass can be made before the first copy; no list ever used it.
+		g_shrink.Release();
+		g_readback.Release();
 		return;
+	}
 
 	const bool done = WaitForFence(q.fence, q.ring.LastFence(), 1000) &&
 		(!q.residentFence || q.parked.AllDone(q.residentFence->GetCompletedValue()));
@@ -4640,6 +4651,114 @@ extern "C" __declspec(dllexport) int ImGuiHost_TryCopyTextureLevel(void* uTextur
 	return TryCopyTextureLevelGuardedSEH(uTexture2D, name, minSize, out);
 }
 
+// The one-time set-up of the shrink pass and the readback buffers: two shader compiles, the root
+// signature, the pipeline state and the buffers. It takes seconds on a first run, so it runs on a
+// thread of its own, started as soon as the image library needs the game's pictures. The thread
+// holds a reference to the device it was started for and builds into objects of its own; no lock is
+// held while it works. It takes the texture mutex once, at the end, to hand them over, and only if
+// that device is still the one in use. The host DLL is pinned until the thread has ended, so a
+// shutdown never waits for it and never unloads code it is running.
+namespace
+{
+	struct ShrinkSetupJob
+	{
+		ID3D12Device* device;
+		unsigned      maxSize;
+		uint32_t      generation;
+		HMODULE       module;
+	};
+
+	double MsSince(LONGLONG start)
+	{
+		LARGE_INTEGER now, frequency;
+		QueryPerformanceCounter(&now);
+		QueryPerformanceFrequency(&frequency);
+		return static_cast<double>(now.QuadPart - start) * 1000.0 / static_cast<double>(frequency.QuadPart);
+	}
+
+	DWORD WINAPI ShrinkSetupMain(void* argument)
+	{
+		ShrinkSetupJob job = *static_cast<ShrinkSetupJob*>(argument);
+		delete static_cast<ShrinkSetupJob*>(argument);
+		{
+			LARGE_INTEGER start;
+			QueryPerformanceCounter(&start);
+
+			ImageShrink::Gpu      shrink;
+			ImageReadback::Ring   readback;
+			ImageShrink::Failure  failure;
+			const bool shrinkMade   = shrink.Create(job.device, IconCopy::kMaxInFlight, failure);
+			const bool readbackMade = shrinkMade && readback.Create(job.device, job.maxSize);
+			const double ms = MsSince(start.QuadPart);
+
+			bool current = false;
+			{
+				std::lock_guard<std::mutex> lock(g_textureMutex);
+				if (g_device == job.device && !g_shutdown && g_initialized && g_shrinkSetup.End(job.generation, shrinkMade))
+				{
+					current = true;
+					if (shrinkMade)
+					{
+						g_shrink = std::move(shrink);
+						if (readbackMade)
+							g_readback = std::move(readback);
+					}
+				}
+			}
+
+			if (current)
+			{
+				IMGUI_LOG_INFO("[ImGuiBackend] Image shrink set-up finished in %.1f ms on a worker thread", ms);
+				if (!shrinkMade)
+					IMGUI_LOG_ERROR("[ImGuiBackend] ShrinkTexture: the shrink pass could not be made, failed at %s: 0x%08X -- no images are stored this session",
+						failure.step ? failure.step : "?", static_cast<unsigned>(failure.hr));
+				else if (!readbackMade)
+					IMGUI_LOG_WARN("[ImGuiBackend] ShrinkTexture: the readback buffers could not be made -- no images are saved to disk this session");
+			}
+			// What was not handed over is released here, before the device reference.
+		}
+		job.device->Release();
+		FreeLibraryAndExitThread(job.module, 0);
+	}
+}
+
+// Starts the set-up if it has not been started. Never waits. Mutex held.
+static void StartShrinkSetup(unsigned maxSize)
+{
+	if (!g_device || g_shutdown || !g_initialized)
+		return;
+	uint32_t generation = 0;
+	if (!g_shrinkSetup.Begin(generation))
+		return;
+
+	HMODULE module = nullptr;
+	if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS, reinterpret_cast<LPCWSTR>(&ShrinkSetupMain), &module))
+		module = nullptr;
+	ShrinkSetupJob* const job = module ? new ShrinkSetupJob{ g_device, maxSize, generation, module } : nullptr;
+	if (job)
+		g_device->AddRef();   // the thread's own reference; it releases it
+	HANDLE thread = job ? CreateThread(nullptr, 0, ShrinkSetupMain, job, 0, nullptr) : nullptr;
+	if (!thread)
+	{
+		if (job)
+			g_device->Release();
+		delete job;
+		if (module)
+			FreeLibrary(module);
+		g_shrinkSetup.End(generation, false);
+		IMGUI_LOG_ERROR("[ImGuiBackend] ShrinkTexture: the shrink set-up thread could not be started -- no images are stored this session");
+		return;
+	}
+	CloseHandle(thread);
+}
+
+// Starts the shrink pass set-up ahead of the first shrink. Any thread; never waits.
+extern "C" __declspec(dllexport) void ImGuiHost_PrepareShrink(unsigned maxSize)
+{
+	std::lock_guard<std::mutex> lock(g_textureMutex);
+	StartShrinkSetup(maxSize);
+}
+
 // The shrink of the image library: draws a texture the copy above made into a new texture at the
 // stored size, with every smaller level. The source is not touched again once this returns Started:
 // the ring holds it until the shrink has run, so the caller frees its handle at once.
@@ -4654,6 +4773,16 @@ extern "C" __declspec(dllexport) int ImGuiHost_ShrinkTexture(PluginTextureHandle
 	const PluginTextureRecord* src = ValidateHandle(source);
 	if (!src || !g_device || g_shutdown || !g_cmdQueue || !g_iconCopy.fence || g_iconCopyOff)
 		return ImGuiHostShrink_Failed;
+	StartShrinkSetup(maxSize);   // does nothing when it was started ahead of time
+	switch (g_shrinkSetup.Get())
+	{
+	case ImageShrink::Setup::Answer::Failed:
+		return ImGuiHostShrink_Failed;
+	case ImageShrink::Setup::Answer::Busy:
+		return ImGuiHostShrink_Busy;
+	default:
+		break;
+	}
 	if (!CopyDone(src))
 		return ImGuiHostShrink_Busy;
 
@@ -4663,28 +4792,6 @@ extern "C" __declspec(dllexport) int ImGuiHost_ShrinkTexture(PluginTextureHandle
 	const int slot  = AllocTextureSlot();
 	if (entry < 0 || slot < 0)
 		return ImGuiHostShrink_Busy;
-
-	static bool s_unavailable = false;
-	if (s_unavailable)
-		return ImGuiHostShrink_Failed;
-	if (!g_shrink.Ready())
-	{
-		ImageShrink::Failure failure;
-		if (!g_shrink.Create(g_device, IconCopy::kMaxInFlight, failure))
-		{
-			s_unavailable = true;
-			IMGUI_LOG_ERROR("[ImGuiBackend] %s: the shrink pass could not be made, failed at %s: 0x%08X -- no images are stored this session",
-				kCaller, failure.step ? failure.step : "?", static_cast<unsigned>(failure.hr));
-			return ImGuiHostShrink_Failed;
-		}
-	}
-	// A failure here only means no image is saved to disk.
-	static bool s_noReadback = false;
-	if (!g_readback.Ready() && !s_noReadback && !g_readback.Create(g_device, maxSize))
-	{
-		s_noReadback = true;
-		IMGUI_LOG_WARN("[ImGuiBackend] %s: the readback buffers could not be made -- no images are saved to disk this session", kCaller);
-	}
 
 	ID3D12Resource* const sourceResource = src->resource;
 	const D3D12_RESOURCE_DESC sourceDesc = sourceResource->GetDesc();

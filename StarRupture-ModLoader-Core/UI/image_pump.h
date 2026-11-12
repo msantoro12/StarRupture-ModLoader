@@ -52,6 +52,10 @@ namespace ImagePump
 
 	inline constexpr uint64_t kSummaryIntervalMs = 60 * 1000;
 
+	// A tick over this long names its slowest phase in the log, at most kSlowTickLogs times a session.
+	inline constexpr uint64_t kSlowTickUs   = 50 * 1000;
+	inline constexpr uint32_t kSlowTickLogs = 10;
+
 	// Preload asks for up to this many images that have files on a tick it runs: a file costs the
 	// game thread nothing but the request.
 	inline constexpr uint32_t kDiskPreloadPerTick = 8;
@@ -166,6 +170,9 @@ namespace ImagePump
 		virtual LoadResult Load(const std::string& objectPath) = 0;
 
 		virtual CopyState StateOf(PluginTextureHandle texture) = 0;
+		// The first game read is about to be asked for: lets the host get the shrink ready on a
+		// thread of its own, so it is done by the time the first copy is. Never waits.
+		virtual void PrepareShrink() {}
 		// Draws a finished copy into a new texture at the stored size, with every smaller
 		// level. Never waits. The source is kept alive on the GPU until the shrink has
 		// run, so the caller frees it right after Started.
@@ -227,6 +234,10 @@ namespace ImagePump
 
 		enum class StoreResult { Stored, Later, Failed };
 
+		// The parts of a tick, timed one after the other.
+		enum class Phase { Free, Collect, Save, Files, Serve, Items, Preload };
+		static constexpr size_t kPhases = 7;
+
 		// An item request the index cannot answer yet.
 		struct HeldItem
 		{
@@ -248,6 +259,7 @@ namespace ImagePump
 
 		void    Start();
 		void    GpuGone();
+		void    LogSlowTick(uint64_t tickUs, const uint64_t (&phaseUs)[kPhases]);
 		void    Collect();
 		void    CollectFiles();
 		bool    PollSource(uint64_t nowMs);
@@ -285,6 +297,8 @@ namespace ImagePump
 		bool m_off     = false;   // the game is not read any more this session; files still are
 		bool m_gone    = false;   // the GPU side went away: nothing may be freed
 		bool m_stopped = false;
+		bool m_shrinkPrepared = false;   // the host was told the first game read is coming
+		uint32_t m_slowTickLogs = 0;
 
 		std::vector<InFlight>                 m_inFlight;
 		std::vector<ImageLibrary::Released>   m_scratch;

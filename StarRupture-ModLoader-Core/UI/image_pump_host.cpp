@@ -189,6 +189,8 @@ namespace ImagePump
 				}
 			}
 
+			void PrepareShrink() override { UI::ImGuiBackend::PrepareShrink(ImageLibrary::kStoredSize); }
+
 			ShrinkResult Shrink(PluginTextureHandle source, Shrunk& out) override
 			{
 				ImGuiHostShrinkOut shrunk = {};

@@ -27,6 +27,7 @@ namespace
     // And this one: the image library calls it from the game thread, shutdown clears it.
     std::atomic<int  (*)(void*, const char*, unsigned, ImGuiHostCopyOut*)> g_tryCopyTextureLevelFn{ nullptr };
     std::atomic<int  (*)(PluginTextureHandle, unsigned, ImGuiHostShrinkOut*)> g_shrinkTextureFn{ nullptr };
+    std::atomic<void (*)(unsigned)>                 g_prepareShrinkFn{ nullptr };
     std::atomic<int  (*)(unsigned, unsigned char*, unsigned long long)> g_takeReadbackFn{ nullptr };
     // Called from the image cache's worker thread.
     std::atomic<int  (*)(unsigned, unsigned, unsigned, const unsigned char*, unsigned long long, ImGuiHostUploadOut*)> g_uploadTextureFn{ nullptr };
@@ -67,6 +68,7 @@ namespace UI::ImGuiBackend
         g_submitUiOverlayFn.store(reinterpret_cast<bool (*)(int, ImGuiUiOverlaySync*)>(GetProcAddress(g_hostDll, "ImGuiHost_SubmitUiOverlay")));
         g_tryCopyTextureLevelFn.store(reinterpret_cast<int (*)(void*, const char*, unsigned, ImGuiHostCopyOut*)>(GetProcAddress(g_hostDll, "ImGuiHost_TryCopyTextureLevel")));
         g_shrinkTextureFn.store(reinterpret_cast<int (*)(PluginTextureHandle, unsigned, ImGuiHostShrinkOut*)>(GetProcAddress(g_hostDll, "ImGuiHost_ShrinkTexture")));
+        g_prepareShrinkFn.store(reinterpret_cast<void (*)(unsigned)>(GetProcAddress(g_hostDll, "ImGuiHost_PrepareShrink")));
         g_takeReadbackFn.store(reinterpret_cast<int (*)(unsigned, unsigned char*, unsigned long long)>(GetProcAddress(g_hostDll, "ImGuiHost_TakeReadback")));
         g_uploadTextureFn.store(reinterpret_cast<int (*)(unsigned, unsigned, unsigned, const unsigned char*, unsigned long long, ImGuiHostUploadOut*)>(GetProcAddress(g_hostDll, "ImGuiHost_UploadTexture")));
         g_gpuReadyFn.store(reinterpret_cast<bool (*)()>(GetProcAddress(g_hostDll, "ImGuiHost_GpuReady")));
@@ -91,6 +93,7 @@ namespace UI::ImGuiBackend
         g_recordUiOverlayFn.store(nullptr);
         g_tryCopyTextureLevelFn.store(nullptr);
         g_shrinkTextureFn.store(nullptr);
+        g_prepareShrinkFn.store(nullptr);
         g_takeReadbackFn.store(nullptr);
         g_uploadTextureFn.store(nullptr);
         g_gpuReadyFn.store(nullptr);
@@ -166,6 +169,13 @@ namespace UI::ImGuiBackend
     {
         const auto fn = g_shrinkTextureFn.load();
         return fn ? fn(source, maxSize, out) : ImGuiHostShrink_Failed;
+    }
+
+    void PrepareShrink(unsigned maxSize)
+    {
+        const auto fn = g_prepareShrinkFn.load();
+        if (fn)
+            fn(maxSize);
     }
 
     int UploadTexture(unsigned width, unsigned height, unsigned levels, const unsigned char* pixels,

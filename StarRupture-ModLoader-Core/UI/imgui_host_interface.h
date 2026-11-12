@@ -181,7 +181,8 @@ IMGUI_HOST_API int                    ImGuiHost_TryCopyTextureLevel(void* uTextu
 //
 // Results:
 //   Started  the shrink is on the GPU; *out is filled in.
-//   Busy     the source copy has not finished, or no copy entry or texture slot is free. Ask again.
+//   Busy     the shrink pass is still being set up, the source copy has not finished, or no copy
+//            entry or texture slot is free. Ask again.
 //   Failed   the shrink cannot be made (not a texture this DLL made, the GPU side is gone, or the
 //            pass could not be built). Asking again does not help.
 enum ImGuiHostShrinkResult : int
@@ -201,6 +202,12 @@ struct ImGuiHostShrinkOut
 };
 
 IMGUI_HOST_API int                    ImGuiHost_ShrinkTexture(PluginTextureHandle source, unsigned maxSize, ImGuiHostShrinkOut* out);
+
+// Starts the one-time set-up of the shrink pass and the readback buffers (shader compile, pipeline
+// state, buffers) on a thread of its own, so the first ImGuiHost_ShrinkTexture does not have to.
+// maxSize is the one the shrinks will use. Does nothing when it is already started or done, or the
+// GPU side is not up. Never waits; any thread. Until the set-up has ended a shrink answers Busy.
+IMGUI_HOST_API void                   ImGuiHost_PrepareShrink(unsigned maxSize);
 
 // The pixels of a shrink's stored copy, for saving to disk. The shrink's command list also copied
 // every level into a readback buffer; this takes them once the GPU has finished. dest receives

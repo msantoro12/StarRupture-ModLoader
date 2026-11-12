@@ -65,6 +65,9 @@ namespace UI::ImGuiBackend
     // ImGuiHostShrinkResult it returns. ImGuiHostShrink_Failed when the host DLL is not loaded.
     int  ShrinkTexture(PluginTextureHandle source, unsigned maxSize, ImGuiHostShrinkOut* out);
 
+    // Starts the shrink pass set-up on a thread of its own; see ImGuiHost_PrepareShrink.
+    void PrepareShrink(unsigned maxSize);
+
     // The upload of a saved file; see ImGuiHost_UploadTexture. Not for the game or render thread.
     // ImGuiHostUpload_Failed when the host DLL is not loaded.
     int  UploadTexture(unsigned width, unsigned height, unsigned levels, const unsigned char* pixels,

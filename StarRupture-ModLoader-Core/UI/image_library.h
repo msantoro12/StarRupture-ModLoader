@@ -154,6 +154,41 @@ namespace ImageLibrary
 		// image in a set some plugin uses are not dropped for being unseen.
 		void AddToSets(PluginImageId id, uint32_t sets);
 
+		// ---- Sets and preload (pump) -----------------------------------------
+
+		// The union of the sets the plugins use now.
+		uint32_t UsedSets() const;
+
+		// A member of the sets: the image at a texture path, in the sets. Unlike
+		// Path it is not asked for, so it waits idle until preload reaches it or
+		// a plugin draws it. The same path always gives the same id.
+		PluginImageId PathInSet(const char* textureObjectPath, uint32_t sets);
+
+		// The next member of a used set that is not kept and not asked for, in the
+		// order the members were added and round the list, or false. It becomes
+		// WAITING and taken, and is answered like a request from TakeNext. An
+		// image no one has drawn is stamped as never seen, so it is the first to
+		// be evicted.
+		bool TakePreload(Request& out);
+
+		// A preload read that cannot be done now. The image goes back to idle, or
+		// into the queue if something has drawn it since.
+		void Defer(PluginImageId id);
+
+		// Whether any image drawn lately is WAITING (queued, being read, or held).
+		bool SeenWaiting() const;
+
+		// Whether preload may add another image: no image has had to be evicted
+		// yet, and one more full image fits under both caps.
+		bool PreloadHasRoom() const;
+
+		struct PreloadProgress
+		{
+			uint32_t queued = 0;   // members of used sets not kept yet
+			uint32_t done   = 0;   // members of used sets that are READY or have no image
+		};
+		PreloadProgress GetPreloadProgress() const;
+
 		// Every kept copy leaves the table, for the pump to free or drop (the
 		// loader is shutting down, or the device is gone). Those images read as
 		// NONE from then on. Appended to released.
@@ -202,11 +237,14 @@ namespace ImageLibrary
 		const Entry* Find(PluginImageId id) const;
 		Entry*       Resolve(Entry* e);
 		const Entry* Resolve(const Entry* e) const;
-		PluginImageId IdFor(Kind kind, const std::string& key, const char* name);
+		PluginImageId IdFor(Kind kind, const std::string& key, const char* name, bool ask = true);
 		void  Ask(Entry& e, PluginImageId id);   // lock held
 		void  Drain();                           // lock held
 		void  Trim(std::vector<Released>& evicted);   // lock held
 		bool  InSetUse(const Entry& e) const;    // lock held
+		uint32_t UsedSetsLocked() const;         // lock held
+		void  TagSets(Entry& e, PluginImageId id, uint32_t sets);   // lock held
+		static bool SeenLately(const Entry& e, uint64_t now);
 
 		std::atomic<Chunk*>               m_chunks[kMaxChunks];
 		std::atomic<uint32_t>             m_count{ 0 };
@@ -216,6 +254,9 @@ namespace ImageLibrary
 		mutable std::mutex                m_lock;
 		std::unordered_map<std::string, PluginImageId> m_ids;
 		std::vector<PluginImageId>        m_queue;
+		std::vector<PluginImageId>        m_setMembers;   // images tagged with a set, in the order tagged
+		size_t                            m_preloadCursor = 0;
+		bool                              m_capped = false;   // an image has been evicted for room
 		std::unordered_map<const IPluginSelf*, uint32_t> m_used;
 		uint64_t                          m_byteCap  = kByteCapMax;
 		uint32_t                          m_countCap = kCountCap;

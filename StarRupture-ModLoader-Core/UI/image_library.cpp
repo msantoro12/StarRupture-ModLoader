@@ -1,4 +1,5 @@
 #include "UI/image_library.h"
+#include "UI/image_shrink.h"
 
 #include <algorithm>
 #include <cstring>
@@ -149,7 +150,7 @@ namespace ImageLibrary
 		return const_cast<Library*>(this)->Resolve(const_cast<Entry*>(e));
 	}
 
-	PluginImageId Library::IdFor(Kind kind, const std::string& key, const char* name)
+	PluginImageId Library::IdFor(Kind kind, const std::string& key, const char* name, bool ask)
 	{
 		if (key.empty())
 			return 0;
@@ -175,10 +176,11 @@ namespace ImageLibrary
 		Entry& e = chunk->entries[index % kIdsPerChunk];
 		e.kind = kind;
 		e.name = kind == Kind::Item ? CanonicalName(name) : CanonicalPath(name);
-		e.lastSeen.store(m_now.load(std::memory_order_relaxed), std::memory_order_relaxed);
-		e.state.store(kWaiting, std::memory_order_relaxed);
-		e.queued = true;
-		m_queue.push_back(id);
+		e.lastSeen.store(ask ? m_now.load(std::memory_order_relaxed) : 0, std::memory_order_relaxed);
+		e.state.store(ask ? kWaiting : kIdle, std::memory_order_relaxed);
+		e.queued = ask;
+		if (ask)
+			m_queue.push_back(id);
 		m_ids.emplace(mapKey, id);
 		m_count.store(id, std::memory_order_release);
 		return id;
@@ -245,12 +247,39 @@ namespace ImageLibrary
 		m_now.store(nowMs, std::memory_order_relaxed);
 	}
 
-	bool Library::InSetUse(const Entry& e) const
+	uint32_t Library::UsedSetsLocked() const
 	{
 		uint32_t used = 0;
 		for (const auto& use : m_used)
 			used |= use.second;
-		return (e.sets & used) != 0;
+		return used;
+	}
+
+	uint32_t Library::UsedSets() const
+	{
+		std::lock_guard<std::mutex> lock(m_lock);
+		return UsedSetsLocked();
+	}
+
+	bool Library::InSetUse(const Entry& e) const
+	{
+		return (e.sets & UsedSetsLocked()) != 0;
+	}
+
+	bool Library::SeenLately(const Entry& e, uint64_t now)
+	{
+		const uint64_t seen = e.lastSeen.load(std::memory_order_relaxed);
+		return seen != 0 && (seen >= now || now - seen <= kSeenLatelyMs);
+	}
+
+	void Library::TagSets(Entry& e, PluginImageId id, uint32_t sets)
+	{
+		sets &= kKnownSets;
+		if (sets == 0)
+			return;
+		if (e.sets == 0)
+			m_setMembers.push_back(id);
+		e.sets |= sets;
 	}
 
 	void Library::Ask(Entry& e, PluginImageId id)
@@ -387,6 +416,7 @@ namespace ImageLibrary
 			if (m_bytes <= m_byteCap && m_kept <= m_countCap)
 				break;
 			Entry* e = Find(k.id);
+			m_capped = true;
 			evicted.push_back({ k.id, e->handle.load(std::memory_order_relaxed), e->bytes });
 			m_bytes -= e->bytes;
 			--m_kept;
@@ -447,7 +477,7 @@ namespace ImageLibrary
 			m_queue.erase(std::find(m_queue.begin(), m_queue.end(), from));
 			source->queued = false;
 		}
-		dest->sets |= source->sets;
+		TagSets(*dest, destId, source->sets);
 		const uint64_t seen = source->lastSeen.load(std::memory_order_relaxed);
 		if (seen > dest->lastSeen.load(std::memory_order_relaxed))
 			dest->lastSeen.store(seen, std::memory_order_relaxed);
@@ -462,8 +492,111 @@ namespace ImageLibrary
 	{
 		std::lock_guard<std::mutex> lock(m_lock);
 		Entry* e = Find(id);
-		if (e && (e = Resolve(e)) != nullptr)
-			e->sets |= sets & kKnownSets;
+		if (!e)
+			return;
+		const PluginImageId target = e->target.load(std::memory_order_relaxed);
+		if (target)
+		{
+			id = target;
+			e = Find(id);
+		}
+		if (e)
+			TagSets(*e, id, sets);
+	}
+
+	PluginImageId Library::PathInSet(const char* textureObjectPath, uint32_t sets)
+	{
+		const PluginImageId id = IdFor(Kind::Path, NormalizeObjectPath(textureObjectPath), textureObjectPath, false);
+		if (id != 0)
+			AddToSets(id, sets);
+		return id;
+	}
+
+	bool Library::TakePreload(Request& out)
+	{
+		std::lock_guard<std::mutex> lock(m_lock);
+		const uint32_t used = UsedSetsLocked();
+		const size_t count = m_setMembers.size();
+		for (size_t step = 0; step < count; ++step)
+		{
+			const size_t slot = (m_preloadCursor + step) % count;
+			const PluginImageId id = m_setMembers[slot];
+			Entry* e = Find(id);
+			if ((e->sets & used) == 0 || e->target.load(std::memory_order_relaxed) != 0 || e->queued || e->taken)
+				continue;
+			int32_t idle = kIdle;
+			if (!e->state.compare_exchange_strong(idle, kWaiting, std::memory_order_acq_rel))
+				continue;
+
+			m_preloadCursor = slot + 1;
+			e->taken = true;
+			out.id = id;
+			out.kind = e->kind;
+			out.name = e->name;
+			return true;
+		}
+		return false;
+	}
+
+	void Library::Defer(PluginImageId id)
+	{
+		std::lock_guard<std::mutex> lock(m_lock);
+		Entry* e = Find(id);
+		if (!e || !e->taken)
+			return;
+		e->taken = false;
+		if (SeenLately(*e, m_now.load(std::memory_order_relaxed)))
+		{
+			e->queued = true;
+			m_queue.push_back(id);
+		}
+		else
+		{
+			e->state.store(kIdle, std::memory_order_release);
+		}
+	}
+
+	bool Library::SeenWaiting() const
+	{
+		const uint64_t now = m_now.load(std::memory_order_relaxed);
+		const uint32_t count = m_count.load(std::memory_order_acquire);
+		for (PluginImageId id = 1; id <= count; ++id)
+		{
+			const Entry* e = Find(id);
+			if (e->state.load(std::memory_order_acquire) == kWaiting && e->target.load(std::memory_order_relaxed) == 0
+				&& SeenLately(*e, now))
+				return true;
+		}
+		return false;
+	}
+
+	bool Library::PreloadHasRoom() const
+	{
+		static const uint64_t kImageBytes = ImageShrink::Bytes({ kStoredSize, kStoredSize }, ImageShrink::LevelCount(kStoredSize, kStoredSize));
+		std::lock_guard<std::mutex> lock(m_lock);
+		return !m_capped && m_kept < m_countCap && m_bytes + kImageBytes <= m_byteCap;
+	}
+
+	Library::PreloadProgress Library::GetPreloadProgress() const
+	{
+		std::lock_guard<std::mutex> lock(m_lock);
+		const uint32_t used = UsedSetsLocked();
+		PreloadProgress progress;
+		for (const PluginImageId id : m_setMembers)
+		{
+			const Entry* e = Find(id);
+			if ((e->sets & used) == 0 || e->target.load(std::memory_order_relaxed) != 0)
+				continue;
+			switch (e->state.load(std::memory_order_relaxed))
+			{
+			case kIdle:
+			case kWaiting:  ++progress.queued; break;
+			case kReady:
+			case kNoImage:  ++progress.done; break;
+			default: break;
+			}
+		}
+		return progress;
 	}
 
 	void Library::ReleaseAll(std::vector<Released>& released)

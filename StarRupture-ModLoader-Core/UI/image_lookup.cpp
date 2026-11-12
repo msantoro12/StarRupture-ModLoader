@@ -1,6 +1,7 @@
 #include "UI/image_lookup.h"
 
 #include <algorithm>
+#include <set>
 
 namespace ImageLookup
 {
@@ -77,6 +78,15 @@ namespace ImageLookup
 			return false;
 		texturePath = it->second;
 		return true;
+	}
+
+	std::vector<std::string> ItemIndex::TexturePaths() const
+	{
+		std::set<std::string> paths;
+		for (const auto& item : m_items)
+			if (!item.second.empty() && !IsPlaceholderImage(item.second.c_str()))
+				paths.insert(item.second);
+		return std::vector<std::string>(paths.begin(), paths.end());
 	}
 
 	// ---- Textures --------------------------------------------------------------

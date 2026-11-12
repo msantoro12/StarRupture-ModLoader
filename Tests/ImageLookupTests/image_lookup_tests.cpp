@@ -272,6 +272,26 @@ static void AStepKnowsWhenTheListIsDone()
     CHECK(empty.index.GetState() == ItemIndex::State::Done);
 }
 
+static void TheTexturePathsAreSortedOnceAndSkipTheEmptyAndPlaceholders()
+{
+    IndexRig rig;
+    rig.items.Add("Item_B", "/Game/UI/T_B.T_B");
+    rig.items.Add("Item_A", "/Game/UI/T_A.T_A");
+    rig.items.Add("Item_A2", "/Game/UI/T_A.T_A");
+    rig.items.Add("Item_Empty", "", ItemRead::NoIcon);
+    rig.items.Add("Item_White", "/Game/UI/Icons/T_NoItem_White_Icon.T_NoItem_White_Icon");
+    rig.items.Add("Item_Broken", "", ItemRead::Skipped);
+    rig.Step();
+
+    const std::vector<std::string> paths = rig.index.TexturePaths();
+    CHECK(paths.size() == 2);
+    CHECK(paths.size() == 2 && paths[0] == "/Game/UI/T_A.T_A" && paths[1] == "/Game/UI/T_B.T_B");
+
+    IndexRig none;
+    none.Step();
+    CHECK(none.index.TexturePaths().empty());
+}
+
 // ---------------------------------------------------------------------------
 // Textures
 
@@ -466,6 +486,7 @@ int main()
     RunTest("a step reads at least one item", AStepReadsAtLeastOneItem);
     RunTest("the budget is three milliseconds", TheBudgetIsTheLoadersThreeMilliseconds);
     RunTest("a step knows when the list is done", AStepKnowsWhenTheListIsDone);
+    RunTest("the texture paths are sorted once and skip the empty and placeholders", TheTexturePathsAreSortedOnceAndSkipTheEmptyAndPlaceholders);
     RunTest("a texture is the image of its path", ATextureIsTheImageOfItsPath);
     RunTest("a texture is asked for once in the engine", ATextureIsAskedForOnceInTheEngine);
     RunTest("a slot used by another object is looked up again", ASlotUsedByAnotherObjectIsLookedUpAgain);

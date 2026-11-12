@@ -6,8 +6,18 @@
 
 namespace ImagePump
 {
-	Pump::Pump(ImageLibrary::Library& library, Host& host, ImageLookup::ItemSource& items)
-		: m_library(library), m_host(host), m_items(items)
+	namespace
+	{
+		const char* PauseText(int pause)
+		{
+			static const char* const kText[] = { "no", "setting off", "no set in use", "reading the list", "image waiting on screen",
+				"game holds loaded images", "video memory", "cache full" };
+			return kText[pause];
+		}
+	}
+
+	Pump::Pump(ImageLibrary::Library& library, Host& host, ImageLookup::ItemSource& items, ImageLookup::ItemSource& buildings)
+		: m_library(library), m_host(host), m_items(items), m_buildings(buildings)
 	{
 	}
 
@@ -38,8 +48,10 @@ namespace ImagePump
 			FailQueued();
 		else
 		{
-			Serve();
-			StepItems();
+			uint32_t loads = 0;
+			const bool idle = Serve(loads);
+			const bool stepped = StepItems();
+			Preload(idle, stepped, loads);
 		}
 
 		const uint64_t end = m_host.NowUs();
@@ -166,9 +178,10 @@ namespace ImagePump
 		return StoreResult::Stored;
 	}
 
-	void Pump::Serve()
+	// True when no on-demand request was looked at, so the tick is free for preload.
+	bool Pump::Serve(uint32_t& loads)
 	{
-		uint32_t reads = 0, loads = 0, attempts = 0;
+		uint32_t reads = 0, attempts = 0;
 		m_later.clear();
 
 		ImageLibrary::Request request;
@@ -197,24 +210,143 @@ namespace ImagePump
 			m_library.Requeue(id);
 		if (m_off)
 			FailQueued();
+		return attempts == 0;
 	}
 
 	// Reads the next slice of the item index while an item is waiting, and
-	// answers the waiting items it now knows.
-	void Pump::StepItems()
+	// answers the waiting items it now knows. True when it read a slice.
+	bool Pump::StepItems()
 	{
 		if (m_held.empty())
-			return;
+			return false;
 
 		ResolveHeld();
 		if (m_held.empty())
-			return;
+			return false;
 
 		const ImageLookup::ItemIndex::State before = m_items.GetState();
 		m_items.Step(ImageLookup::kItemBudgetUs, [this] { return m_host.NowUs(); });
 		if (before != ImageLookup::ItemIndex::State::Failed && m_items.GetState() == ImageLookup::ItemIndex::State::Failed)
 			m_host.Log("[Images] No item can be read on this build or in this session: item images stay unavailable");
 		ResolveHeld();
+		return true;
+	}
+
+	// ---- Preload ---------------------------------------------------------------
+
+	// One tick of preload: the lists of the sets in use are read (a slice a tick,
+	// one list at a time), and then, on one tick in kPreloadTickInterval and only
+	// while every rule holds, the next member of a set is read.
+	void Pump::Preload(bool idle, bool stepped, uint32_t& loads)
+	{
+		if (!m_host.PreloadEnabled())
+		{
+			m_pause = Pause::Off;
+			return;
+		}
+		const uint32_t used = m_library.UsedSets();
+		if (used == 0)
+		{
+			m_pause = Pause::NoSets;
+			return;
+		}
+
+		StepSets(used, stepped);
+
+		if (++m_preloadTick % kPreloadTickInterval != 0)
+			return;
+		if (!idle || m_library.SeenWaiting())
+			m_pause = Pause::Screen;
+		else if (!m_library.PreloadHasRoom())
+			m_pause = Pause::Full;
+		else if (GameHoldsTooMuch())
+			m_pause = Pause::GameHolds;
+		else if (VideoFull())
+			m_pause = Pause::VideoMemory;
+		else
+		{
+			ImageLibrary::Request request;
+			if (!m_library.TakePreload(request))
+			{
+				const bool unlisted = ((used & PLUGIN_IMAGE_SET_ITEMS) && !m_itemsListed)
+					|| ((used & PLUGIN_IMAGE_SET_BUILDINGS) && !m_buildingsListed);
+				m_pause = unlisted ? Pause::Listing : Pause::Running;
+				return;
+			}
+
+			m_pause = Pause::Running;
+			const Outcome outcome = Attempt(request, loads);
+			if (outcome == Outcome::Later || outcome == Outcome::Busy)
+				m_library.Defer(request.id);
+		}
+	}
+
+	// Reads a slice of the list of one set that is in use and not listed yet. A
+	// slice is read for one set a tick, and not on a tick the item index has
+	// already been stepped for an item that is waiting.
+	void Pump::StepSets(uint32_t used, bool stepped)
+	{
+		if ((used & PLUGIN_IMAGE_SET_ITEMS) && !m_itemsListed)
+			stepped = StepSet(m_items, PLUGIN_IMAGE_SET_ITEMS, m_itemsListed, stepped, "item") || stepped;
+		if ((used & PLUGIN_IMAGE_SET_BUILDINGS) && !m_buildingsListed)
+			StepSet(m_buildings, PLUGIN_IMAGE_SET_BUILDINGS, m_buildingsListed, stepped, "building");
+	}
+
+	// True when it read a slice. When the list is whole its images are added to
+	// the library as members of the set; when it cannot be made the set is left
+	// empty for the session.
+	bool Pump::StepSet(ImageLookup::ItemIndex& index, uint32_t set, bool& listed, bool stepped, const char* what)
+	{
+		using State = ImageLookup::ItemIndex::State;
+		bool read = false;
+		if (!stepped && (index.GetState() == State::Idle || index.GetState() == State::Scanning))
+		{
+			index.Step(ImageLookup::kItemBudgetUs, [this] { return m_host.NowUs(); });
+			read = true;
+		}
+
+		if (index.GetState() == State::Done)
+		{
+			size_t members = 0;
+			for (const std::string& path : index.TexturePaths())
+				members += m_library.PathInSet(path.c_str(), set) != 0;
+			listed = true;
+			m_host.Log(std::string("[Images] Preload set: ") + std::to_string(members) + " " + what + " images");
+		}
+		else if (index.GetState() == State::Failed)
+		{
+			listed = true;
+			m_host.Log(std::string("[Images] The ") + what + " list cannot be read here: " + what + " images are not preloaded");
+		}
+		return read;
+	}
+
+	// Whether the full-size images the library made the game load, and the game
+	// is taken to hold still, have reached the limit.
+	bool Pump::GameHoldsTooMuch()
+	{
+		const uint64_t nowMs = m_host.NowUs() / 1000;
+		m_heldLoads.erase(std::remove_if(m_heldLoads.begin(), m_heldLoads.end(),
+			[&](const HeldLoad& load) { return nowMs - load.atMs >= kPreloadHeldWindowMs; }), m_heldLoads.end());
+		uint64_t total = 0;
+		for (const HeldLoad& load : m_heldLoads)
+			total += load.bytes;
+		return total >= kPreloadHeldLimitBytes;
+	}
+
+	// Whether the adapter's local video memory in use is at the share of its
+	// budget that preload leaves alone. Asked once in kVideoCheckIntervalMs. An
+	// adapter that cannot be asked is taken to have room: the byte cap still holds.
+	bool Pump::VideoFull()
+	{
+		const uint64_t nowMs = m_host.NowUs() / 1000;
+		if (nowMs >= m_nextVideoCheckMs)
+		{
+			m_nextVideoCheckMs = nowMs + kVideoCheckIntervalMs;
+			uint64_t usage = 0, budget = 0;
+			m_videoFull = m_host.VideoMemory(usage, budget) && budget > 0 && usage * 100 >= budget * kPreloadVideoPercent;
+		}
+		return m_videoFull;
 	}
 
 	void Pump::ResolveHeld()
@@ -284,6 +416,7 @@ namespace ImagePump
 			switch (m_host.Load(request.name))
 			{
 			case LoadResult::Loaded:
+				m_causedLoad.insert(request.id);
 				result = m_host.Read(request.name, copy);
 				break;
 			case LoadResult::Missing:
@@ -302,6 +435,12 @@ namespace ImagePump
 		{
 		case ReadResult::Started:
 			m_inFlight.push_back({ request.id, copy });
+			if (m_causedLoad.erase(request.id))
+			{
+				const uint64_t width  = static_cast<uint64_t>(copy.sourceWidth > 0 ? copy.sourceWidth : copy.width);
+				const uint64_t height = static_cast<uint64_t>(copy.sourceHeight > 0 ? copy.sourceHeight : copy.height);
+				m_heldLoads.push_back({ m_host.NowUs() / 1000, width * height * ImageShrink::kBytesPerPixel });
+			}
 			return Outcome::Started;
 		case ReadResult::NotYet:
 			return Outcome::Later;
@@ -381,22 +520,27 @@ namespace ImagePump
 
 	void Pump::LogSummary()
 	{
+		const ImageLibrary::Library::PreloadProgress preload = m_library.GetPreloadProgress();
 		const bool changed = m_stats.published != m_lastLogged.published || m_stats.evicted != m_lastLogged.evicted
-			|| m_stats.failed != m_lastLogged.failed || m_stats.noImage != m_lastLogged.noImage;
+			|| m_stats.failed != m_lastLogged.failed || m_stats.noImage != m_lastLogged.noImage
+			|| preload.queued != m_lastPreload.queued || preload.done != m_lastPreload.done || m_pause != m_lastPreload.pause;
 		if (!changed)
 			return;
 		const uint64_t longestUs = m_stats.longestTickUs;
 		m_stats.longestTickUs = 0;
 		m_lastLogged = m_stats;
+		m_lastPreload = { preload.queued, preload.done, m_pause };
 
-		char line[256];
+		char line[384];
 		snprintf(line, sizeof(line),
-			"[Images] requests=%u published=%llu evicted=%llu failed=%llu noimage=%llu kept=%u (%.1f MB) longest pump tick=%.3f ms",
+			"[Images] requests=%u published=%llu evicted=%llu failed=%llu noimage=%llu kept=%u (%.1f MB) longest pump tick=%.3f ms"
+			" preload queued=%u done=%u paused=%s",
 			m_library.ImageCount(),
 			static_cast<unsigned long long>(m_stats.published), static_cast<unsigned long long>(m_stats.evicted),
 			static_cast<unsigned long long>(m_stats.failed), static_cast<unsigned long long>(m_stats.noImage),
 			m_library.CountKept(), static_cast<double>(m_library.BytesKept()) / (1024.0 * 1024.0),
-			static_cast<double>(longestUs) / 1000.0);
+			static_cast<double>(longestUs) / 1000.0,
+			preload.queued, preload.done, PauseText(static_cast<int>(m_pause)));
 		m_host.Log(line);
 	}
 }

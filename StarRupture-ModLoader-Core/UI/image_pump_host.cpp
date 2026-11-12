@@ -3,6 +3,7 @@
 
 #ifdef MODLOADER_CLIENT_BUILD
 
+#include "UI/global_settings.h"
 #include "UI/image_lookup_host.h"
 #include "UI/imgui_backend.h"
 #include "hooks/game/object_lookup/object_lookup.h"
@@ -66,6 +67,18 @@ namespace ImagePump
 
 			uint64_t LocalVideoBudget() override { return UI::ImGuiBackend::LocalVideoBudget(); }
 
+			bool PreloadEnabled() override { return UI::GlobalSettings::GetPreloadImages(); }
+
+			bool VideoMemory(uint64_t& usage, uint64_t& budget) override
+			{
+				unsigned long long used = 0, total = 0;
+				if (!UI::ImGuiBackend::LocalVideoMemory(&used, &total))
+					return false;
+				usage  = used;
+				budget = total;
+				return true;
+			}
+
 			uint64_t NowUs() override
 			{
 				static const LONGLONG frequency = []{ LARGE_INTEGER f; QueryPerformanceFrequency(&f); return f.QuadPart; }();
@@ -110,6 +123,8 @@ namespace ImagePump
 					out.texture = copy.texture;
 					out.width   = copy.width;
 					out.height  = copy.height;
+					out.sourceWidth  = copy.sourceWidth;
+					out.sourceHeight = copy.sourceHeight;
 					return ReadResult::Started;
 				case ImGuiHostCopy_NotYet:      return ReadResult::NotYet;
 				case ImGuiHostCopy_Busy:        return ReadResult::Busy;
@@ -185,7 +200,7 @@ namespace ImagePump
 		Pump& TheInstance()
 		{
 			static EngineHost* const host = new EngineHost();
-			static Pump* const pump = new Pump(ImageLibrary::Instance(), *host, ImageLookup::EngineItems());
+			static Pump* const pump = new Pump(ImageLibrary::Instance(), *host, ImageLookup::EngineItems(), ImageLookup::EngineBuildings());
 			return *pump;
 		}
 	}

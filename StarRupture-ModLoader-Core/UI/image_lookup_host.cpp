@@ -12,6 +12,7 @@
 #include "Engine_classes.hpp"
 #include "Engine_parameters.hpp"
 #include "AuItems_classes.hpp"
+#include "Chimera_classes.hpp"
 #include "AssetRegistry_classes.hpp"
 #include "AssetRegistry_parameters.hpp"
 
@@ -288,7 +289,27 @@ namespace ImageLookup
 			return params.ReturnValue;
 		}
 
-		class EngineItemSource final : public ItemSource
+		// What an icon brush holds: a texture, or something that is not one.
+		enum class Brush { Texture, Empty, Missing, Fault };
+
+		// The icon texture of an object whose icon is a brush with a ResourceObject
+		// in it. The texture is good for the call that made it only.
+		Brush IconOf(SDK::UObject* object, SDK::FProperty* icon, SDK::FProperty* iconResource, SDK::UObject** texture)
+		{
+			void* brush = OP::GetPropertyRawPtr(object, icon);
+			SDK::UObject* resource = nullptr;
+			if (!OP::GetObjectProperty(brush, iconResource, &resource) || !resource)
+				return Brush::Empty;
+			if (!resource->IsA(SDK::UTexture2D::StaticClass()))
+				return Brush::Empty;
+			*texture = resource;
+			return Brush::Texture;
+		}
+
+		// A list of assets from the asset registry, each read for its name and its
+		// icon. What differs between items and buildings is the registry class, the
+		// fields read and the object the fields are read from.
+		class EngineAssetSource : public ItemSource
 		{
 		public:
 			bool List() override
@@ -296,16 +317,22 @@ namespace ImageLookup
 				m_refs.clear();
 
 				std::string why;
-				if (!Prepare(&why))
+				if (!OP::IsReady())
+					why = "the game's reflection data is not ready";
+				else if (!PathNameUsable())
+					why = "the engine's path of an object cannot be used";
+				else if (Prepare(&why) && RegistryUsable(&why))
+					why.clear();
+				if (!why.empty())
 				{
-					LogToFile::Warn("[Images] The item list cannot be made here: %s", why.c_str());
+					LogToFile::Warn("[Images] The %s list cannot be made here: %s", Label(), why.c_str());
 					return false;
 				}
 
 				SDK::TArray<SDK::FAssetData> assets;
-				if (!GetAssetsByClass(L"/Script/AuItems", L"AuItemBlueprint", assets))
+				if (!GetAssetsByClass(RegistryPackage(), RegistryClass(), assets))
 				{
-					LogToFile::Warn("[Images] The asset registry gave no item list");
+					LogToFile::Warn("[Images] The asset registry gave no %s list", Label());
 					return false;
 				}
 				for (int i = 0; i < assets.Num(); ++i)
@@ -315,7 +342,7 @@ namespace ImageLookup
 					if (!ref.package.empty() && !ref.asset.empty())
 						m_refs.push_back(std::move(ref));
 				}
-				LogToFile::Info("[Images] Item list: %zu item blueprints", m_refs.size());
+				LogToFile::Info("[Images] %s list: %zu assets", Label(), m_refs.size());
 				return !m_refs.empty();
 			}
 
@@ -331,8 +358,8 @@ namespace ImageLookup
 
 				const Ref& ref = m_refs[index];
 				const std::wstring packagePath = EngineCall::Widen(ref.package);
-				const std::wstring defaultName = EngineCall::Widen("Default__" + ref.asset + "_C");
-				if (packagePath.empty() || defaultName.empty())
+				const std::wstring objectName = EngineCall::Widen(ObjectName(ref.asset));
+				if (packagePath.empty() || objectName.empty())
 					return ItemRead::Skipped;
 
 				// The package may be in memory already; if it is, make sure it is whole.
@@ -344,9 +371,9 @@ namespace ImageLookup
 
 				char name[256];
 				SDK::UObject* icon = nullptr;
-				const Brush brush = ReadItemSEH(package, defaultName.c_str(), name, static_cast<int>(sizeof(name)), &icon);
+				const Brush brush = ReadSEH(package, objectName.c_str(), name, static_cast<int>(sizeof(name)), &icon);
 				if (brush == Brush::Fault)
-					LogToFile::Warn("[Images] Exception reading the item %s", ref.asset.c_str());
+					LogToFile::Warn("[Images] Exception reading the %s %s", Label(), ref.asset.c_str());
 				if ((brush != Brush::Texture && brush != Brush::Empty) || !name[0])
 					return ItemRead::Skipped;
 
@@ -356,24 +383,36 @@ namespace ImageLookup
 				return PathNameSEH(icon, &out.texturePath) ? ItemRead::Icon : ItemRead::Skipped;
 			}
 
+		protected:
+			// The fields the source reads, found by name, and the registry calls it makes, checked.
+			virtual bool Prepare(std::string* why) = 0;
+			// The asset registry's class of the assets to list.
+			virtual const wchar_t* RegistryPackage() const = 0;
+			virtual const wchar_t* RegistryClass() const = 0;
+			// What the assets are called in the log.
+			virtual const char* Label() const = 0;
+			// The name of the object in the asset's package that holds the fields.
+			virtual std::string ObjectName(const std::string& asset) const = 0;
+			// The name (the building's asset name, the item's unique name) and the icon texture of
+			// the object. The texture is good for this call only.
+			virtual Brush ReadSEH(SDK::UPackage* package, const wchar_t* objectName, char* name, int nameSize,
+				SDK::UObject** texture) const = 0;
+
 		private:
 			struct Ref
 			{
-				std::string package;   // "/Game/..." the item blueprint's package
-				std::string asset;     // the blueprint's name
+				std::string package;   // "/Game/..." the asset's package
+				std::string asset;     // the asset's name
 			};
 
-			// What an item's icon brush holds: a texture, or something that is not one.
-			enum class Brush { Texture, Empty, Missing, Fault };
+			std::vector<Ref> m_refs;
+		};
 
-			// The fields the index reads, found by name, and the calls it makes checked.
-			bool Prepare(std::string* why)
+		class EngineItemSource final : public EngineAssetSource
+		{
+		protected:
+			bool Prepare(std::string* why) override
 			{
-				if (!OP::IsReady())
-				{
-					*why = "the game's reflection data is not ready";
-					return false;
-				}
 				SDK::UClass* itemClass = SDK::UAuItemDataBase::StaticClass();
 				if (!Nested(itemClass, "ItemIcon", "ResourceObject", &m_icon, &m_iconResource, OP::PropertyKind::Object, why))
 					return false;
@@ -383,37 +422,29 @@ namespace ImageLookup
 					*why = "UAuItemDataBase::UniqueItemName is not in the game's reflection data";
 					return false;
 				}
-				if (!PathNameUsable())
-				{
-					*why = "the engine's path of an object cannot be used";
-					return false;
-				}
-				return RegistryUsable(why);
+				return true;
 			}
 
-			// The unique name and the icon texture of the item whose default
-			// object is called defaultName in the package. The texture is
-			// good for this call only.
-			Brush ReadItemSEH(SDK::UPackage* package, const wchar_t* defaultName, char* name, int nameSize, SDK::UObject** texture) const
+			const wchar_t* RegistryPackage() const override { return L"/Script/AuItems"; }
+			const wchar_t* RegistryClass() const override { return L"AuItemBlueprint"; }
+			const char* Label() const override { return "Item"; }
+			std::string ObjectName(const std::string& asset) const override { return "Default__" + asset + "_C"; }
+
+			// The unique name and the icon texture of the item whose default object
+			// is called objectName in the package.
+			Brush ReadSEH(SDK::UPackage* package, const wchar_t* objectName, char* name, int nameSize, SDK::UObject** texture) const override
 			{
 				*texture = nullptr;
 				name[0] = '\0';
 				__try
 				{
 					SDK::UClass* itemClass = SDK::UAuItemDataBase::StaticClass();
-					SDK::UObject* object = FindByName(itemClass, package, defaultName);
+					SDK::UObject* object = FindByName(itemClass, package, objectName);
 					if (!object || !object->IsA(itemClass))
 						return Brush::Missing;
 
 					OP::GetNameProperty(object, m_uniqueName, name, nameSize);
-					void* brush = OP::GetPropertyRawPtr(object, m_icon);
-					SDK::UObject* resource = nullptr;
-					if (!OP::GetObjectProperty(brush, m_iconResource, &resource) || !resource)
-						return Brush::Empty;
-					if (!resource->IsA(SDK::UTexture2D::StaticClass()))
-						return Brush::Empty;
-					*texture = resource;
-					return Brush::Texture;
+					return IconOf(object, m_icon, m_iconResource, texture);
 				}
 				__except (EngineCall::SehFilter(GetExceptionCode()))
 				{
@@ -422,11 +453,55 @@ namespace ImageLookup
 				}
 			}
 
-			std::vector<Ref> m_refs;
+		private:
 			// Reflection data, not objects: they stay as long as the class.
-			SDK::FProperty*  m_uniqueName   = nullptr;   // UAuItemDataBase::UniqueItemName
-			SDK::FProperty*  m_icon         = nullptr;   // UAuItemDataBase::ItemIcon
-			SDK::FProperty*  m_iconResource = nullptr;   // FSlateBrush::ResourceObject, in it
+			SDK::FProperty* m_uniqueName   = nullptr;   // UAuItemDataBase::UniqueItemName
+			SDK::FProperty* m_icon         = nullptr;   // UAuItemDataBase::ItemIcon
+			SDK::FProperty* m_iconResource = nullptr;   // FSlateBrush::ResourceObject, in it
+		};
+
+		// A building is a data asset: the object is the asset itself, and the name
+		// it goes by is the asset's name.
+		class EngineBuildingSource final : public EngineAssetSource
+		{
+		protected:
+			bool Prepare(std::string* why) override
+			{
+				return Nested(SDK::UCrBuildingData::StaticClass(), "Icon", "ResourceObject", &m_icon, &m_iconResource,
+					OP::PropertyKind::Object, why);
+			}
+
+			const wchar_t* RegistryPackage() const override { return L"/Script/Chimera"; }
+			const wchar_t* RegistryClass() const override { return L"CrBuildingData"; }
+			const char* Label() const override { return "Building"; }
+			std::string ObjectName(const std::string& asset) const override { return asset; }
+
+			Brush ReadSEH(SDK::UPackage* package, const wchar_t* objectName, char* name, int nameSize, SDK::UObject** texture) const override
+			{
+				*texture = nullptr;
+				int length = 0;
+				for (; objectName[length] && length < nameSize - 1; ++length)
+					name[length] = static_cast<char>(objectName[length]);
+				name[length] = '\0';
+				__try
+				{
+					SDK::UClass* buildingClass = SDK::UCrBuildingData::StaticClass();
+					SDK::UObject* object = FindByName(buildingClass, package, objectName);
+					if (!object || !object->IsA(buildingClass))
+						return Brush::Missing;
+
+					return IconOf(object, m_icon, m_iconResource, texture);
+				}
+				__except (EngineCall::SehFilter(GetExceptionCode()))
+				{
+					*texture = nullptr;
+					return Brush::Fault;
+				}
+			}
+
+		private:
+			SDK::FProperty* m_icon         = nullptr;   // UCrBuildingData::Icon
+			SDK::FProperty* m_iconResource = nullptr;   // FSlateBrush::ResourceObject, in it
 		};
 
 		// ---- The texture engine
@@ -474,6 +549,12 @@ namespace ImageLookup
 	ItemSource& EngineItems()
 	{
 		static EngineItemSource* const source = new EngineItemSource();
+		return *source;
+	}
+
+	ItemSource& EngineBuildings()
+	{
+		static EngineBuildingSource* const source = new EngineBuildingSource();
 		return *source;
 	}
 

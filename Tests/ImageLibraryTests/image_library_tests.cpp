@@ -668,6 +668,327 @@ static void ReadersSeeConsistentStatesWhileTheTableChanges()
     CHECK(!evicted.empty());
 }
 
+// ---------------------------------------------------------------------------
+// Sets and preload
+
+static const char* kPathA = "/Game/UI/T_A.T_A";
+static const char* kPathB = "/Game/UI/T_B.T_B";
+static const char* kPathC = "/Game/UI/T_C.T_C";
+
+static void AMemberOfASetIsIdleUntilPreloadReachesIt()
+{
+    Library lib;
+    lib.SetNow(100000);
+    const PluginImageId a = lib.PathInSet(kPathA, PLUGIN_IMAGE_SET_ITEMS);
+    CHECK(a != 0);
+    // The same image under another spelling, in another set: one id, in both sets.
+    CHECK(lib.PathInSet("Texture2D'/game/ui/t_a'", PLUGIN_IMAGE_SET_BUILDINGS) == a);
+    CHECK(lib.Path(kPathA) == a);
+    CHECK(lib.PathInSet("not a path", PLUGIN_IMAGE_SET_ITEMS) == 0);
+
+    // It is not asked for.
+    CHECK(lib.State(a) == PLUGIN_IMAGE_NONE);
+    Request request;
+    CHECK(!lib.TakeNext(request));
+    // No plugin uses a set: nothing to preload.
+    CHECK(!lib.TakePreload(request));
+
+    lib.UseSets(Self(0), PLUGIN_IMAGE_SET_BUILDINGS);
+    CHECK(lib.TakePreload(request));
+    CHECK(request.id == a && request.kind == Kind::Path && request.name == kPathA);
+    CHECK(lib.State(a) == PLUGIN_IMAGE_WAITING);
+    CHECK(!lib.TakePreload(request));   // taken: not handed out twice
+
+    std::vector<Released> evicted;
+    CHECK(lib.Publish(a, Texture(a), 100, evicted));
+    CHECK(lib.State(a) == PLUGIN_IMAGE_READY);
+    CHECK(!lib.TakePreload(request));   // kept
+}
+
+static void UsedSetsAreTheUnionAndFollowThePlugins()
+{
+    Library lib;
+    CHECK(lib.UsedSets() == 0);
+    lib.UseSets(Self(0), PLUGIN_IMAGE_SET_ITEMS);
+    CHECK(lib.UsedSets() == PLUGIN_IMAGE_SET_ITEMS);
+    lib.UseSets(Self(1), PLUGIN_IMAGE_SET_BUILDINGS);
+    CHECK(lib.UsedSets() == (PLUGIN_IMAGE_SET_ITEMS | PLUGIN_IMAGE_SET_BUILDINGS));
+    lib.UseSets(Self(1), PLUGIN_IMAGE_SET_ITEMS);
+    CHECK(lib.UsedSets() == PLUGIN_IMAGE_SET_ITEMS);
+
+    // A plugin that unloads drops its interest; so does one that clears it.
+    lib.UseSets(Self(1), PLUGIN_IMAGE_SET_BUILDINGS);
+    lib.ForgetPlugin(Self(0));
+    CHECK(lib.UsedSets() == PLUGIN_IMAGE_SET_BUILDINGS);
+    lib.UseSets(Self(1), 0);
+    CHECK(lib.UsedSets() == 0);
+
+    // Bits that are not sets are not kept.
+    lib.UseSets(Self(2), 0xF0u | PLUGIN_IMAGE_SET_ITEMS);
+    CHECK(lib.UsedSets() == PLUGIN_IMAGE_SET_ITEMS);
+}
+
+static void PreloadOnlyTakesMembersOfSetsInUse()
+{
+    Library lib;
+    lib.SetNow(100000);
+    const PluginImageId items = lib.PathInSet(kPathA, PLUGIN_IMAGE_SET_ITEMS);
+    const PluginImageId buildings = lib.PathInSet(kPathB, PLUGIN_IMAGE_SET_BUILDINGS);
+    lib.UseSets(Self(0), PLUGIN_IMAGE_SET_BUILDINGS);
+
+    Request request;
+    CHECK(lib.TakePreload(request) && request.id == buildings);
+    CHECK(!lib.TakePreload(request));   // the items are not in use
+
+    // The plugin changes its mind: the items now, and the buildings are left.
+    lib.Defer(buildings);
+    lib.UseSets(Self(0), PLUGIN_IMAGE_SET_ITEMS);
+    CHECK(lib.TakePreload(request) && request.id == items);
+    CHECK(!lib.TakePreload(request));
+}
+
+static void PreloadGoesRoundTheMembersAndDeferGivesOneBack()
+{
+    Library lib;
+    lib.SetNow(100000);
+    const PluginImageId a = lib.PathInSet(kPathA, PLUGIN_IMAGE_SET_ITEMS);
+    const PluginImageId b = lib.PathInSet(kPathB, PLUGIN_IMAGE_SET_ITEMS);
+    const PluginImageId c = lib.PathInSet(kPathC, PLUGIN_IMAGE_SET_ITEMS);
+    lib.UseSets(Self(0), PLUGIN_IMAGE_SET_ITEMS);
+
+    // In the order added.
+    Request request;
+    CHECK(lib.TakePreload(request) && request.id == a);
+    // One that cannot be read now goes back to idle, and does not block the rest.
+    lib.Defer(a);
+    CHECK(lib.State(a) == PLUGIN_IMAGE_NONE);
+    CHECK(lib.TakePreload(request) && request.id == b);
+    CHECK(lib.TakePreload(request) && request.id == c);
+    CHECK(lib.TakePreload(request) && request.id == a);   // round the list
+    CHECK(!lib.TakePreload(request));
+
+    // Deferring what is not taken does nothing.
+    lib.Defer(a);
+    lib.Defer(a);
+    lib.Defer(0);
+    CHECK(lib.TakePreload(request) && request.id == a);
+}
+
+static void ADeferredImageThatWasDrawnGoesToTheQueue()
+{
+    Library lib;
+    lib.SetNow(100000);
+    const PluginImageId a = lib.PathInSet(kPathA, PLUGIN_IMAGE_SET_ITEMS);
+    lib.UseSets(Self(0), PLUGIN_IMAGE_SET_ITEMS);
+
+    Request request;
+    CHECK(lib.TakePreload(request));
+    lib.SetNow(100010);
+    CHECK(lib.Get(a) == nullptr);   // drawn while it is being read
+    lib.Defer(a);
+    CHECK(lib.State(a) == PLUGIN_IMAGE_WAITING);
+    CHECK(!lib.TakePreload(request));   // it is the on-demand queue's now
+    CHECK(lib.TakeNext(request) && request.id == a);
+}
+
+static void DrawingAMemberAsksForItAndJumpsTheQueue()
+{
+    Library lib;
+    lib.SetNow(100000);
+    const PluginImageId a = lib.PathInSet(kPathA, PLUGIN_IMAGE_SET_ITEMS);
+    const PluginImageId b = lib.PathInSet(kPathB, PLUGIN_IMAGE_SET_ITEMS);
+    lib.UseSets(Self(0), PLUGIN_IMAGE_SET_ITEMS);
+
+    lib.SetNow(100500);
+    CHECK(lib.Get(b) == nullptr);
+    Request request;
+    CHECK(lib.TakeNext(request) && request.id == b);
+    CHECK(!lib.TakeNext(request));
+    // The rest is still preload's.
+    CHECK(lib.TakePreload(request) && request.id == a);
+}
+
+static void SeenWaitingCountsOnlyImagesDrawnLately()
+{
+    Library lib;
+    lib.SetNow(100000);
+    const PluginImageId member = lib.PathInSet(kPathA, PLUGIN_IMAGE_SET_ITEMS);
+    lib.UseSets(Self(0), PLUGIN_IMAGE_SET_ITEMS);
+    CHECK(!lib.SeenWaiting());   // idle
+
+    Request request;
+    CHECK(lib.TakePreload(request));
+    CHECK(!lib.SeenWaiting());   // being preloaded, never drawn
+
+    lib.SetNow(100100);
+    lib.Get(member);
+    CHECK(lib.SeenWaiting());
+    lib.SetNow(100100 + kSeenLatelyMs + 1);
+    CHECK(!lib.SeenWaiting());   // not drawn for a while
+
+    // A request that was asked for and drawn counts until it is answered.
+    const PluginImageId drawn = lib.Path(kPathB);
+    CHECK(lib.SeenWaiting());
+    CHECK(lib.TakeNext(request) && request.id == drawn);
+    CHECK(lib.SeenWaiting());   // taken, not answered
+    std::vector<Released> evicted;
+    CHECK(lib.Publish(drawn, Texture(drawn), 100, evicted));
+    CHECK(!lib.SeenWaiting());
+}
+
+static void PreloadStopsWhenAnotherImageWouldNotFit()
+{
+    // Room for two full images (349524 bytes each) and not three.
+    Library lib;
+    lib.SetCaps(1000000, 100);
+    CHECK(lib.PreloadHasRoom());
+    std::vector<Released> evicted;
+    lib.SetNow(100000);
+    const PluginImageId a = lib.Path(kPathA);
+    const PluginImageId b = lib.Path(kPathB);
+    Request request;
+    CHECK(lib.TakeNext(request) && lib.Publish(request.id, Texture(request.id), 349524, evicted));
+    CHECK(lib.PreloadHasRoom());
+    CHECK(lib.TakeNext(request) && lib.Publish(request.id, Texture(request.id), 349524, evicted));
+    CHECK(!lib.PreloadHasRoom());
+    CHECK(a != b && evicted.empty());
+
+    // The count cap too.
+    Library few;
+    few.SetCaps(1000000000, 1);
+    few.SetNow(100000);
+    few.Path(kPathA);
+    CHECK(few.TakeNext(request) && few.Publish(request.id, Texture(request.id), 100, evicted));
+    CHECK(!few.PreloadHasRoom());
+}
+
+static void PreloadStaysStoppedOnceAnImageHasBeenEvicted()
+{
+    Request request;
+    std::vector<Released> evicted;
+
+    // Two kept under a count cap of two: room is gone while the table is full, and comes back with a higher cap.
+    Library roomy;
+    roomy.SetCaps(1000000000, 2);
+    roomy.SetNow(100000);
+    roomy.Path(kPathA);
+    roomy.SetNow(100001);
+    roomy.Path(kPathB);
+    CHECK(roomy.TakeNext(request) && roomy.Publish(request.id, Texture(request.id), 100, evicted));
+    CHECK(roomy.TakeNext(request) && roomy.Publish(request.id, Texture(request.id), 100, evicted));
+    roomy.SetCaps(1000000000, 100);
+    CHECK(roomy.PreloadHasRoom());
+
+    // The same, but an image had to be evicted on the way: preload stays stopped, so it never churns.
+    Library full;
+    full.SetCaps(1000000000, 2);
+    full.SetNow(100000);
+    full.Path(kPathA);
+    full.SetNow(100001);
+    full.Path(kPathB);
+    full.SetNow(100002);
+    full.Path(kPathC);
+    // The most recently asked is read first, so the third read is the oldest and is the one pushed out.
+    for (int i = 0; i < 3; ++i)
+    {
+        CHECK(full.TakeNext(request));
+        full.Publish(request.id, Texture(request.id), 100, evicted);
+    }
+    CHECK(evicted.size() == 1);
+    CHECK(full.CountKept() == 2);
+    full.SetCaps(1000000000, 100);
+    CHECK(!full.PreloadHasRoom());
+}
+
+static void PreloadedImagesNobodyDrewAreEvictedFirst()
+{
+    Library lib;
+    lib.SetCaps(1000000, 2);
+    lib.SetNow(100000);
+    const PluginImageId drawn = lib.Path(kPathA);
+    const PluginImageId member = lib.PathInSet(kPathB, PLUGIN_IMAGE_SET_ITEMS);
+    lib.UseSets(Self(0), PLUGIN_IMAGE_SET_ITEMS);
+    std::vector<Released> evicted;
+
+    Request request;
+    CHECK(lib.TakeNext(request) && request.id == drawn);
+    CHECK(lib.Publish(drawn, Texture(drawn), 100, evicted));
+    CHECK(lib.TakePreload(request) && request.id == member);
+    CHECK(lib.Publish(member, Texture(member), 100, evicted));
+
+    lib.SetNow(100100);
+    const PluginImageId newer = lib.Path(kPathC);
+    CHECK(lib.TakeNext(request) && request.id == newer);
+    CHECK(lib.Publish(newer, Texture(newer), 100, evicted));
+    CHECK(evicted.size() == 1 && evicted[0].id == member);   // never drawn: first out, though read later
+}
+
+static void PreloadProgressCountsTheMembersOfSetsInUse()
+{
+    Library lib;
+    lib.SetNow(100000);
+    const PluginImageId a = lib.PathInSet(kPathA, PLUGIN_IMAGE_SET_ITEMS);
+    const PluginImageId b = lib.PathInSet(kPathB, PLUGIN_IMAGE_SET_ITEMS);
+    lib.PathInSet(kPathC, PLUGIN_IMAGE_SET_BUILDINGS);
+
+    Library::PreloadProgress none = lib.GetPreloadProgress();
+    CHECK(none.queued == 0 && none.done == 0);
+
+    lib.UseSets(Self(0), PLUGIN_IMAGE_SET_ITEMS);
+    Library::PreloadProgress progress = lib.GetPreloadProgress();
+    CHECK(progress.queued == 2 && progress.done == 0);
+
+    std::vector<Released> evicted;
+    Request request;
+    CHECK(lib.TakePreload(request) && request.id == a);
+    progress = lib.GetPreloadProgress();
+    CHECK(progress.queued == 2 && progress.done == 0);   // being read
+    CHECK(lib.Publish(a, Texture(a), 100, evicted));
+    progress = lib.GetPreloadProgress();
+    CHECK(progress.queued == 1 && progress.done == 1);
+
+    CHECK(lib.TakePreload(request) && request.id == b);
+    lib.PublishNoImage(b);
+    progress = lib.GetPreloadProgress();
+    CHECK(progress.queued == 0 && progress.done == 2);
+
+    lib.UseSets(Self(0), PLUGIN_IMAGE_SET_ITEMS | PLUGIN_IMAGE_SET_BUILDINGS);
+    progress = lib.GetPreloadProgress();
+    CHECK(progress.queued == 1 && progress.done == 2);
+}
+
+static void AMemberThatFailsIsNotTakenAgain()
+{
+    Library lib;
+    lib.SetNow(100000);
+    const PluginImageId a = lib.PathInSet(kPathA, PLUGIN_IMAGE_SET_ITEMS);
+    lib.UseSets(Self(0), PLUGIN_IMAGE_SET_ITEMS);
+    Request request;
+    CHECK(lib.TakePreload(request));
+    lib.Fail(a);
+    CHECK(!lib.TakePreload(request));
+    CHECK(lib.GetPreloadProgress().queued == 0);
+    CHECK(lib.GetPreloadProgress().done == 0);
+}
+
+static void AnAliasCarriesItsSetsToTheImage()
+{
+    Library lib;
+    lib.SetNow(100000);
+    const PluginImageId item = lib.Item("iron_plate");
+    lib.AddToSets(item, PLUGIN_IMAGE_SET_ITEMS);
+    Request request;
+    CHECK(lib.TakeNext(request) && request.id == item);
+    const PluginImageId path = lib.Path(kPathA);
+    CHECK(lib.TakeNext(request) && request.id == path);
+    lib.Requeue(path);
+    lib.Requeue(item);
+    CHECK(lib.Alias(item, path));
+    lib.UseSets(Self(0), PLUGIN_IMAGE_SET_ITEMS);
+    // The image is now in the set.
+    CHECK(lib.GetPreloadProgress().queued == 1);
+}
+
 int main()
 {
     RunTest("normalises item names", NormalisesItemNames);
@@ -693,6 +1014,19 @@ int main()
     RunTest("alias refusals", AliasRefusals);
     RunTest("the interface reaches the same table", InterfaceReachesTheSameTable);
     RunTest("readers see consistent states while the table changes", ReadersSeeConsistentStatesWhileTheTableChanges);
+    RunTest("a member of a set is idle until preload reaches it", AMemberOfASetIsIdleUntilPreloadReachesIt);
+    RunTest("used sets are the union and follow the plugins", UsedSetsAreTheUnionAndFollowThePlugins);
+    RunTest("preload only takes members of sets in use", PreloadOnlyTakesMembersOfSetsInUse);
+    RunTest("preload goes round the members and defer gives one back", PreloadGoesRoundTheMembersAndDeferGivesOneBack);
+    RunTest("a deferred image that was drawn goes to the queue", ADeferredImageThatWasDrawnGoesToTheQueue);
+    RunTest("drawing a member asks for it and jumps the queue", DrawingAMemberAsksForItAndJumpsTheQueue);
+    RunTest("seen waiting counts only images drawn lately", SeenWaitingCountsOnlyImagesDrawnLately);
+    RunTest("preload stops when another image would not fit", PreloadStopsWhenAnotherImageWouldNotFit);
+    RunTest("preload stays stopped once an image has been evicted", PreloadStaysStoppedOnceAnImageHasBeenEvicted);
+    RunTest("preloaded images nobody drew are evicted first", PreloadedImagesNobodyDrewAreEvictedFirst);
+    RunTest("preload progress counts the members of sets in use", PreloadProgressCountsTheMembersOfSetsInUse);
+    RunTest("a member that fails is not taken again", AMemberThatFailsIsNotTakenAgain);
+    RunTest("an alias carries its sets to the image", AnAliasCarriesItsSetsToTheImage);
 
     printf("\n%d checks, %d failed\n", g_checks, g_failed);
     return g_failed == 0 ? 0 : 1;

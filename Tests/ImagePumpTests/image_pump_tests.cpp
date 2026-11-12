@@ -1,8 +1,9 @@
 // Image pump test: the rules of UI/image_pump.cpp on a fake engine and GPU. The
 // start gate, the budget per tick, what each read and load result does, the
 // publish of a finished copy, eviction, device loss, shutdown, the summary
-// line, and how an item request waits for the item index and becomes the image
-// of its icon.
+// line, how an item request waits for the item index and becomes the image of
+// its icon, and the background preload of the sets (the lists, the setting, and
+// each rule that pauses it).
 //
 // A console program: no game, no GPU. The pump, the library and the item index
 // are the loader's own sources; a texture here is a number standing in for a
@@ -49,6 +50,11 @@ public:
     uint64_t budget = 0;
     uint64_t clockUs = 0;
     uint64_t readCostUs = 0;
+    bool     preload = false;
+    bool     videoKnown = false;
+    uint64_t videoUsage = 0, videoBudget = 0;
+    int      videoChecks = 0;
+    int      sourceSize = 0;   // level 0 of the game image; 0 = same as the copy
 
     // Paths in memory, and what a read of each does (Started when not set).
     std::set<std::string>              loaded;
@@ -71,6 +77,14 @@ public:
     bool GpuReady() override { return ready; }
     uint64_t LocalVideoBudget() override { return budget; }
     uint64_t NowUs() override { return clockUs; }
+    bool PreloadEnabled() override { return preload; }
+    bool VideoMemory(uint64_t& usage, uint64_t& total) override
+    {
+        ++videoChecks;
+        usage = videoUsage;
+        total = videoBudget;
+        return videoKnown;
+    }
 
     ReadResult Read(const std::string& path, Copy& out) override
     {
@@ -85,6 +99,8 @@ public:
             out.texture = reinterpret_cast<PluginTextureHandle>(static_cast<uintptr_t>(nextTexture++) * 16);
             out.width   = width;
             out.height  = height;
+            out.sourceWidth  = sourceSize;
+            out.sourceHeight = sourceSize;
         }
         return result;
     }
@@ -193,13 +209,15 @@ struct Rig
     Library   library;
     FakeHost  host;
     FakeItems items;
+    FakeItems buildings;
     Pump      pump;
 
-    explicit Rig(bool gpuUp = true) : pump(library, host, items)
+    explicit Rig(bool gpuUp = true) : pump(library, host, items, buildings)
     {
         host.ready = gpuUp;
         host.clockUs = 1000 * 1000;
         items.clockUs = &host.clockUs;
+        buildings.clockUs = &host.clockUs;
     }
 
     // One engine tick, a millisecond later than the last.
@@ -1017,6 +1035,460 @@ static void NothingIsLoggedPerTick()
 
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Preload
+
+static const uint32_t kItemsSet     = PLUGIN_IMAGE_SET_ITEMS;
+static const uint32_t kBuildingsSet = PLUGIN_IMAGE_SET_BUILDINGS;
+
+static const IPluginSelf* Self(int i)
+{
+    static char selves[4];
+    return reinterpret_cast<const IPluginSelf*>(&selves[i]);
+}
+
+static std::string PathN(int n)
+{
+    const std::string s = std::to_string(n);
+    return "/Game/UI/T_" + s + ".T_" + s;
+}
+
+static void AddIcons(FakeItems& source, int first, int count, const char* prefix)
+{
+    for (int i = first; i < first + count; ++i)
+        source.Add(prefix + std::to_string(i), PathN(i).c_str());
+}
+
+static void PutInMemory(Rig& rig, int first, int count)
+{
+    for (int i = first; i < first + count; ++i)
+        rig.host.loaded.insert(PathN(i));
+}
+
+// The setting on, a roomy video budget, and a plugin using the sets.
+static void Prepare(Rig& rig, uint32_t sets)
+{
+    rig.host.preload = true;
+    rig.host.budget  = 8ull * 1024 * 1024 * 1024;
+    rig.library.UseSets(Self(0), sets);
+}
+
+static size_t MemberReads(const Rig& rig, int first, int count)
+{
+    size_t n = 0;
+    for (const std::string& path : rig.host.reads)
+        for (int i = first; i < first + count; ++i)
+            n += path == PathN(i);
+    return n;
+}
+
+static int ReadyCount(Rig& rig, int first, int count, uint32_t sets)
+{
+    int n = 0;
+    for (int i = first; i < first + count; ++i)
+        n += rig.library.State(rig.library.PathInSet(PathN(i).c_str(), sets)) == PLUGIN_IMAGE_READY;
+    return n;
+}
+
+static bool Logged(const Rig& rig, const char* text)
+{
+    for (const std::string& line : rig.host.logs)
+        if (line.find(text) != std::string::npos)
+            return true;
+    return false;
+}
+
+static std::string LastSummary(const Rig& rig)
+{
+    for (size_t i = rig.host.logs.size(); i-- > 0;)
+        if (rig.host.logs[i].rfind("[Images] requests=", 0) == 0)
+            return rig.host.logs[i];
+    return std::string();
+}
+
+static void ListsAreBuiltOnlyWhenTheSettingIsOn()
+{
+    Rig rig;
+    AddIcons(rig.items, 0, 4, "Item");
+    PutInMemory(rig, 0, 4);
+    rig.library.UseSets(Self(0), kItemsSet);
+
+    rig.Tick(20);
+    CHECK(rig.items.lists == 0);
+    CHECK(rig.host.reads.empty());
+
+    rig.host.preload = true;
+    rig.Tick(20);
+    CHECK(rig.items.lists == 1);
+    CHECK(Logged(rig, "[Images] Preload set: 4 item images"));
+}
+
+static void NoSetInUseMeansNoListAndNoReads()
+{
+    Rig rig;
+    AddIcons(rig.items, 0, 4, "Item");
+    PutInMemory(rig, 0, 4);
+    rig.host.preload = true;
+
+    rig.Tick(20);
+    CHECK(rig.items.lists == 0);
+    CHECK(rig.host.reads.empty());
+
+    rig.host.clockUs += 61ull * 1000 * 1000;
+    rig.Tick();
+    CHECK(LastSummary(rig).find("paused=no set in use") != std::string::npos);
+
+    // A plugin that asks for a set after the pump has seen none.
+    rig.library.UseSets(Self(0), kItemsSet);
+    rig.Tick(20);
+    CHECK(rig.items.lists == 1);
+}
+
+static void TheItemsSetPreloads()
+{
+    Rig rig;
+    AddIcons(rig.items, 0, 4, "Item");
+    PutInMemory(rig, 0, 4);
+    Prepare(rig, kItemsSet);
+
+    rig.Tick(40);
+    CHECK(ReadyCount(rig, 0, 4, kItemsSet) == 4);
+    CHECK(rig.library.CountKept() == 4);
+    CHECK(rig.buildings.lists == 0);   // buildings are not in use
+}
+
+static void TheBuildingsSetPreloads()
+{
+    Rig rig;
+    AddIcons(rig.buildings, 10, 3, "Building");
+    PutInMemory(rig, 10, 3);
+    Prepare(rig, kBuildingsSet);
+
+    rig.Tick(40);
+    CHECK(ReadyCount(rig, 10, 3, kBuildingsSet) == 3);
+    CHECK(rig.items.lists == 0);
+    CHECK(Logged(rig, "[Images] Preload set: 3 building images"));
+}
+
+static void BothSetsAreListedAndPreloaded()
+{
+    Rig rig;
+    AddIcons(rig.items, 0, 3, "Item");
+    AddIcons(rig.buildings, 10, 3, "Building");
+    PutInMemory(rig, 0, 3);
+    PutInMemory(rig, 10, 3);
+    Prepare(rig, kItemsSet | kBuildingsSet);
+
+    rig.Tick(80);
+    CHECK(ReadyCount(rig, 0, 3, kItemsSet) == 3);
+    CHECK(ReadyCount(rig, 10, 3, kBuildingsSet) == 3);
+    CHECK(rig.items.lists == 1);
+    CHECK(rig.buildings.lists == 1);
+}
+
+static void AnIconTwoItemsShareIsOneMember()
+{
+    Rig rig;
+    rig.items.Add("Iron", PathN(0).c_str());
+    rig.items.Add("Iron Plate", PathN(0).c_str());
+    rig.items.Add("Copper", PathN(1).c_str());
+    PutInMemory(rig, 0, 2);
+    Prepare(rig, kItemsSet);
+
+    rig.Tick(40);
+    CHECK(Logged(rig, "[Images] Preload set: 2 item images"));
+    CHECK(MemberReads(rig, 0, 2) == 2);
+}
+
+static void DroppingInterestStopsPreloadOfThatSet()
+{
+    Rig rig;
+    AddIcons(rig.items, 0, 8, "Item");
+    PutInMemory(rig, 0, 8);
+    Prepare(rig, kItemsSet);
+    rig.library.UseSets(Self(1), kItemsSet);
+
+    rig.Tick(8);
+    const size_t before = MemberReads(rig, 0, 8);
+    CHECK(before > 0 && before < 8);
+
+    // One of two plugins lets go: the set is still in use.
+    rig.library.ForgetPlugin(Self(0));
+    rig.Tick(6);
+    CHECK(MemberReads(rig, 0, 8) > before);
+
+    // The last one lets go: nothing more is read.
+    rig.library.UseSets(Self(1), 0);
+    const size_t after = MemberReads(rig, 0, 8);
+    rig.Tick(40);
+    CHECK(MemberReads(rig, 0, 8) == after);
+    CHECK(ReadyCount(rig, 0, 8, kItemsSet) < 8);
+
+    // And it picks up again where it was.
+    rig.library.UseSets(Self(2), kItemsSet);
+    rig.Tick(60);
+    CHECK(ReadyCount(rig, 0, 8, kItemsSet) == 8);
+}
+
+static void AtMostOneReadInTwoTicks()
+{
+    Rig rig;
+    AddIcons(rig.items, 0, 40, "Item");
+    PutInMemory(rig, 0, 40);
+    Prepare(rig, kItemsSet);
+
+    size_t last = 0;
+    bool twoInARow = false, previousRead = false;
+    for (int i = 0; i < 30; ++i)
+    {
+        rig.Tick();
+        const size_t now = rig.host.reads.size();
+        CHECK(now - last <= 1);
+        const bool read = now > last;
+        twoInARow = twoInARow || (read && previousRead);
+        previousRead = read;
+        last = now;
+    }
+    CHECK(!twoInARow);
+    CHECK(MemberReads(rig, 0, 40) >= 10);
+}
+
+static void PreloadPausesWhileAnImageSeenIsWaitingAndResumes()
+{
+    Rig rig;
+    AddIcons(rig.items, 0, 6, "Item");
+    PutInMemory(rig, 0, 6);
+    Prepare(rig, kItemsSet);
+
+    // A plugin draws an image that is not readable yet.
+    rig.host.loaded.insert(kA);
+    rig.host.readResult[kA] = ReadResult::NotYet;
+    const PluginImageId a = rig.library.Path(kA);
+    rig.library.Get(a);
+
+    rig.Tick(30);
+    CHECK(rig.library.State(a) == PLUGIN_IMAGE_WAITING);
+    CHECK(MemberReads(rig, 0, 6) == 0);
+
+    // It is answered: preload goes on.
+    rig.host.readResult[kA] = ReadResult::Started;
+    rig.Tick(40);
+    CHECK(rig.library.State(a) == PLUGIN_IMAGE_READY);
+    CHECK(ReadyCount(rig, 0, 6, kItemsSet) == 6);
+}
+
+static void PreloadStopsWhenTheGameHoldsTooMuchAndResumesWhenItIsLetGo()
+{
+    Rig rig;
+    AddIcons(rig.items, 0, 24, "Item");
+    Prepare(rig, kItemsSet);
+    rig.host.sourceSize = 1024;   // 4 MiB each at 4 bytes a pixel; the limit is 64 MiB
+
+    // The images are not in memory: the library makes the game load each one.
+    rig.Tick(200);
+    CHECK(rig.host.loads.size() == 16);
+    CHECK(ReadyCount(rig, 0, 24, kItemsSet) == 16);
+
+    rig.host.clockUs += 61ull * 1000 * 1000;   // inside the window still
+    rig.Tick(20);
+    CHECK(rig.host.loads.size() == 16);
+    CHECK(LastSummary(rig).find("paused=game holds loaded images") != std::string::npos);
+
+    // The window passes: the game has let go of the first sixteen.
+    rig.host.clockUs += 61ull * 1000 * 1000;
+    rig.Tick(100);
+    CHECK(rig.host.loads.size() == 24);
+    CHECK(ReadyCount(rig, 0, 24, kItemsSet) == 24);
+}
+
+static void AnImageTheGameAlreadyHeldCostsNothingAgainstTheLimit()
+{
+    Rig rig;
+    AddIcons(rig.items, 0, 24, "Item");
+    PutInMemory(rig, 0, 24);
+    Prepare(rig, kItemsSet);
+    rig.host.sourceSize = 1024;
+
+    rig.Tick(200);
+    CHECK(rig.host.loads.empty());
+    CHECK(ReadyCount(rig, 0, 24, kItemsSet) == 24);
+}
+
+static void PreloadWaitsWhileVideoMemoryIsAtNinetyPercent()
+{
+    Rig rig;
+    AddIcons(rig.items, 0, 6, "Item");
+    PutInMemory(rig, 0, 6);
+    Prepare(rig, kItemsSet);
+    rig.host.videoKnown  = true;
+    rig.host.videoBudget = 1000;
+    rig.host.videoUsage  = 900;
+
+    rig.Tick(20);
+    CHECK(MemberReads(rig, 0, 6) == 0);
+    CHECK(rig.host.videoChecks == 1);
+
+    // Room again, but the adapter is asked once a second.
+    rig.host.videoUsage = 100;
+    rig.Tick(20);
+    CHECK(MemberReads(rig, 0, 6) == 0);
+    CHECK(rig.host.videoChecks == 1);
+
+    rig.host.clockUs += 1100 * 1000;
+    rig.Tick(40);
+    CHECK(rig.host.videoChecks >= 2);
+    CHECK(ReadyCount(rig, 0, 6, kItemsSet) == 6);
+
+    // Under the line by one unit is room.
+    Rig under;
+    AddIcons(under.items, 0, 2, "Item");
+    PutInMemory(under, 0, 2);
+    Prepare(under, kItemsSet);
+    under.host.videoKnown  = true;
+    under.host.videoBudget = 1000;
+    under.host.videoUsage  = 899;
+    under.Tick(20);
+    CHECK(ReadyCount(under, 0, 2, kItemsSet) == 2);
+}
+
+static void PreloadGoesOnWhenVideoMemoryCannotBeRead()
+{
+    Rig rig;
+    AddIcons(rig.items, 0, 3, "Item");
+    PutInMemory(rig, 0, 3);
+    Prepare(rig, kItemsSet);
+    rig.host.videoKnown  = false;
+    rig.host.videoUsage  = 999;
+    rig.host.videoBudget = 1000;
+
+    rig.Tick(30);
+    CHECK(ReadyCount(rig, 0, 3, kItemsSet) == 3);
+}
+
+static void PreloadStopsAtTheCapsAndNeverEvicts()
+{
+    Rig rig;
+    AddIcons(rig.items, 0, 6, "Item");
+    PutInMemory(rig, 0, 6);
+    Prepare(rig, kItemsSet);
+    rig.host.budget = 25000000;   // a byte cap of 1,000,000: two stored images, not three
+
+    rig.Tick(100);
+    CHECK(rig.library.CountKept() == 2);
+    CHECK(rig.pump.GetStats().evicted == 0);
+    CHECK(rig.host.freed.empty());
+    const size_t reads = rig.host.reads.size();
+
+    rig.Tick(100);
+    CHECK(rig.host.reads.size() == reads);
+
+    rig.host.clockUs += 61ull * 1000 * 1000;
+    rig.Tick();
+    CHECK(LastSummary(rig).find("paused=cache full") != std::string::npos);
+}
+
+static void DrawingAnIdleMemberJumpsTheQueue()
+{
+    Rig rig;
+    AddIcons(rig.items, 0, 6, "Item");
+    PutInMemory(rig, 0, 6);
+    Prepare(rig, kItemsSet);
+
+    for (int i = 0; i < 10 && !Logged(rig, "[Images] Preload set"); ++i)
+        rig.Tick();
+    CHECK(Logged(rig, "[Images] Preload set"));
+    CHECK(MemberReads(rig, 5, 1) == 0);
+
+    const PluginImageId last = rig.library.PathInSet(PathN(5).c_str(), kItemsSet);
+    rig.library.Get(last);
+    rig.Tick();
+    CHECK(!rig.host.reads.empty() && rig.host.reads.back() == PathN(5));
+
+    rig.Tick(2);
+    CHECK(rig.library.State(last) == PLUGIN_IMAGE_READY);
+}
+
+static void TheSettingTakesEffectAtOnce()
+{
+    Rig rig;
+    AddIcons(rig.items, 0, 12, "Item");
+    PutInMemory(rig, 0, 12);
+    Prepare(rig, kItemsSet);
+
+    rig.Tick(8);
+    const size_t on = MemberReads(rig, 0, 12);
+    CHECK(on > 0 && on < 12);
+
+    rig.host.preload = false;
+    rig.Tick(40);
+    CHECK(MemberReads(rig, 0, 12) == on);
+
+    rig.host.preload = true;
+    rig.Tick(80);
+    CHECK(ReadyCount(rig, 0, 12, kItemsSet) == 12);
+    CHECK(rig.items.lists == 1);   // the list is kept, not read again
+}
+
+static void TheSummaryLineHasThePreloadFigures()
+{
+    Rig rig;
+    AddIcons(rig.items, 0, 6, "Item");
+    PutInMemory(rig, 0, 6);
+    Prepare(rig, kItemsSet);
+
+    rig.Tick(8);
+    rig.host.clockUs += 61ull * 1000 * 1000;
+    rig.Tick();
+    const std::string mid = LastSummary(rig);
+    CHECK(mid.find("preload queued=") != std::string::npos);
+    CHECK(mid.find("done=") != std::string::npos);
+    CHECK(mid.find("paused=") != std::string::npos);
+    CHECK(mid.find("preload queued=0 ") == std::string::npos);
+
+    rig.Tick(60);
+    rig.host.clockUs += 61ull * 1000 * 1000;
+    rig.Tick();
+    CHECK(LastSummary(rig).find("preload queued=0 done=6 paused=no") != std::string::npos);
+
+    rig.host.preload = false;
+    rig.host.clockUs += 61ull * 1000 * 1000;
+    rig.Tick();
+    CHECK(LastSummary(rig).find("paused=setting off") != std::string::npos);
+}
+
+static void AnImageNotReadableYetIsDeferredAndDoesNotBlockTheRest()
+{
+    Rig rig;
+    AddIcons(rig.items, 0, 4, "Item");
+    PutInMemory(rig, 0, 4);
+    rig.host.readResult[PathN(1)] = ReadResult::NotYet;
+    Prepare(rig, kItemsSet);
+
+    rig.Tick(80);
+    CHECK(rig.library.State(rig.library.PathInSet(PathN(0).c_str(), kItemsSet)) == PLUGIN_IMAGE_READY);
+    CHECK(rig.library.State(rig.library.PathInSet(PathN(2).c_str(), kItemsSet)) == PLUGIN_IMAGE_READY);
+    CHECK(rig.library.State(rig.library.PathInSet(PathN(3).c_str(), kItemsSet)) == PLUGIN_IMAGE_READY);
+    CHECK(rig.library.State(rig.library.PathInSet(PathN(1).c_str(), kItemsSet)) != PLUGIN_IMAGE_READY);
+
+    // Once it can be read it is.
+    rig.host.readResult[PathN(1)] = ReadResult::Started;
+    rig.Tick(20);
+    CHECK(ReadyCount(rig, 0, 4, kItemsSet) == 4);
+}
+
+static void AListThatCannotBeReadLeavesTheOtherSetWorking()
+{
+    Rig rig;
+    rig.items.listable = false;
+    AddIcons(rig.buildings, 10, 3, "Building");
+    PutInMemory(rig, 10, 3);
+    Prepare(rig, kItemsSet | kBuildingsSet);
+
+    rig.Tick(80);
+    CHECK(Logged(rig, "[Images] The item list cannot be read here"));
+    CHECK(ReadyCount(rig, 10, 3, kBuildingsSet) == 3);
+}
+
 int main()
 {
     setvbuf(stdout, nullptr, _IONBF, 0);
@@ -1067,6 +1539,25 @@ int main()
     RunTest("shutdown before the GPU was up is quiet", ShutdownBeforeTheGpuWasUpIsQuiet);
     RunTest("the summary line comes once a minute", TheSummaryLineComesOnceAMinute);
     RunTest("nothing is logged per tick", NothingIsLoggedPerTick);
+    RunTest("preload lists are built only when the setting is on", ListsAreBuiltOnlyWhenTheSettingIsOn);
+    RunTest("no set in use means no list and no reads", NoSetInUseMeansNoListAndNoReads);
+    RunTest("the items set preloads", TheItemsSetPreloads);
+    RunTest("the buildings set preloads", TheBuildingsSetPreloads);
+    RunTest("both sets are listed and preloaded", BothSetsAreListedAndPreloaded);
+    RunTest("an icon two items share is one member", AnIconTwoItemsShareIsOneMember);
+    RunTest("dropping interest stops preload of that set", DroppingInterestStopsPreloadOfThatSet);
+    RunTest("at most one read in two ticks", AtMostOneReadInTwoTicks);
+    RunTest("preload pauses while an image seen is waiting and resumes", PreloadPausesWhileAnImageSeenIsWaitingAndResumes);
+    RunTest("preload stops when the game holds too much", PreloadStopsWhenTheGameHoldsTooMuchAndResumesWhenItIsLetGo);
+    RunTest("an image the game already held costs nothing against the limit", AnImageTheGameAlreadyHeldCostsNothingAgainstTheLimit);
+    RunTest("preload waits while video memory is at 90 percent", PreloadWaitsWhileVideoMemoryIsAtNinetyPercent);
+    RunTest("preload goes on when video memory cannot be read", PreloadGoesOnWhenVideoMemoryCannotBeRead);
+    RunTest("preload stops at the caps and never evicts", PreloadStopsAtTheCapsAndNeverEvicts);
+    RunTest("drawing an idle member jumps the queue", DrawingAnIdleMemberJumpsTheQueue);
+    RunTest("the setting takes effect at once", TheSettingTakesEffectAtOnce);
+    RunTest("the summary line has the preload figures", TheSummaryLineHasThePreloadFigures);
+    RunTest("an image not readable yet is deferred", AnImageNotReadableYetIsDeferredAndDoesNotBlockTheRest);
+    RunTest("a list that cannot be read leaves the other set working", AListThatCannotBeReadLeavesTheOtherSetWorking);
 
     printf("\n%d checks, %d failed\n", g_checks, g_failed);
     return g_failed == 0 ? 0 : 1;

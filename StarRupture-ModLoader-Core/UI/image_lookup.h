@@ -1,7 +1,8 @@
 #pragma once
 
 // The image library's lookups: an item's unique name to the object path of its
-// icon, and a live texture to the object path the pump reads it under.
+// icon, a building's asset name to the object path of its icon, and a live
+// texture to the object path the pump reads it under.
 //
 // Everything that touches the engine is behind ItemSource and TextureEngine, so
 // the rules here (the item index and its budget per tick, the images that count
@@ -57,8 +58,9 @@ namespace ImageLookup
 		std::string texturePath;   // the object path of its icon texture
 	};
 
-	// What the index needs from the engine: the list of item blueprints from the
-	// asset registry, and the unique name and icon of each.
+	// What the index needs from the engine: a list of assets from the asset
+	// registry (the item blueprints, or the building data), and the name and icon
+	// of each. For a building the name is its asset name.
 	class ItemSource
 	{
 	public:
@@ -73,8 +75,8 @@ namespace ImageLookup
 		virtual ItemRead Read(size_t index, ItemRecord& out) = 0;
 	};
 
-	// The items read so far, by the key NormalizeItemName gives. Filled a slice
-	// at a time.
+	// The items (or buildings) read so far, by the key NormalizeItemName gives.
+	// Filled a slice at a time.
 	class ItemIndex
 	{
 	public:
@@ -91,6 +93,10 @@ namespace ImageLookup
 		// Whether the item is known. The path is empty when it has no image to
 		// show. The first item read under a name is the one that is kept.
 		bool Find(const std::string& key, std::string& texturePath) const;
+
+		// The icon textures known, each once and sorted. What has no image to show,
+		// or only a stand-in, is left out.
+		std::vector<std::string> TexturePaths() const;
 
 	private:
 		ItemSource&                                  m_source;

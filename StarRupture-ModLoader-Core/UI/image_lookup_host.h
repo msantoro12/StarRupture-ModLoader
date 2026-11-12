@@ -13,6 +13,9 @@ namespace ImageLookup
 	// The loader's item source, for the pump.
 	ItemSource& EngineItems();
 
+	// The same for buildings: the building data assets and the icon of each.
+	ItemSource& EngineBuildings();
+
 	// The lookup behind IPluginImages::FromTexture.
 	PluginImageId FromTexture(SDK::UTexture2D* texture);
 }

@@ -1842,6 +1842,36 @@ static void TestSaverNothingIsFiledOnceTheKeyIsGone()
     CHECK(host.taken.size() == 3 && !host.hadDest[2]);
 }
 
+static void TestSaverLooksAtThePakSetOncePerTick()
+{
+    ImageLibrary::Library library;
+    ControlledHost host;
+    FakeSink sink;
+    ImageDisk::DiskSaver saver(library, host, sink);
+
+    for (uint32_t ticket = 1; ticket <= 3; ++ticket)
+    {
+        host.entries[ticket].state = ImageDisk::Readback::Done;
+        host.entries[ticket].pixels = MakePixels(64, 32, static_cast<uint8_t>(ticket));
+        saver.Begin(MakeStarted(ticket, ticket == 1 ? "/Game/UI/T_One.T_One" : ticket == 2 ? "/Game/UI/T_Two.T_Two" : "/Game/UI/T_Three.T_Three"));
+    }
+
+    // Three images finish in one tick: the pak set is looked at once, and all three are filed.
+    saver.Poll(0);
+    CHECK(sink.jobs.size() == 3);
+    CHECK(host.folderAsked == 1);
+
+    // A tick with nothing finished does not look at all; the next image looks again.
+    saver.Poll(1);
+    CHECK(host.folderAsked == 1);
+    host.entries[4].state = ImageDisk::Readback::Done;
+    host.entries[4].pixels = MakePixels(64, 32, 4);
+    saver.Begin(MakeStarted(4, "/Game/UI/T_Four.T_Four"));
+    saver.Poll(2);
+    CHECK(sink.jobs.size() == 4);
+    CHECK(host.folderAsked == 2);
+}
+
 static void TestSaverRunTimeObjectsAreNotSaved()
 {
     ImageLibrary::Library library;
@@ -2055,6 +2085,7 @@ int main()
     RunTest("a job under an old key is not filed", TestPakSessionJobUnderAnOldKeyIsNotFiled);
     RunTest("the pak set is looked at again on the interval", TestPakSessionLooksAgainOnTheInterval);
     RunTest("nothing is filed once the key is gone", TestSaverNothingIsFiledOnceTheKeyIsGone);
+    RunTest("the pak set is looked at once per tick", TestSaverLooksAtThePakSetOncePerTick);
     RunTest("run-time objects are not saved", TestSaverRunTimeObjectsAreNotSaved);
     RunTest("the lists are written again after a clear", TestSaverListsAreWrittenAgainAfterAClear);
     RunTest("run-time objects are not served and their files go", TestReaderRunTimeObjectsAreNotServed);

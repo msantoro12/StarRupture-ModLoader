@@ -29,6 +29,11 @@ namespace ImageDisk
 		if (m_gone || m_stopped)
 			return;
 
+		// The pak set is looked at when the first image is filed in a tick and the answer serves the rest of
+		// the tick: a pak is only mounted on the game thread, between ticks of this loop.
+		std::function<std::wstring()> folder;
+		bool folderAsked = false;
+
 		for (size_t i = 0; i < m_pending.size();)
 		{
 			const Started& started = m_pending[i].started;
@@ -48,11 +53,15 @@ namespace ImageDisk
 			}
 			if (state == Readback::Done && wanted)
 			{
-				// The pak set is looked at as the pixels are filed. An empty function means the
-				// session's key is gone: nothing is queued, and nothing more is copied.
-				std::function<std::wstring()> folder = m_host.CacheFolder();
+				// An empty function means the session's key is gone: nothing is queued, and nothing more is
+				// copied.
+				if (!folderAsked)
+				{
+					folder = m_host.CacheFolder();
+					folderAsked = true;
+				}
 				if (folder)
-					Finish(started, std::vector<uint8_t>(m_scratch.begin(), m_scratch.begin() + static_cast<std::ptrdiff_t>(bytes)), std::move(folder));
+					Finish(started, std::vector<uint8_t>(m_scratch.begin(), m_scratch.begin() + static_cast<std::ptrdiff_t>(bytes)), folder);
 				else
 					m_folderOff = true;
 			}

@@ -58,8 +58,8 @@ namespace ImageDisk
 			if (!pak || !pak->IsAvailable())
 				return false;
 
-			// One call with room to spare (a buffer kept between calls: this runs for every image
-			// filed); a second only when the list is longer than that.
+			// One call with room to spare (a buffer kept between calls: this runs in every tick that files
+			// an image); a second only when the list is longer than that.
 			static std::vector<PluginPakInfo> infos(64);
 			int total = pak->GetMountedInto(nullptr, infos.data(), static_cast<int>(infos.size()));
 			if (total > static_cast<int>(infos.size()))
@@ -104,7 +104,7 @@ namespace ImageDisk
 		// The folder of this session. Its key is the mounted pak set, taken once, when the disk part is
 		// first used (the pump's first tick, which is after every plugin's PluginInit has mounted its
 		// paks: the main thread is held until then); every file read, written or tidied goes by it. The
-		// set is looked at again at most every 250 ms, and every time an image is filed. If it has
+		// set is looked at again at most every 250 ms by the reader, and once in each tick that files an image. If it has
 		// changed, the disk part goes off for the rest of the session: images read from the game after a
 		// pak was mounted might differ from what the key stands for, and must never be saved under it.
 		PakSession& TheSession()
@@ -142,7 +142,7 @@ namespace ImageDisk
 				}
 			}
 
-			// Looked at again every time: this is called as an image is filed.
+			// Looked at again every time it is called: once in each tick that files an image.
 			std::function<std::wstring()> CacheFolder() override
 			{
 				return TheSession().Folder(GetTickCount64(), true);

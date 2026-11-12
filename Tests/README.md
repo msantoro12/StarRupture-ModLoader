@@ -403,6 +403,10 @@ asked for, against a fake host and a fake item list, so no GPU and no engine are
   reads, loads and requests looked at hold.
 - Items are held until the item list knows them, then follow the icon's path. An item with no icon, a
   placeholder icon or a placeholder path ends as NO_IMAGE; an item the game does not have ends as NONE.
+- Registering an image reads nothing; only drawing it does. The item and building sets are listed only
+  while a mod uses them and the setting is on, then preloaded one image at a time. A drawn image jumps
+  the queue, and preload pauses for the setting, a waiting image, game-held memory, video memory and the
+  caps.
 - Evicted copies are freed on the next tick, a lost GPU drops everything without freeing, and shutdown
   frees what the library keeps.
 - Nothing is logged per tick.

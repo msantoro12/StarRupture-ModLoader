@@ -7,12 +7,16 @@
 #include "../UI/image_trial_ops.h"
 #include "../UI/toast.h"
 #include "../hooks/game/object_lookup/object_lookup.h"
+#include "../hooks/game/object_properties/object_properties.h"
+#include "../hooks/game/version_map.generated.h"
+#include "../memory_scanner/version_map.h"
 #include "../hooks/game/scan_patterns.h"
 #include "../memory_scanner/scanner.h"
 #include "../plugins/plugin_manager.h"
 #include "../plugins/reload_policy.h"
 #include "../logging/log.h"
 #include "Engine_classes.hpp"
+#include "Engine_parameters.hpp"
 #include "Chimera_classes.hpp"
 #include "AuItems_classes.hpp"
 #include "AssetRegistry_classes.hpp"
@@ -156,8 +160,157 @@ namespace
         __except (Filter(GetExceptionCode())) { *out = nullptr; return false; }
     }
 
+    // ---- game builds other than the one the SDK was made for ----
+    // The SDK's members and parameter structs are compiled for VersionMap::kBuiltCL. The loader's layout check covers some of
+    // the classes used here (FAssetData), not the ones below. On any other build each of these is read by name through the
+    // loader's reflection lookup (Hooks::ObjectProperties), and each registry/library call is checked against the game's
+    // own parameter block before it is made. Anything that cannot be checked turns the whole trial off with one log line.
+    namespace OP = Hooks::ObjectProperties;
+
+    bool g_byName = false;   // true only after ResolveByName() passed, on a build other than kBuiltCL
+
+    struct ByName
+    {
+        SDK::FProperty* icon = nullptr;        // UCrBuildingData::Icon
+        SDK::FProperty* iconRes = nullptr;     // FSlateBrush::ResourceObject, in it
+        SDK::FProperty* itemIcon = nullptr;    // UAuItemDataBase::ItemIcon
+        SDK::FProperty* itemIconRes = nullptr; // FSlateBrush::ResourceObject, in it
+        SDK::FProperty* impSize = nullptr;     // UTexture2D::ImportedSize
+        SDK::FProperty* impX = nullptr;
+        SDK::FProperty* impY = nullptr;
+        SDK::FProperty* firstMip = nullptr;
+        SDK::FProperty* neverStream = nullptr;
+        SDK::FProperty* lod = nullptr;
+        SDK::FProperty* vts = nullptr;
+        SDK::FProperty* comp = nullptr;
+    };
+    ByName g_bn;
+
+    std::string Hex(size_t v) { char b[24]; snprintf(b, sizeof(b), "0x%zX", v); return b; }
+
+    // The function's parameter block: its size, and where each named member sits, against the SDK's.
+    bool ParamsHold(SDK::UClass* cls, const char* owner, const char* fn, size_t sdkSize,
+                    std::initializer_list<std::pair<const char*, size_t>> members, std::string* why)
+    {
+        const std::string label = std::string(owner) + "::" + fn;
+        SDK::UFunction* f = cls ? cls->GetFunction(owner, fn) : nullptr;
+        if (!f) { *why = label + " is not in the game's reflection data"; return false; }
+        if (size_t(f->Size) != sdkSize)
+        {
+            *why = label + " takes " + Hex(size_t(f->Size)) + " bytes of parameters here, the SDK's is " + Hex(sdkSize);
+            return false;
+        }
+        for (const auto& m : members)
+        {
+            SDK::FProperty* p = OP::FindPropertyByName(f, m.first);
+            if (!p || size_t(p->Offset) != m.second)
+            {
+                *why = label + " parameter " + m.first + " is at " + (p ? Hex(size_t(p->Offset)) : std::string("(missing)")) +
+                    " here, the SDK's is " + Hex(m.second);
+                return false;
+            }
+        }
+        return true;
+    }
+
+    // A struct property and one member of its struct type, as offsets read by the loader's own lookup.
+    bool Nested(SDK::UClass* cls, const char* outerName, const char* innerName, SDK::FProperty** outer, SDK::FProperty** inner,
+                OP::PropertyKind innerKind, std::string* why)
+    {
+        *outer = OP::FindPropertyByName(cls, outerName);
+        SDK::UStruct* st = *outer ? OP::GetPropertyStructType(*outer) : nullptr;
+        if (!st) { *why = std::string(outerName) + " is not a struct member in the game's reflection data"; return false; }
+        *inner = OP::FindPropertyByName(st, innerName);
+        if (!*inner || OP::GetPropertyKind(*inner) != innerKind)
+        {
+            *why = std::string(outerName) + "." + innerName + " is not in the game's reflection data";
+            return false;
+        }
+        return true;
+    }
+
+    // Returns false with the reason when the trial cannot run safely on this build. Soft misses (texture import details) are
+    // logged and read as -1 in the FACT lines.
+    bool ResolveByName(std::string* why)
+    {
+        if (!OP::IsReady()) { *why = "reflection data is not ready"; return false; }
+        if (!Nested(SDK::UCrBuildingData::StaticClass(), "Icon", "ResourceObject", &g_bn.icon, &g_bn.iconRes, OP::PropertyKind::Object, why))
+            return false;
+        if (!Nested(SDK::UAuItemDataBase::StaticClass(), "ItemIcon", "ResourceObject", &g_bn.itemIcon, &g_bn.itemIconRes,
+                OP::PropertyKind::Object, why))
+            return false;
+
+        SDK::UClass* registry = SDK::IAssetRegistry::StaticClass();
+        SDK::UClass* helpers  = SDK::UAssetRegistryHelpers::StaticClass();
+        SDK::UClass* kismet   = SDK::UKismetSystemLibrary::StaticClass();
+        using namespace SDK::Params;
+        if (!ParamsHold(helpers, "AssetRegistryHelpers", "GetAssetRegistry", sizeof(AssetRegistryHelpers_GetAssetRegistry),
+                { {"ReturnValue", offsetof(AssetRegistryHelpers_GetAssetRegistry, ReturnValue)} }, why)) return false;
+        if (!ParamsHold(registry, "AssetRegistry", "GetAssetsByClass", sizeof(AssetRegistry_GetAssetsByClass),
+                { {"ClassPathName", offsetof(AssetRegistry_GetAssetsByClass, ClassPathName)},
+                  {"OutAssetData", offsetof(AssetRegistry_GetAssetsByClass, OutAssetData)},
+                  {"bSearchSubClasses", offsetof(AssetRegistry_GetAssetsByClass, bSearchSubClasses)},
+                  {"ReturnValue", offsetof(AssetRegistry_GetAssetsByClass, ReturnValue)} }, why)) return false;
+        if (!ParamsHold(registry, "AssetRegistry", "K2_GetDependencies", sizeof(AssetRegistry_K2_GetDependencies),
+                { {"PackageName", offsetof(AssetRegistry_K2_GetDependencies, PackageName)},
+                  {"DependencyOptions", offsetof(AssetRegistry_K2_GetDependencies, DependencyOptions)},
+                  {"OutDependencies", offsetof(AssetRegistry_K2_GetDependencies, OutDependencies)},
+                  {"ReturnValue", offsetof(AssetRegistry_K2_GetDependencies, ReturnValue)} }, why)) return false;
+        // The options struct is written through the SDK's bool member, bIncludeHardPackageReferences.
+        {
+            SDK::UFunction* f = registry->GetFunction("AssetRegistry", "K2_GetDependencies");
+            SDK::FProperty* options = f ? OP::FindPropertyByName(f, "DependencyOptions") : nullptr;
+            SDK::UStruct* st = options ? OP::GetPropertyStructType(options) : nullptr;
+            SDK::FProperty* hard = st ? OP::FindPropertyByName(st, "bIncludeHardPackageReferences") : nullptr;
+            if (!hard || OP::GetPropertyKind(hard) != OP::PropertyKind::Bool ||
+                size_t(hard->Offset) != offsetof(SDK::FAssetRegistryDependencyOptions, bIncludeHardPackageReferences) ||
+                size_t(st->Size) != sizeof(SDK::FAssetRegistryDependencyOptions))
+            {
+                *why = "AssetRegistry::K2_GetDependencies DependencyOptions differs here from the SDK's";
+                return false;
+            }
+        }
+        if (!ParamsHold(kismet, "KismetSystemLibrary", "MakeTopLevelAssetPath", sizeof(KismetSystemLibrary_MakeTopLevelAssetPath),
+                { {"PackageName", offsetof(KismetSystemLibrary_MakeTopLevelAssetPath, PackageName)},
+                  {"AssetName", offsetof(KismetSystemLibrary_MakeTopLevelAssetPath, AssetName)},
+                  {"ReturnValue", offsetof(KismetSystemLibrary_MakeTopLevelAssetPath, ReturnValue)} }, why)) return false;
+        if (!ParamsHold(kismet, "KismetSystemLibrary", "GetPathName", sizeof(KismetSystemLibrary_GetPathName),
+                { {"Object", offsetof(KismetSystemLibrary_GetPathName, Object)},
+                  {"ReturnValue", offsetof(KismetSystemLibrary_GetPathName, ReturnValue)} }, why)) return false;
+
+        // Soft: what the FACT lines print for the texture's import details.
+        SDK::UClass* tex = SDK::UTexture2D::StaticClass();
+        std::string missing;
+        auto soft = [&](SDK::FProperty*& out, const char* name, OP::PropertyKind kind)
+        {
+            out = OP::FindPropertyByName(tex, name);
+            if (out && kind != OP::PropertyKind::Unknown && OP::GetPropertyKind(out) != kind) out = nullptr;
+            if (!out) missing += std::string(missing.empty() ? "" : ",") + name;
+        };
+        g_bn.impSize = OP::FindPropertyByName(tex, "ImportedSize");
+        SDK::UStruct* sizeStruct = g_bn.impSize ? OP::GetPropertyStructType(g_bn.impSize) : nullptr;
+        g_bn.impX = sizeStruct ? OP::FindPropertyByName(sizeStruct, "X") : nullptr;
+        g_bn.impY = sizeStruct ? OP::FindPropertyByName(sizeStruct, "Y") : nullptr;
+        if (!g_bn.impX || !g_bn.impY)
+        {
+            g_bn.impSize = nullptr;
+            missing += "ImportedSize";
+        }
+        soft(g_bn.firstMip, "FirstResourceMemMip", OP::PropertyKind::Int);
+        soft(g_bn.neverStream, "NeverStream", OP::PropertyKind::Bool);
+        soft(g_bn.lod, "LODGroup", OP::PropertyKind::Unknown);
+        soft(g_bn.vts, "VirtualTextureStreaming", OP::PropertyKind::Bool);
+        soft(g_bn.comp, "CompressionSettings", OP::PropertyKind::Unknown);
+        if (!missing.empty())
+            LogToFile::Info("[ImgTrial] NOTE texture import details not found by name on this build, printed as -1: %s", missing.c_str());
+        return true;
+    }
+
+    bool SdkLayoutHolds() { return VersionMap::RunningExe().cl == VersionMap::kBuiltCL; }
+
     // How the brush of an item or building reads: 0 texture, 1 some other object, 2 empty, 3 not found, 4 wrong type, -1 fault.
-    int ResolveBrushSEH(bool building, SDK::UPackage* pkg, const wchar_t* name, SDK::UObject** outRes)
+    // cdoName is the item's default object ("Default__X_C") for a build the SDK was not made for, which finds it by name.
+    int ResolveBrushSEH(bool building, SDK::UPackage* pkg, const wchar_t* name, const wchar_t* cdoName, SDK::UObject** outRes)
     {
         *outRes = nullptr;
         __try
@@ -167,16 +320,37 @@ namespace
                 SDK::UObject* o = g_eng.find(SDK::UCrBuildingData::StaticClass(), pkg, name, false);
                 if (!o) return 3;
                 if (!o->IsA(SDK::UCrBuildingData::StaticClass())) return 4;
-                *outRes = static_cast<SDK::UCrBuildingData*>(o)->Icon.ResourceObject;
+                if (g_byName)
+                {
+                    void* brush = OP::GetPropertyRawPtr(o, g_bn.icon);
+                    if (!OP::GetObjectProperty(brush, g_bn.iconRes, outRes)) return 4;
+                }
+                else
+                    *outRes = static_cast<SDK::UCrBuildingData*>(o)->Icon.ResourceObject;
             }
             else
             {
-                SDK::UObject* o = g_eng.find(SDK::UClass::StaticClass(), pkg, name, false);
-                if (!o) return 3;
-                SDK::UObject* cdo = static_cast<SDK::UClass*>(o)->ClassDefaultObject;
-                if (!cdo) return 3;
+                SDK::UObject* cdo = nullptr;
+                if (g_byName)
+                {
+                    cdo = g_eng.find(SDK::UAuItemDataBase::StaticClass(), pkg, cdoName, false);
+                    if (!cdo) return 3;
+                }
+                else
+                {
+                    SDK::UObject* o = g_eng.find(SDK::UClass::StaticClass(), pkg, name, false);
+                    if (!o) return 3;
+                    cdo = static_cast<SDK::UClass*>(o)->ClassDefaultObject;
+                    if (!cdo) return 3;
+                }
                 if (!cdo->IsA(SDK::UAuItemDataBase::StaticClass())) return 4;
-                *outRes = static_cast<SDK::UAuItemDataBase*>(cdo)->ItemIcon.ResourceObject;
+                if (g_byName)
+                {
+                    void* brush = OP::GetPropertyRawPtr(cdo, g_bn.itemIcon);
+                    if (!OP::GetObjectProperty(brush, g_bn.itemIconRes, outRes)) return 4;
+                }
+                else
+                    *outRes = static_cast<SDK::UAuItemDataBase*>(cdo)->ItemIcon.ResourceObject;
             }
             if (!*outRes) return 2;
             return (*outRes)->IsA(SDK::UTexture2D::StaticClass()) ? 0 : 1;
@@ -186,10 +360,34 @@ namespace
 
     struct Raw { int impX, impY, firstMip, neverStream, lod, vts, comp; };
 
+    int ReadInt(void* container, SDK::FProperty* p)
+    {
+        int64_t v = 0;
+        return p && OP::GetIntProperty(container, p, &v) ? int(v) : -1;
+    }
+
+    int ReadBool(void* container, SDK::FProperty* p)
+    {
+        bool v = false;
+        return p && OP::GetBoolProperty(container, p, &v) ? (v ? 1 : 0) : -1;
+    }
+
     bool ReadRawSEH(SDK::UTexture2D* t, Raw* out)
     {
         __try
         {
+            if (g_byName)
+            {
+                void* size = g_bn.impSize ? OP::GetPropertyRawPtr(t, g_bn.impSize) : nullptr;
+                out->impX = size ? ReadInt(size, g_bn.impX) : -1;
+                out->impY = size ? ReadInt(size, g_bn.impY) : -1;
+                out->firstMip = ReadInt(t, g_bn.firstMip);
+                out->neverStream = ReadBool(t, g_bn.neverStream);
+                out->lod = ReadInt(t, g_bn.lod);
+                out->vts = ReadBool(t, g_bn.vts);
+                out->comp = ReadInt(t, g_bn.comp);
+                return true;
+            }
             out->impX = t->ImportedSize.X; out->impY = t->ImportedSize.Y;
             out->firstMip = t->FirstResourceMemMip; out->neverStream = t->NeverStream;
             out->lod = (int)t->LODGroup; out->vts = t->VirtualTextureStreaming; out->comp = (int)t->CompressionSettings;
@@ -198,9 +396,41 @@ namespace
         __except (Filter(GetExceptionCode())) { return false; }
     }
 
+    // A native class's default object, found by name each time and not kept. The SDK's GetDefaultObj reads
+    // UClass::ClassDefaultObject, a compiled member the layout check does not cover.
+    SDK::UObject* DefaultObjectByName(const wchar_t* path)
+    {
+        ResolveEngine();
+        SDK::UObject* o = nullptr;
+        if (!g_eng.find || !FindObjSEH(nullptr, nullptr, path, &o)) return nullptr;
+        return o;
+    }
+
+    // A script function called the way the SDK's own wrappers do, on a default object found by name.
+    bool CallStatic(const wchar_t* cdoPath, SDK::UFunction* func, void* parms)
+    {
+        SDK::UObject* cdo = DefaultObjectByName(cdoPath);
+        if (!cdo || !func) return false;
+        const auto flags = func->FunctionFlags;
+        func->FunctionFlags |= 0x400;
+        cdo->ProcessEvent(func, parms);
+        func->FunctionFlags = flags;
+        return true;
+    }
+
     // The engine's own path ("/Game/.../T_X.T_X"). The SDK's GetFullName builds it from GetName, which drops everything
     // up to the last '/', so it gives "T_X.T_X", which no lookup finds.
-    void FullNameInto(SDK::UObject* o, std::string* out) { *out = SDK::UKismetSystemLibrary::GetPathName(o).ToString(); }
+    void FullNameInto(SDK::UObject* o, std::string* out)
+    {
+        if (!g_byName) { *out = SDK::UKismetSystemLibrary::GetPathName(o).ToString(); return; }
+        static SDK::UFunction* func = nullptr;
+        if (!func)
+            func = SDK::UKismetSystemLibrary::StaticClass()->GetFunction("KismetSystemLibrary", "GetPathName");
+        SDK::Params::KismetSystemLibrary_GetPathName parms{};
+        parms.Object = o;
+        if (CallStatic(L"/Script/Engine.Default__KismetSystemLibrary", func, &parms))
+            *out = parms.ReturnValue.ToString();
+    }
 
     bool PathSEH(SDK::UObject* o, std::string* out)
     {
@@ -218,7 +448,8 @@ namespace
 
     SDK::IAssetRegistry* GetAssetRegistry()
     {
-        SDK::UAssetRegistryHelpers* cdo = SDK::UAssetRegistryHelpers::GetDefaultObj();
+        SDK::UObject* cdo = g_byName ? DefaultObjectByName(L"/Script/AssetRegistry.Default__AssetRegistryHelpers")
+                                     : SDK::UAssetRegistryHelpers::GetDefaultObj();
         if (!cdo) return nullptr;
         static SDK::UFunction* func = nullptr;
         if (!func)
@@ -245,7 +476,19 @@ namespace
         SDK::FString packagePath(scriptPackage);
         SDK::FString cls(className);
         SDK::Params::AssetRegistry_GetAssetsByClass parms{};
-        parms.ClassPathName     = SDK::UKismetSystemLibrary::MakeTopLevelAssetPath(packagePath, cls);
+        if (g_byName)
+        {
+            static SDK::UFunction* makePath = nullptr;
+            if (!makePath)
+                makePath = SDK::UKismetSystemLibrary::StaticClass()->GetFunction("KismetSystemLibrary", "MakeTopLevelAssetPath");
+            SDK::Params::KismetSystemLibrary_MakeTopLevelAssetPath makeParms{};
+            makeParms.PackageName = std::move(packagePath);
+            makeParms.AssetName   = std::move(cls);
+            if (!CallStatic(L"/Script/Engine.Default__KismetSystemLibrary", makePath, &makeParms)) return false;
+            parms.ClassPathName = makeParms.ReturnValue;
+        }
+        else
+            parms.ClassPathName = SDK::UKismetSystemLibrary::MakeTopLevelAssetPath(packagePath, cls);
         parms.bSearchSubClasses = true;
         const auto flags = func->FunctionFlags;
         func->FunctionFlags |= 0x400;
@@ -593,7 +836,8 @@ namespace
         const std::wstring nameW = W(e.building ? e.asset : e.asset + "_C");
         SDK::UObject* res = nullptr;
         a = Now();
-        e.kind = ResolveBrushSEH(e.building, package, nameW.c_str(), &res);
+        const std::wstring cdoW = W("Default__" + e.asset + "_C");
+        e.kind = ResolveBrushSEH(e.building, package, nameW.c_str(), cdoW.c_str(), &res);
         t.resolve = Ms(a, Now());
         if (e.kind < 0) t.fault = true;
         e.done = true;
@@ -656,7 +900,7 @@ namespace
             "firstResMip=%d imported=%dx%d neverStream=%d lodGroup=%d vts=%d compression=%d heap=%s protect=%s state=0x%x flags=0x%x "
             "dim=%u array=%u samples=%u alloc=%llu",
             e.building ? "building" : "item", e.asset.c_str(), e.texPath.c_str(), e.pkgResident ? 1 : 0, e.texResident, f.fmt, f.w, f.h,
-            f.mips, rec.rawOk ? int(f.mips) + r.firstMip : -1, rec.rawOk ? r.firstMip : -1, rec.rawOk ? r.impX : -1, rec.rawOk ? r.impY : -1,
+            f.mips, rec.rawOk && r.firstMip >= 0 ? int(f.mips) + r.firstMip : -1, rec.rawOk ? r.firstMip : -1, rec.rawOk ? r.impX : -1, rec.rawOk ? r.impY : -1,
             rec.rawOk ? r.neverStream : -1, rec.rawOk ? r.lod : -1, rec.rawOk ? r.vts : -1, rec.rawOk ? r.comp : -1,
             f.heap == 0 ? "committed" : f.heap == 1 ? "placed" : "unreadable", f.reduced ? "reduced" : "full", f.state, f.flags,
             f.dimension, f.depthOrArray, f.samples, f.allocBytes);
@@ -1029,6 +1273,31 @@ namespace
 
     bool GateOpen(bool world)
     {
+        // A build the SDK was not made for: its members are read by name and its calls are checked first, once.
+        static int s_names = 0;   // 0 not checked, 1 passed, 2 refused
+        if (s_names == 0 && SdkLayoutHolds())
+            s_names = 1;
+        static std::string s_why;
+        if (s_names == 0)
+        {
+            if (ResolveByName(&s_why))
+            {
+                s_names = 1;
+                g_byName = true;
+                LogToFile::Info("[ImgTrial] NOTE running game build is CL-%u, the SDK is for CL-%u: members read by name, registry calls checked",
+                    VersionMap::RunningExe().cl, VersionMap::kBuiltCL);
+            }
+            else if (Ms(g_gateStart, Now()) > kHeapWaitMs)
+                s_names = 2;
+            else
+                return false;   // the game's classes may not be up yet: ask again next tick
+        }
+        if (s_names == 2)
+        {
+            LogToFile::Info("[ImgTrial] SKIP %s; nothing is measured", s_why.c_str());
+            SetPhase(Ph::Inert);
+            return false;
+        }
         const intptr_t r = UI::ImGuiBackend::ImageTrial(Ops::HeapRows, nullptr, nullptr);
         if (r == 1) return true;
         if (r == 0 || r == -2)

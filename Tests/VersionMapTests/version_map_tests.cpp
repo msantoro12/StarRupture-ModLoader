@@ -1478,9 +1478,9 @@ int main()
 	// Served on CL-127004; refused on any other build, which sends icon copies to reduced protection.
 	{
 		VersionMap::SetLiveFieldSource(FakeLive);
-		const auto overlayLookup = [](const char* key, uint32_t cl, VersionMap::FieldValue& v, std::string& e)
+		const auto overlayLookup = [](const char* key, uint32_t cl, VersionMap::FieldValue& v, std::string& e, size_t size = sizeof(void*))
 		{
-			VersionMap::FieldRequest request = VersionMap::LoaderFieldRequest(key, sizeof(void*), -1);
+			VersionMap::FieldRequest request = VersionMap::LoaderFieldRequest(key, size, -1);
 			request.flags   = PLUGIN_FIELD_NATIVE;
 			request.builtCL = 0;
 			for (const Real::VersionMap::Index& index : Real::VersionMap::kFields)
@@ -1497,10 +1497,25 @@ int main()
 			"overlay heap rows: FD3D12Resource::Heap served at 0x30 on CL-127004");
 		Check(overlayLookup("FD3D12Heap::Heap", 127004, v, e) && v.offset == 0x20,
 			"overlay heap rows: FD3D12Heap::Heap served at 0x20 on CL-127004");
-		for (const uint32_t cl : { 128786u, 129402u })
-			for (const char* key : { "FD3D12Resource::Heap", "FD3D12Heap::Heap" })
-				Check(!overlayLookup(key, cl, v, e) && e.find("no row for CL-" + std::to_string(cl) + ", and a native member has no other source") == 0,
-					(std::string("overlay heap rows: ") + key + " refused on CL-" + std::to_string(cl) + ", no compiled fallback").c_str());
+		Check(overlayLookup("FD3D12Resource::Heap", 129402, v, e) && v.offset == 0x30,
+			"overlay heap rows: FD3D12Resource::Heap served at 0x30 on CL-129402");
+		Check(overlayLookup("FD3D12Heap::Heap", 129402, v, e) && v.offset == 0x20,
+			"overlay heap rows: FD3D12Heap::Heap served at 0x20 on CL-129402");
+		// The engine texture chain: rows for CL-129402 only; CL-127004 reads the compiled offsets.
+		const struct { const char* key; uint32_t offset; size_t size; } chain[] = {
+			{ "UTexture::PrivateResource", 0x120, 8 }, { "FTexture::TextureRHI", 0x10, 8 }, { "FD3D12Texture::ResourceLocation", 0xA8, 0x78 },
+			{ "FD3D12ResourceLocation::UnderlyingResource", 0x10, 8 }, { "FD3D12Resource::DefaultResourceState", 0x9C, 4 },
+			{ "FD3D12Resource::Resource", 0x20, 8 } };
+		for (const auto& row : chain)
+		{
+			Check(overlayLookup(row.key, 129402, v, e, row.size) && v.offset == row.offset,
+				(std::string("overlay texture rows: ") + row.key + " served on CL-129402").c_str());
+			Check(!overlayLookup(row.key, 127004, v, e, row.size),
+				(std::string("overlay texture rows: ") + row.key + " has no CL-127004 row").c_str());
+		}
+		for (const char* key : { "FD3D12Resource::Heap", "FD3D12Heap::Heap" })
+			Check(!overlayLookup(key, 128786, v, e) && e.find("no row for CL-128786, and a native member has no other source") == 0,
+				(std::string("overlay heap rows: ") + key + " refused on CL-128786, no compiled fallback").c_str());
 		VersionMap::SetLiveFieldSource(nullptr);
 	}
 	// The real map's function rows for Build Windows Anywhere and Build Benches Anywhere: one function-start row per

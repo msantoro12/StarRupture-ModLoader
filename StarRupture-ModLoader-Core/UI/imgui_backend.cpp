@@ -3532,6 +3532,60 @@ static constexpr ptrdiff_t kFD3D12Resource_DefaultResourceState  = 0x94;
 static constexpr int       kFRHITexture_GetNativeResource_Slot          = 5;
 static constexpr int       kFRHITexture_GetNativeShaderResourceView_Slot = 6;
 
+// Where the engine keeps the chain from a UTexture to its D3D12 resource. The constants above are the
+// values for the game build this loader was made for. A game build whose version map has every row below
+// is read through the rows instead, and there the ID3D12Resource comes from FD3D12Resource::Resource:
+// the vtable call (slot 5) has no row, so nothing shows it is the same call on a build the rows cover.
+namespace
+{
+	struct EngineTextureChain
+	{
+		ptrdiff_t privateResource    = kUTexture_PrivateResource;
+		ptrdiff_t textureRHI         = kFTextureResource_TextureRHI_Ptr;
+		ptrdiff_t underlyingResource = kFD3D12Texture_UnderlyingResource_Ptr;
+		ptrdiff_t defaultState       = kFD3D12Resource_DefaultResourceState;
+		ptrdiff_t nativeResource     = 0;      // FD3D12Resource::Resource, set with the rows
+		bool      fromRows           = false;
+	};
+	EngineTextureChain g_chain;
+	std::once_flag     g_chainOnce;
+}
+
+// Once per session, before the first read of an engine texture. All six rows or none: a build with only
+// some of them keeps the compiled values, as before.
+static void LookUpEngineTextureChain()
+{
+	if (!g_callbacks.NativeFieldOffset)
+		return;
+	char why[256] = "";
+	const int privateResource = g_callbacks.NativeFieldOffset("UTexture::PrivateResource", 8, why, sizeof(why));
+	if (privateResource < 0)
+	{
+		IMGUI_LOG_INFO("[ImGuiBackend] Engine texture reads: compiled offsets (%s)", why);
+		return;
+	}
+	const int textureRHI    = g_callbacks.NativeFieldOffset("FTexture::TextureRHI", 8, why, sizeof(why));
+	const int location      = g_callbacks.NativeFieldOffset("FD3D12Texture::ResourceLocation", 0x78, why, sizeof(why));
+	const int underlying    = g_callbacks.NativeFieldOffset("FD3D12ResourceLocation::UnderlyingResource", 8, why, sizeof(why));
+	const int defaultState  = g_callbacks.NativeFieldOffset("FD3D12Resource::DefaultResourceState", 4, why, sizeof(why));
+	const int nativeResource = g_callbacks.NativeFieldOffset("FD3D12Resource::Resource", 8, why, sizeof(why));
+	if (textureRHI < 0 || location < 0 || underlying < 0 || defaultState < 0 || nativeResource < 0)
+	{
+		IMGUI_LOG_WARN("[ImGuiBackend] Engine texture reads: compiled offsets -- not every row is there (%s)", why);
+		return;
+	}
+	g_chain.privateResource    = privateResource;
+	g_chain.textureRHI         = textureRHI;
+	g_chain.underlyingResource = static_cast<ptrdiff_t>(location) + underlying;
+	g_chain.defaultState       = defaultState;
+	g_chain.nativeResource     = nativeResource;
+	g_chain.fromRows           = true;
+	IMGUI_LOG_INFO("[ImGuiBackend] Engine texture reads: version map rows (PrivateResource 0x%X, TextureRHI 0x%X, "
+		"UnderlyingResource 0x%X, DefaultResourceState 0x%X, Resource 0x%X)", static_cast<unsigned>(privateResource),
+		static_cast<unsigned>(textureRHI), static_cast<unsigned>(g_chain.underlyingResource),
+		static_cast<unsigned>(defaultState), static_cast<unsigned>(nativeResource));
+}
+
 // Map a typeless DXGI format to its UNORM (or UF16 for BC6H) typed equivalent.
 // Engine resources often use typeless formats internally; SRVs require a typed view.
 static DXGI_FORMAT ResolveTypelessForSRV(DXGI_FORMAT fmt)
@@ -3633,6 +3687,47 @@ namespace
 	};
 	IconHeapRows   g_iconHeapRows;
 	std::once_flag g_iconHeapRowsOnce;
+
+	int TrialFilter(unsigned code);   // access violation and in-page error only; defined with the trial below
+}
+
+// The row-read form of GetNativeResourceSEH, for a build whose rows are served (g_chain.fromRows). From the
+// FRHITexture: the FD3D12Resource, its default state, and the ID3D12Resource inside it (FD3D12Resource::Resource,
+// which must have a vtable in the module real D3D12 objects' are), then its desc. 1 = read, 0 = not there yet
+// or not a D3D12 resource, -1 = fault. SEH only: no C++ objects with destructors in here.
+static int GetNativeResourceFromRowsSEH(
+	void*                rhiTexture,
+	void**               outUnderlying,
+	unsigned*            outState,
+	ID3D12Resource**     outResource,
+	D3D12_RESOURCE_DESC* outDesc)
+{
+	__try
+	{
+		void* underlying = *reinterpret_cast<void**>(static_cast<uint8_t*>(rhiTexture) + g_chain.underlyingResource);
+		if (!underlying || !IsValidUserPtr(underlying))
+			return 0;
+		const unsigned state = *reinterpret_cast<unsigned*>(static_cast<uint8_t*>(underlying) + g_chain.defaultState);
+		void* res = *reinterpret_cast<void**>(static_cast<uint8_t*>(underlying) + g_chain.nativeResource);
+		if (!IsValidUserPtr(res))
+			return 0;
+		void* vtable = *reinterpret_cast<void**>(res);
+		HMODULE module = nullptr;
+		if (!IsValidUserPtr(vtable) ||
+			!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+				reinterpret_cast<LPCWSTR>(vtable), &module) ||
+			module != g_iconHeapRows.heapModule)
+			return 0;
+		*outUnderlying = underlying;
+		*outState      = state;
+		*outResource   = static_cast<ID3D12Resource*>(res);
+		*outDesc       = static_cast<ID3D12Resource*>(res)->GetDesc();
+		return 1;
+	}
+	__except (TrialFilter(GetExceptionCode()))
+	{
+		return -1;
+	}
 }
 
 // Once per session, on the first engine-texture copy: looks up the two rows and
@@ -3827,12 +3922,24 @@ static PluginTextureHandle TextureLoadFromUTexture2D(SDK::UTexture2D* uTexture2D
 	if (g_iconCopyOff)
 		return nullptr;  // logged when it was set
 
+	std::call_once(g_chainOnce, LookUpEngineTextureChain);
+	std::call_once(g_iconHeapRowsOnce, LookUpIconHeapRows);
+	const bool useRows = g_chain.fromRows;
+	if (useRows && !g_iconHeapRows.heapModule)
+	{
+		static std::atomic<bool> s_noModuleLogged{ false };
+		if (!s_noModuleLogged.exchange(true))
+			IMGUI_LOG_WARN("[ImGuiBackend] LoadFromUTexture2D: no engine texture is read on this game build -- the D3D12 "
+				"resource inside it can only be checked against a heap made on our device, and none could be (logged once)");
+		return nullptr;
+	}
+
 	// Step 1: UTexture::PrivateResource at offset 0x120
 	uint8_t* textureBase = reinterpret_cast<uint8_t*>(uTexture2D);
 	IMGUI_LOG_TRACE("[ImGuiBackend] LoadFromUTexture2D: reading PrivateResource at 0x%p+0x%zX",
-		(void*)textureBase, kUTexture_PrivateResource);
+		(void*)textureBase, g_chain.privateResource);
 
-	void* resourcePtr = *reinterpret_cast<void**>(textureBase + kUTexture_PrivateResource);
+	void* resourcePtr = *reinterpret_cast<void**>(textureBase + g_chain.privateResource);
 	IMGUI_LOG_TRACE("[ImGuiBackend] LoadFromUTexture2D: FTextureResource*=0x%p", resourcePtr);
 
 	if (!IsValidUserPtr(resourcePtr))
@@ -3845,9 +3952,9 @@ static PluginTextureHandle TextureLoadFromUTexture2D(SDK::UTexture2D* uTexture2D
 	// Step 2: FTexture::TextureRHI (TRefCountPtr<FRHITexture>) at offset 0x10
 	uint8_t* textureResourceBase = reinterpret_cast<uint8_t*>(resourcePtr);
 	IMGUI_LOG_TRACE("[ImGuiBackend] LoadFromUTexture2D: reading TextureRHI at 0x%p+0x%zX",
-		(void*)textureResourceBase, kFTextureResource_TextureRHI_Ptr);
+		(void*)textureResourceBase, g_chain.textureRHI);
 
-	void* rhiTexture = *reinterpret_cast<void**>(textureResourceBase + kFTextureResource_TextureRHI_Ptr);
+	void* rhiTexture = *reinterpret_cast<void**>(textureResourceBase + g_chain.textureRHI);
 	IMGUI_LOG_TRACE("[ImGuiBackend] LoadFromUTexture2D: FRHITexture*=0x%p", rhiTexture);
 
 	if (!IsValidUserPtr(rhiTexture))
@@ -3862,7 +3969,14 @@ static PluginTextureHandle TextureLoadFromUTexture2D(SDK::UTexture2D* uTexture2D
 	void** vtable       = nullptr;
 	ID3D12Resource* d3dResource = nullptr;
 	D3D12_RESOURCE_DESC resDesc = {};
-	if (!GetNativeResourceSEH(rhiTexture, &vtable, &d3dResource, &resDesc))
+	void*    rowsUnderlying = nullptr;
+	unsigned rowsState      = 0;
+	if (useRows)
+	{
+		if (GetNativeResourceFromRowsSEH(rhiTexture, &rowsUnderlying, &rowsState, &d3dResource, &resDesc) <= 0)
+			return nullptr;
+	}
+	else if (!GetNativeResourceSEH(rhiTexture, &vtable, &d3dResource, &resDesc))
 		return nullptr;
 	int width  = static_cast<int>(resDesc.Width);
 	int height = static_cast<int>(resDesc.Height);
@@ -3899,8 +4013,8 @@ static PluginTextureHandle TextureLoadFromUTexture2D(SDK::UTexture2D* uTexture2D
 	// COPY_DEST (0x400); we must not create an SRV and try to sample them until UE5
 	// has transitioned them to PIXEL_SHADER_RESOURCE.  Returning nullptr lets the
 	// plugin retry next frame.
-	void* underlyingRaw = *reinterpret_cast<void**>(
-		static_cast<uint8_t*>(rhiTexture) + kFD3D12Texture_UnderlyingResource_Ptr);
+	void* underlyingRaw = useRows ? rowsUnderlying : *reinterpret_cast<void**>(
+		static_cast<uint8_t*>(rhiTexture) + g_chain.underlyingResource);
 	IMGUI_LOG_TRACE("[ImGuiBackend] LoadFromUTexture2D: FD3D12Resource*=0x%p", underlyingRaw);
 
 	if (!underlyingRaw)
@@ -3909,8 +4023,8 @@ static PluginTextureHandle TextureLoadFromUTexture2D(SDK::UTexture2D* uTexture2D
 		return nullptr;
 	}
 
-	const D3D12_RESOURCE_STATES srcState = *reinterpret_cast<D3D12_RESOURCE_STATES*>(
-		static_cast<uint8_t*>(underlyingRaw) + kFD3D12Resource_DefaultResourceState);
+	const D3D12_RESOURCE_STATES srcState = useRows ? static_cast<D3D12_RESOURCE_STATES>(rowsState)
+		: *reinterpret_cast<D3D12_RESOURCE_STATES*>(static_cast<uint8_t*>(underlyingRaw) + g_chain.defaultState);
 
 	{
 		constexpr D3D12_RESOURCE_STATES kReadable =
@@ -3935,7 +4049,6 @@ static PluginTextureHandle TextureLoadFromUTexture2D(SDK::UTexture2D* uTexture2D
 	d3dResource->AddRef();
 	hold.Get().source = d3dResource;
 
-	std::call_once(g_iconHeapRowsOnce, LookUpIconHeapRows);
 	ID3D12Heap* heap = nullptr;
 	const IconCopy::HeapProbe probe = g_iconHeapRows.known
 		? ProbeSourceHeap(underlyingRaw, resDesc, &heap)
@@ -4143,16 +4256,16 @@ namespace
 	{
 		__try
 		{
-			void* resource = *reinterpret_cast<void**>(static_cast<uint8_t*>(texture) + kUTexture_PrivateResource);
+			void* resource = *reinterpret_cast<void**>(static_cast<uint8_t*>(texture) + g_chain.privateResource);
 			if (!IsValidUserPtr(resource))
 				return 0;
-			void* rhi = *reinterpret_cast<void**>(static_cast<uint8_t*>(resource) + kFTextureResource_TextureRHI_Ptr);
+			void* rhi = *reinterpret_cast<void**>(static_cast<uint8_t*>(resource) + g_chain.textureRHI);
 			if (!IsValidUserPtr(rhi))
 				return 0;
-			void* underlying = *reinterpret_cast<void**>(static_cast<uint8_t*>(rhi) + kFD3D12Texture_UnderlyingResource_Ptr);
+			void* underlying = *reinterpret_cast<void**>(static_cast<uint8_t*>(rhi) + g_chain.underlyingResource);
 			if (!IsValidUserPtr(underlying))
 				return 0;
-			*outState = *reinterpret_cast<unsigned*>(static_cast<uint8_t*>(underlying) + kFD3D12Resource_DefaultResourceState);
+			*outState = *reinterpret_cast<unsigned*>(static_cast<uint8_t*>(underlying) + g_chain.defaultState);
 			*outRhi = rhi;
 			*outUnderlying = underlying;
 			return 1;
@@ -4170,6 +4283,8 @@ namespace
 		void* rhi = nullptr;
 		void* underlying = nullptr;
 		unsigned state = 0;
+		std::call_once(g_chainOnce, LookUpEngineTextureChain);
+		std::call_once(g_iconHeapRowsOnce, LookUpIconHeapRows);
 		const int walked = TrialWalkSEH(texture, &rhi, &underlying, &state);
 		if (walked <= 0)
 			return walked;
@@ -4177,7 +4292,16 @@ namespace
 		void** vtable = nullptr;
 		ID3D12Resource* resource = nullptr;
 		D3D12_RESOURCE_DESC desc = {};
-		if (!GetNativeResourceSEH(rhi, &vtable, &resource, &desc))
+		if (g_chain.fromRows)
+		{
+			// The ID3D12Resource comes from the FD3D12Resource row, not the vtable call.
+			void* rowsUnderlying = nullptr;
+			unsigned rowsState = 0;
+			if (!g_iconHeapRows.heapModule ||
+				GetNativeResourceFromRowsSEH(rhi, &rowsUnderlying, &rowsState, &resource, &desc) <= 0)
+				return -1;
+		}
+		else if (!GetNativeResourceSEH(rhi, &vtable, &resource, &desc))
 			return -1;
 
 		*out = {};
@@ -4192,7 +4316,6 @@ namespace
 		out->state        = state;
 		out->allocBytes   = g_device->GetResourceAllocationInfo(0, 1, &desc).SizeInBytes;
 
-		std::call_once(g_iconHeapRowsOnce, LookUpIconHeapRows);
 		ID3D12Heap* heap = nullptr;
 		const IconCopy::HeapProbe probe = g_iconHeapRows.known
 			? ProbeSourceHeap(underlying, desc, &heap)

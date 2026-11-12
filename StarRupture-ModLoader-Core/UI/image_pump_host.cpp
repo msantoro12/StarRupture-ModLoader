@@ -3,6 +3,7 @@
 
 #ifdef MODLOADER_CLIENT_BUILD
 
+#include "UI/image_lookup_host.h"
 #include "UI/imgui_backend.h"
 #include "hooks/game/object_lookup/object_lookup.h"
 #include "hooks/game/scan_patterns.h"
@@ -188,7 +189,7 @@ namespace ImagePump
 		Pump& TheInstance()
 		{
 			static EngineHost* const host = new EngineHost();
-			static Pump* const pump = new Pump(ImageLibrary::Instance(), *host);
+			static Pump* const pump = new Pump(ImageLibrary::Instance(), *host, ImageLookup::EngineItems());
 			return *pump;
 		}
 	}

@@ -222,6 +222,12 @@
     <ClInclude Include="UI\image_library.h">
       <Filter>Source Files\UI\modloader</Filter>
     </ClInclude>
+    <ClInclude Include="UI\image_lookup.h">
+      <Filter>Source Files\UI\modloader</Filter>
+    </ClInclude>
+    <ClInclude Include="UI\image_lookup_host.h">
+      <Filter>Source Files\UI\modloader</Filter>
+    </ClInclude>
     <ClInclude Include="UI\image_pump.h">
       <Filter>Source Files\UI\modloader</Filter>
     </ClInclude>
@@ -672,6 +678,12 @@
       <Filter>Source Files\UI\modloader</Filter>
     </ClCompile>
     <ClCompile Include="UI\image_library.cpp">
+      <Filter>Source Files\UI\modloader</Filter>
+    </ClCompile>
+    <ClCompile Include="UI\image_lookup.cpp">
+      <Filter>Source Files\UI\modloader</Filter>
+    </ClCompile>
+    <ClCompile Include="UI\image_lookup_host.cpp">
       <Filter>Source Files\UI\modloader</Filter>
     </ClCompile>
     <ClCompile Include="UI\image_pump.cpp">

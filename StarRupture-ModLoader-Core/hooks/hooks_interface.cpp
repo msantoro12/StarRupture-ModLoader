@@ -40,6 +40,7 @@
 #include "UI/imgui_backend.h"
 #include "UI/splash_window.h"
 #include "UI/image_library.h"
+#include "UI/image_lookup_host.h"
 #include "hooks/game/hud_post_render/hud_post_render.h"
 #include "hooks/game/debug_draw/debug_draw.h"
 #include "hooks/game/game_menu/game_menu_registry.h"
@@ -1925,7 +1926,10 @@ namespace ModLoaderLogger
 
 		// The image library. Client only: the images are the game's UI textures.
 		if (!g_pluginHooks.Images)
+		{
+			ImageLibrary::SetFromTexture(ImageLookup::FromTexture);
 			g_pluginHooks.Images = ImageLibrary::GetInterface();
+		}
 #endif
 
 		// Resolve the network channel pointer on first call.

@@ -9,10 +9,14 @@
 // shutdown) are testable with fakes. The loader's own Host is in
 // image_pump_host.cpp.
 //
+// An item request waits in the pump until the item index knows its icon, and
+// then becomes the image of the icon's texture path (Library::Alias).
+//
 // Game thread only. The pump keeps no pointer into the engine: a texture is
 // found, read and forgotten inside one Host::Read call.
 
 #include "UI/image_library.h"
+#include "UI/image_lookup.h"
 
 #include <cstdint>
 #include <string>
@@ -103,7 +107,7 @@ namespace ImagePump
 	class Pump
 	{
 	public:
-		Pump(ImageLibrary::Library& library, Host& host);
+		Pump(ImageLibrary::Library& library, Host& host, ImageLookup::ItemSource& items);
 
 		// Once per engine tick, after the plugin callbacks.
 		void Tick();
@@ -129,13 +133,24 @@ namespace ImagePump
 			uint64_t            bytes   = 0;
 		};
 
+		// An item request the index cannot answer yet.
+		struct HeldItem
+		{
+			PluginImageId id = 0;
+			std::string   key;
+		};
+
 		enum class Outcome { Started, Done, Later, Busy, Off };
 
 		void    Start();
 		void    GpuGone();
 		void    Collect();
 		void    Serve();
+		void    StepItems();
+		void    ResolveHeld();
+		bool    Resolved(const HeldItem& item);
 		void    FailQueued();
+		void    FailHeld();
 		Outcome Attempt(const ImageLibrary::Request& request, uint32_t& loads);
 		bool    Store(const InFlight& read, Stored& out);
 		void    FreeDeferred();
@@ -143,6 +158,7 @@ namespace ImagePump
 
 		ImageLibrary::Library& m_library;
 		Host&                  m_host;
+		ImageLookup::ItemIndex m_items;
 
 		bool m_started = false;   // the GPU side was up at least once
 		bool m_off     = false;   // no read can run any more this session
@@ -152,6 +168,7 @@ namespace ImagePump
 		std::vector<InFlight>                 m_inFlight;
 		std::vector<ImageLibrary::Released>   m_scratch;
 		std::vector<PluginImageId>            m_later;
+		std::vector<HeldItem>                 m_held;
 		// Evicted copies, freed at the start of the next tick: the frame that
 		// may still draw them has ended by then.
 		std::vector<PluginTextureHandle>      m_toFree;

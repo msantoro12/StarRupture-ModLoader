@@ -1,10 +1,12 @@
 // Image pump test: the rules of UI/image_pump.cpp on a fake engine and GPU. The
 // start gate, the budget per tick, what each read and load result does, the
-// publish of a finished copy, eviction, device loss, shutdown and the summary
-// line.
+// publish of a finished copy, eviction, device loss, shutdown, the summary
+// line, and how an item request waits for the item index and becomes the image
+// of its icon.
 //
-// A console program: no game, no GPU. The pump and the library are the loader's
-// own sources; a texture here is a number standing in for a texture slot.
+// A console program: no game, no GPU. The pump, the library and the item index
+// are the loader's own sources; a texture here is a number standing in for a
+// texture slot.
 #include "UI/image_pump.h"
 
 #include <cstdio>
@@ -118,17 +120,59 @@ public:
     }
 };
 
+// The items of a fake game. Reading one costs time on the host's clock.
+class FakeItems : public ImageLookup::ItemSource
+{
+public:
+    struct Item
+    {
+        std::string            name;
+        std::string            path;
+        ImageLookup::ItemRead  read = ImageLookup::ItemRead::Icon;
+    };
+
+    std::vector<Item>   items;
+    bool                listable   = true;
+    uint64_t*           clockUs    = nullptr;
+    uint64_t            readCostUs = 0;
+    int                 lists      = 0;
+    std::vector<size_t> reads;
+
+    bool List() override
+    {
+        ++lists;
+        return listable;
+    }
+    size_t Count() const override { return items.size(); }
+    ImageLookup::ItemRead Read(size_t index, ImageLookup::ItemRecord& out) override
+    {
+        reads.push_back(index);
+        if (clockUs)
+            *clockUs += readCostUs;
+        out.name = items[index].name;
+        out.texturePath = items[index].path;
+        return items[index].read;
+    }
+
+    void Add(const std::string& name, const char* path)
+    {
+        items.push_back({ name, path, ImageLookup::ItemRead::Icon });
+    }
+};
+
 // A library, a host and a pump that has seen the GPU come up.
 struct Rig
 {
-    Library  library;
-    FakeHost host;
-    Pump     pump;
+    Library   library;
+    FakeHost  host;
+    FakeItems items;
+    Pump      pump;
 
-    explicit Rig(bool gpuUp = true) : pump(library, host)
+    explicit Rig(bool gpuUp = true) : pump(library, host, items)
     {
         host.ready = gpuUp;
         host.clockUs = 1000 * 1000;
+        items.clockUs = &host.clockUs;
     }
 
     // One engine tick, a millisecond later than the last.
@@ -404,20 +448,257 @@ static void RequestsLookedAtPerTickAreCapped()
     CHECK(rig.host.reads.size() == kAttemptsPerTick);
 }
 
-static void ItemRequestsAreLeftInTheQueue()
+static void AnItemBecomesTheImageOfItsIconTexture()
 {
     Rig rig;
+    rig.items.Add("Item_X", kA);
+    rig.host.loaded.insert(kA);
     const PluginImageId item = rig.library.Item("Item_X");
-    rig.Tick(4);
+
+    rig.Tick(3);
+    const PluginImageId path = rig.library.Path(kA);
+    CHECK(rig.library.State(item) == PLUGIN_IMAGE_READY);
+    CHECK(rig.library.State(path) == PLUGIN_IMAGE_READY);
+    CHECK(rig.host.reads.size() == 1 && rig.host.reads[0] == kA);   // one read, one copy
+    CHECK(rig.library.CountKept() == 1);
+    CHECK(rig.library.Get(item) != nullptr && rig.library.Get(item) == rig.library.Get(path));
+    CHECK(rig.library.ImageCount() == 2);   // the item and the path it made
+}
+
+static void AnItemIsAskedForByAnyCase()
+{
+    Rig rig;
+    rig.items.Add("Item_X", kA);
+    rig.host.loaded.insert(kA);
+    const PluginImageId item = rig.library.Item("  item_x ");
+    rig.Tick(3);
+    CHECK(rig.library.State(item) == PLUGIN_IMAGE_READY);
+}
+
+static void AnItemWithNoIconIsNoImage()
+{
+    Rig rig;
+    rig.items.items.push_back({ "Item_Empty", "", ImageLookup::ItemRead::NoIcon });
+    const PluginImageId item = rig.library.Item("Item_Empty");
+    rig.Tick(2);
+    CHECK(rig.library.State(item) == PLUGIN_IMAGE_NO_IMAGE);
+    CHECK(rig.host.reads.empty());
+    CHECK(rig.pump.GetStats().noImage == 1);
+}
+
+static void AnItemWhoseIconIsAPlaceholderIsNoImage()
+{
+    Rig rig;
+    rig.items.Add("Item_White", "/Engine/EngineResources/WhiteSquareTexture.WhiteSquareTexture");
+    rig.items.Add("Item_Grid", "/Engine/EngineMaterials/DefaultWhiteGrid.DefaultWhiteGrid");
+    const PluginImageId white = rig.library.Item("Item_White");
+    const PluginImageId grid = rig.library.Item("Item_Grid");
+    rig.Tick(3);
+    CHECK(rig.library.State(white) == PLUGIN_IMAGE_NO_IMAGE);
+    CHECK(rig.library.State(grid) == PLUGIN_IMAGE_NO_IMAGE);
     CHECK(rig.host.reads.empty());
     CHECK(rig.host.loads.empty());
-    CHECK(rig.library.State(item) == PLUGIN_IMAGE_WAITING);
+    CHECK(rig.library.ImageCount() == 2);   // no path request was made for either
+}
 
-    // A path that comes later is not held up behind the items.
+static void APathToAPlaceholderIsNoImage()
+{
+    Rig rig;
+    const PluginImageId white = rig.library.Path("/Engine/EngineResources/WhiteSquareTexture.WhiteSquareTexture");
+    const PluginImageId placeholder = rig.library.Path("Texture2D'/Game/Scene/WhitePlaceholder.WhitePlaceholder'");
+    rig.Tick(3);
+    CHECK(rig.library.State(white) == PLUGIN_IMAGE_NO_IMAGE);
+    CHECK(rig.library.State(placeholder) == PLUGIN_IMAGE_NO_IMAGE);
+    CHECK(rig.host.reads.empty());
+    CHECK(rig.host.loads.empty());
+
+    // A texture that only has the word in its name is a texture.
+    const PluginImageId other = rig.Loaded("/Game/UI/T_WhiteSquareTextureIcon.T_WhiteSquareTextureIcon");
+    rig.Tick(2);
+    CHECK(rig.library.State(other) == PLUGIN_IMAGE_READY);
+}
+
+static void AnItemThatIsNotInTheGameIsNoImageOnceTheListIsRead()
+{
+    Rig rig;
+    rig.items.Add("Item_X", kA);
+    const PluginImageId unknown = rig.library.Item("Item_Nobody");
+    rig.Tick(2);
+    CHECK(rig.library.State(unknown) == PLUGIN_IMAGE_NO_IMAGE);
+    CHECK(rig.pump.GetStats().noImage == 1);
+}
+
+static void AnItemWaitsWhileTheListIsStillBeingRead()
+{
+    Rig rig;
+    rig.items.readCostUs = ImageLookup::kItemBudgetUs;   // one item per tick
+    for (int i = 0; i < 5; ++i)
+        rig.items.Add("Item_" + std::to_string(i), kA);
+    rig.host.loaded.insert(kA);
+    const PluginImageId last = rig.library.Item("Item_4");
+    rig.Tick(3);
+    CHECK(rig.items.reads.size() == 3);
+    CHECK(rig.library.State(last) == PLUGIN_IMAGE_WAITING);   // not in the index yet
+    CHECK(rig.host.reads.empty());                            // and nothing read for it
+
+    rig.Tick(5);
+    CHECK(rig.library.State(last) == PLUGIN_IMAGE_READY);
+}
+
+static void TheItemIndexReadsNothingUntilAnItemIsAskedFor()
+{
+    Rig rig;
+    rig.items.Add("Item_X", kA);
+    rig.Loaded(kB);
+    rig.Tick(5);
+    CHECK(rig.items.lists == 0);
+    CHECK(rig.items.reads.empty());
+
+    rig.library.Item("Item_X");
+    rig.Tick(2);
+    CHECK(rig.items.lists == 1);
+    CHECK(rig.items.reads.size() == 1);
+}
+
+static void TheItemIndexIsBuiltOnceAndStopsWhenNobodyWaits()
+{
+    Rig rig;
+    rig.items.readCostUs = ImageLookup::kItemBudgetUs;   // one item per tick
+    for (int i = 0; i < 6; ++i)
+        rig.items.Add("Item_" + std::to_string(i), kA);
+    rig.host.loaded.insert(kA);
+
+    rig.library.Item("Item_1");
+    rig.Tick(4);
+    const size_t readSoFar = rig.items.reads.size();
+    CHECK(readSoFar < 6);   // stopped when the item was found
+    rig.Tick(5);
+    CHECK(rig.items.reads.size() == readSoFar);   // nobody waits: no more reads
+
+    // A later item goes on from there, and the first is not read again.
+    const PluginImageId later = rig.library.Item("Item_5");
+    rig.Tick(8);
+    CHECK(rig.library.State(later) == PLUGIN_IMAGE_READY);
+    CHECK(rig.items.lists == 1);
+    CHECK(rig.items.reads.size() == 6);
+}
+
+static void TheItemIndexSpendsTheBudgetPerTick()
+{
+    // 1.5 ms per item against 3 ms: the second read is the last one of the tick.
+    Rig rig;
+    rig.items.readCostUs = 1500;
+    for (int i = 0; i < 10; ++i)
+        rig.items.Add("Item_" + std::to_string(i), kA);
+    rig.library.Item("Item_Nobody");
+    rig.Tick();
+    CHECK(rig.items.reads.size() == 2);
+    rig.Tick();
+    CHECK(rig.items.reads.size() == 4);
+
+    // One slow item runs over once; the next tick goes on from there.
+    Rig slow;
+    slow.items.readCostUs = 5 * ImageLookup::kItemBudgetUs;
+    for (int i = 0; i < 4; ++i)
+        slow.items.Add("Item_" + std::to_string(i), kA);
+    slow.library.Item("Item_Nobody");
+    slow.Tick();
+    CHECK(slow.items.reads.size() == 1);
+    slow.Tick();
+    CHECK(slow.items.reads.size() == 2);
+}
+
+static void ManyItemsAskedForAreHeldWithoutCostingReads()
+{
+    Rig rig;
+    rig.items.Add("Item_0", kA);
+    rig.host.loaded.insert(kA);
+    std::vector<PluginImageId> ids;
+    for (int i = 0; i < 30; ++i)
+        ids.push_back(rig.library.Item(("Item_" + std::to_string(i)).c_str()));
+    const PluginImageId b = rig.Loaded(kB);
+    rig.Tick(4);
+    CHECK(rig.library.State(b) == PLUGIN_IMAGE_READY);
+    CHECK(rig.library.State(ids[0]) == PLUGIN_IMAGE_READY);
+    for (int i = 1; i < 30; ++i)
+        CHECK(rig.library.State(ids[i]) == PLUGIN_IMAGE_NO_IMAGE);
+}
+
+static void WhenTheListCannotBeMadeItemsAreNone()
+{
+    Rig rig;
+    rig.items.listable = false;
+    const PluginImageId item = rig.library.Item("Item_X");
+    rig.Tick(2);
+    CHECK(rig.library.State(item) == PLUGIN_IMAGE_NONE);
+    CHECK(rig.pump.GetStats().failed == 1);
+
+    // Asked again later: the list is not made again, and the item is none at once.
+    const PluginImageId later = rig.library.Item("Item_Y");
+    rig.Tick(2);
+    CHECK(rig.library.State(later) == PLUGIN_IMAGE_NONE);
+    CHECK(rig.items.lists == 1);
+
+    // A path is not held up by it.
     const PluginImageId a = rig.Loaded(kA);
     rig.Tick(2);
     CHECK(rig.library.State(a) == PLUGIN_IMAGE_READY);
+    size_t unavailableLines = 0;
+    for (const std::string& line : rig.host.logs)
+        unavailableLines += line.find("No item can be read") != std::string::npos;
+    CHECK(unavailableLines == 1);
+}
+
+static void AnItemTheEngineCannotReadEndsTheIndex()
+{
+    Rig rig;
+    rig.items.items.push_back({ "Item_A", "", ImageLookup::ItemRead::Unavailable });
+    rig.items.Add("Item_X", kA);
+    const PluginImageId item = rig.library.Item("Item_X");
+    rig.Tick(2);
+    CHECK(rig.library.State(item) == PLUGIN_IMAGE_NONE);
+}
+
+static void AnItemThatCannotBeReadIsSkipped()
+{
+    Rig rig;
+    rig.items.items.push_back({ "Item_Broken", "", ImageLookup::ItemRead::Skipped });
+    rig.items.Add("Item_X", kA);
+    rig.host.loaded.insert(kA);
+    const PluginImageId item = rig.library.Item("Item_X");
+    const PluginImageId broken = rig.library.Item("Item_Broken");
+    rig.Tick(3);
+    CHECK(rig.library.State(item) == PLUGIN_IMAGE_READY);
+    CHECK(rig.library.State(broken) == PLUGIN_IMAGE_NO_IMAGE);
+}
+
+static void WaitingItemsEndWhenTheGpuGoes()
+{
+    Rig rig;
+    rig.items.readCostUs = ImageLookup::kItemBudgetUs;
+    for (int i = 0; i < 5; ++i)
+        rig.items.Add("Item_" + std::to_string(i), kA);
+    const PluginImageId item = rig.library.Item("Item_4");
+    rig.Tick(2);
     CHECK(rig.library.State(item) == PLUGIN_IMAGE_WAITING);
+
+    rig.host.ready = false;
+    rig.Tick();
+    CHECK(rig.library.State(item) == PLUGIN_IMAGE_NONE);
+}
+
+static void WaitingItemsEndAtShutdown()
+{
+    Rig rig;
+    rig.items.readCostUs = ImageLookup::kItemBudgetUs;
+    for (int i = 0; i < 5; ++i)
+        rig.items.Add("Item_" + std::to_string(i), kA);
+    const PluginImageId item = rig.library.Item("Item_4");
+    rig.Tick(2);
+    CHECK(rig.library.State(item) == PLUGIN_IMAGE_WAITING);
+
+    rig.pump.Shutdown();
+    CHECK(rig.library.State(item) == PLUGIN_IMAGE_NONE);
 }
 
 static void EvictedCopiesAreFreedOnTheNextTick()
@@ -650,7 +931,22 @@ int main()
     RunTest("one load per tick", OneLoadPerTick);
     RunTest("one read started per tick", OneReadStartedPerTick);
     RunTest("requests looked at per tick are capped", RequestsLookedAtPerTickAreCapped);
-    RunTest("item requests are left in the queue", ItemRequestsAreLeftInTheQueue);
+    RunTest("an item becomes the image of its icon texture", AnItemBecomesTheImageOfItsIconTexture);
+    RunTest("an item is asked for by any case", AnItemIsAskedForByAnyCase);
+    RunTest("an item with no icon is no image", AnItemWithNoIconIsNoImage);
+    RunTest("an item whose icon is a placeholder is no image", AnItemWhoseIconIsAPlaceholderIsNoImage);
+    RunTest("a path to a placeholder is no image", APathToAPlaceholderIsNoImage);
+    RunTest("an item that is not in the game is no image once the list is read", AnItemThatIsNotInTheGameIsNoImageOnceTheListIsRead);
+    RunTest("an item waits while the list is still being read", AnItemWaitsWhileTheListIsStillBeingRead);
+    RunTest("the item index reads nothing until an item is asked for", TheItemIndexReadsNothingUntilAnItemIsAskedFor);
+    RunTest("the item index is built once and stops when nobody waits", TheItemIndexIsBuiltOnceAndStopsWhenNobodyWaits);
+    RunTest("the item index spends the budget per tick", TheItemIndexSpendsTheBudgetPerTick);
+    RunTest("many items asked for are held without costing reads", ManyItemsAskedForAreHeldWithoutCostingReads);
+    RunTest("when the list cannot be made items are none", WhenTheListCannotBeMadeItemsAreNone);
+    RunTest("an item the engine cannot read ends the index", AnItemTheEngineCannotReadEndsTheIndex);
+    RunTest("an item that cannot be read is skipped", AnItemThatCannotBeReadIsSkipped);
+    RunTest("waiting items end when the GPU goes", WaitingItemsEndWhenTheGpuGoes);
+    RunTest("waiting items end at shutdown", WaitingItemsEndAtShutdown);
     RunTest("evicted copies are freed on the next tick", EvictedCopiesAreFreedOnTheNextTick);
     RunTest("an evicted image is read again when drawn", AnEvictedImageIsReadAgainWhenDrawn);
     RunTest("a copy evicted at once is freed once", ACopyEvictedAtOnceIsFreedOnce);

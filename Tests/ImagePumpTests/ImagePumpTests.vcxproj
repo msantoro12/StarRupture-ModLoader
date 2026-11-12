@@ -99,8 +99,10 @@
   </ItemGroup>
   <ItemGroup Label="Loader sources under test">
     <ClCompile Include="$(CoreDir)UI\image_library.cpp" />
+    <ClCompile Include="$(CoreDir)UI\image_lookup.cpp" />
     <ClCompile Include="$(CoreDir)UI\image_pump.cpp" />
     <ClInclude Include="$(CoreDir)UI\image_library.h" />
+    <ClInclude Include="$(CoreDir)UI\image_lookup.h" />
     <ClInclude Include="$(CoreDir)UI\image_pump.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

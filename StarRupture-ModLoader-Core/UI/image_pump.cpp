@@ -5,8 +5,8 @@
 
 namespace ImagePump
 {
-	Pump::Pump(ImageLibrary::Library& library, Host& host)
-		: m_library(library), m_host(host)
+	Pump::Pump(ImageLibrary::Library& library, Host& host, ImageLookup::ItemSource& items)
+		: m_library(library), m_host(host), m_items(items)
 	{
 	}
 
@@ -36,7 +36,10 @@ namespace ImagePump
 		if (m_off)
 			FailQueued();
 		else
+		{
 			Serve();
+			StepItems();
+		}
 
 		const uint64_t end = m_host.NowUs();
 		m_stats.longestTickUs = std::max(m_stats.longestTickUs, end - begin);
@@ -146,11 +149,16 @@ namespace ImagePump
 		uint32_t reads = 0, loads = 0, attempts = 0;
 		m_later.clear();
 
-		// Item requests are left in the queue: turning an item name into a
-		// texture path is not the pump's yet.
 		ImageLibrary::Request request;
-		while (reads < kReadsPerTick && attempts < kAttemptsPerTick && m_library.TakeNext(request, true))
+		while (reads < kReadsPerTick && attempts < kAttemptsPerTick && m_library.TakeNext(request))
 		{
+			// An item waits for the index; it costs no read, so it is no attempt.
+			if (request.kind == ImageLibrary::Kind::Item)
+			{
+				m_held.push_back({ request.id, ImageLibrary::NormalizeItemName(request.name.c_str()) });
+				continue;
+			}
+
 			++attempts;
 			const Outcome outcome = Attempt(request, loads);
 			if (outcome == Outcome::Started)
@@ -169,8 +177,80 @@ namespace ImagePump
 			FailQueued();
 	}
 
+	// Reads the next slice of the item index while an item is waiting, and
+	// answers the waiting items it now knows.
+	void Pump::StepItems()
+	{
+		if (m_held.empty())
+			return;
+
+		ResolveHeld();
+		if (m_held.empty())
+			return;
+
+		const ImageLookup::ItemIndex::State before = m_items.GetState();
+		m_items.Step(ImageLookup::kItemBudgetUs, [this] { return m_host.NowUs(); });
+		if (before != ImageLookup::ItemIndex::State::Failed && m_items.GetState() == ImageLookup::ItemIndex::State::Failed)
+			m_host.Log("[Images] No item can be read on this build or in this session: item images stay unavailable");
+		ResolveHeld();
+	}
+
+	void Pump::ResolveHeld()
+	{
+		m_held.erase(std::remove_if(m_held.begin(), m_held.end(), [this](const HeldItem& item) { return Resolved(item); }),
+			m_held.end());
+	}
+
+	// True when the item is answered. An item whose icon is a texture becomes
+	// the image of that texture's path: one id's worth of copy for both.
+	bool Pump::Resolved(const HeldItem& item)
+	{
+		std::string path;
+		if (!m_items.Find(item.key, path))
+		{
+			switch (m_items.GetState())
+			{
+			case ImageLookup::ItemIndex::State::Done:   // there is no item of that name
+				m_library.PublishNoImage(item.id);
+				++m_stats.noImage;
+				return true;
+			case ImageLookup::ItemIndex::State::Failed:
+				m_library.Fail(item.id);
+				++m_stats.failed;
+				return true;
+			default:
+				return false;
+			}
+		}
+
+		if (path.empty() || ImageLookup::IsPlaceholderImage(path.c_str()))
+		{
+			m_library.PublishNoImage(item.id);
+			++m_stats.noImage;
+			return true;
+		}
+
+		const PluginImageId image = m_library.Path(path.c_str());
+		if (image == 0)   // the table is full
+		{
+			m_library.Fail(item.id);
+			++m_stats.failed;
+			return true;
+		}
+		m_library.Requeue(item.id);
+		m_library.Alias(item.id, image);
+		return true;
+	}
+
 	Pump::Outcome Pump::Attempt(const ImageLibrary::Request& request, uint32_t& loads)
 	{
+		if (ImageLookup::IsPlaceholderImage(request.name.c_str()))
+		{
+			m_library.PublishNoImage(request.id);
+			++m_stats.noImage;
+			return Outcome::Done;
+		}
+
 		Copy copy;
 		ReadResult result = m_host.Read(request.name, copy);
 
@@ -226,12 +306,21 @@ namespace ImagePump
 	// No read can run: every request ends as NONE instead of waiting for ever.
 	void Pump::FailQueued()
 	{
+		FailHeld();
 		ImageLibrary::Request request;
 		while (m_library.TakeNext(request))
 		{
 			m_library.Fail(request.id);
 			++m_stats.failed;
 		}
+	}
+
+	void Pump::FailHeld()
+	{
+		for (const HeldItem& item : m_held)
+			m_library.Fail(item.id);
+		m_stats.failed += m_held.size();
+		m_held.clear();
 	}
 
 	void Pump::FreeDeferred()
@@ -248,6 +337,7 @@ namespace ImagePump
 			return;
 		m_stopped = true;
 		LogSummary();
+		FailHeld();
 
 		for (const InFlight& read : m_inFlight)
 		{

@@ -61,6 +61,10 @@ namespace UI::ImGuiBackend
     // ImGuiHostCopyResult it returns. ImGuiHostCopy_Unavailable when the host DLL is not loaded.
     int  TryCopyTextureLevel(void* uTexture2D, const char* name, unsigned minSize, ImGuiHostCopyOut* out);
 
+    // The image library's shrink; see ImGuiHost_ShrinkTexture for the arguments and the
+    // ImGuiHostShrinkResult it returns. ImGuiHostShrink_Failed when the host DLL is not loaded.
+    int  ShrinkTexture(PluginTextureHandle source, unsigned maxSize, ImGuiHostShrinkOut* out);
+
     // True while the overlay's GPU side is up; false before the first frame, after a lost device
     // and after shutdown. Any thread.
     bool GpuReady();

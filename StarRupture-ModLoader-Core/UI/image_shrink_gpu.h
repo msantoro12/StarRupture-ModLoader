@@ -1,0 +1,65 @@
+#pragma once
+
+// The shrink pass of the image library: draws a texture we own into a new
+// 8-bit RGBA texture at the stored size, then builds every smaller level from
+// the one above it. It reads only textures the loader made (the temporary copy
+// of a game image) and writes only the texture it creates, so it touches no
+// engine resource.
+//
+// Compiled into the host DLL. The pipeline is modelled on the ImGui DX12
+// backend's own: one root signature with a linear clamp sampler, a full-screen
+// triangle, a pixel shader compiled at start-up.
+//
+// Not thread-safe: the caller serialises Create, Record and Release.
+
+#include "image_shrink.h"
+
+#include <d3d12.h>
+#include <dxgiformat.h>
+#include <wrl/client.h>
+
+namespace ImageShrink
+{
+	// The most levels one stored texture can have: images up to 32768 on a side.
+	inline constexpr uint32_t kMaxLevels = 16;
+
+	inline constexpr DXGI_FORMAT kStoredFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
+
+	struct Failure
+	{
+		const char* step = nullptr;
+		HRESULT     hr   = S_OK;
+	};
+
+	class Gpu
+	{
+	public:
+		// Makes the pipeline and the descriptor heaps for `slots` shrinks recorded at
+		// once. A shader-visible descriptor is read when the GPU runs the list, so each
+		// shrink that may still be on the GPU needs a slot of its own.
+		bool Create(ID3D12Device* device, uint32_t slots, Failure& failure);
+		void Release();
+		bool Ready() const { return m_pipeline != nullptr; }
+
+		// Records the shrink of `source` (a 2D texture in the pixel-shader-resource
+		// state, one level read, viewed as `sourceFormat`) into a new texture of
+		// `target` size with the full chain of levels, on the open list. `slot` picks the
+		// descriptors, one of Create's `slots`.
+		//
+		// Returns the new texture (one reference, every level in the pixel-shader-resource
+		// state once the list has run), or nullptr with `failure` set. The source must
+		// stay alive until the list has run.
+		ID3D12Resource* Record(ID3D12GraphicsCommandList* list, uint32_t slot, ID3D12Resource* source,
+			DXGI_FORMAT sourceFormat, Size target, Failure& failure);
+
+	private:
+		Microsoft::WRL::ComPtr<ID3D12Device>              m_device;
+		Microsoft::WRL::ComPtr<ID3D12RootSignature>       m_rootSignature;
+		Microsoft::WRL::ComPtr<ID3D12PipelineState>       m_pipeline;
+		Microsoft::WRL::ComPtr<ID3D12DescriptorHeap>      m_srvHeap;   // shader-visible, kMaxLevels per slot
+		Microsoft::WRL::ComPtr<ID3D12DescriptorHeap>      m_rtvHeap;   // kMaxLevels, read when recorded
+		UINT                                              m_srvSize = 0;
+		UINT                                              m_rtvSize = 0;
+		uint32_t                                          m_slots   = 0;
+	};
+}

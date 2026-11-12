@@ -492,6 +492,7 @@
     <ClInclude Include="UI\plugin_widget_registry.h" />
     <ClInclude Include="UI\image_library.h" />
     <ClInclude Include="UI\image_pump.h" />
+    <ClInclude Include="UI\image_shrink.h" />
     <ClInclude Include="UI\plugin_call_tracker.h" />
     <ClInclude Include="hooks\memory\engine_allocator.h" />
     <ClInclude Include="logging\log.h" />

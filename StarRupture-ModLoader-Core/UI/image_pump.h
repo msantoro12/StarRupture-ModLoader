@@ -55,6 +55,23 @@ namespace ImagePump
 
 	enum class CopyState { Pending, Done, Gone };
 
+	enum class ShrinkResult
+	{
+		Started,   // the shrink is on the GPU; the source may be freed now
+		Busy,      // no room to start it this tick: ask again
+		Failed,    // the shrink cannot be made
+	};
+
+	// What a started shrink made: a texture slot of the texture API, at the stored
+	// size, with the full chain of smaller levels.
+	struct Shrunk
+	{
+		PluginTextureHandle texture = nullptr;
+		int                 width   = 0;
+		int                 height  = 0;
+		uint32_t            levels  = 0;
+	};
+
 	// What a started read made: a texture slot of the texture API, holding one
 	// level of the game image.
 	struct Copy
@@ -85,6 +102,10 @@ namespace ImagePump
 		virtual LoadResult Load(const std::string& objectPath) = 0;
 
 		virtual CopyState StateOf(PluginTextureHandle texture) = 0;
+		// Draws a finished copy into a new texture at the stored size, with every smaller
+		// level. Never waits. The source is kept alive on the GPU until the shrink has
+		// run, so the caller frees it right after Started.
+		virtual ShrinkResult Shrink(PluginTextureHandle source, Shrunk& out) = 0;
 		// Frees a texture. The texture API holds it until the GPU is past every
 		// frame that may still draw it.
 		virtual void Free(PluginTextureHandle texture) = 0;
@@ -122,12 +143,15 @@ namespace ImagePump
 			Copy          copy;
 		};
 
-		// What a read becomes before it is published.
+		// What a read becomes before it is published: the texture to keep and the bytes
+		// its levels take.
 		struct Stored
 		{
 			PluginTextureHandle texture = nullptr;
 			uint64_t            bytes   = 0;
 		};
+
+		enum class StoreResult { Stored, Later, Failed };
 
 		enum class Outcome { Started, Done, Later, Busy, Off };
 
@@ -137,7 +161,7 @@ namespace ImagePump
 		void    Serve();
 		void    FailQueued();
 		Outcome Attempt(const ImageLibrary::Request& request, uint32_t& loads);
-		bool    Store(const InFlight& read, Stored& out);
+		StoreResult Store(const InFlight& read, Stored& out);
 		void    FreeDeferred();
 		void    LogSummary();
 

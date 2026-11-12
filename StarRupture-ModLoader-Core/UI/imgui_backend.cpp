@@ -6,6 +6,7 @@
 #include <windows.h>
 #include "imgui_host_interface.h"
 #include "icon_copy.h"
+#include "image_shrink_gpu.h"
 #include "imgui.h"
 #include "imgui_impl_dx12.h"
 #include "imgui_impl_win32.h"
@@ -2868,6 +2869,8 @@ namespace
 		IconCopy::Parked<IconCopyOps> parked;
 	};
 	IconCopyQueue            g_iconCopy;
+	// The shrink pass of the image library, on the same queue and ring. Made on the first shrink.
+	ImageShrink::Gpu         g_shrink;
 	IconCopy::TickBudget     g_iconTickBudget;
 	IconCopy::ResidentBackoff g_iconResidentBackoff;  // mutex held
 
@@ -2989,6 +2992,7 @@ static void ReleaseIconCopies()
 	{
 		q.ring.ReleaseAll();
 		q.parked.ReleaseAll();
+		g_shrink.Release();
 		ReleaseIconCopyQueue();
 	}
 	else
@@ -4470,6 +4474,130 @@ extern "C" __declspec(dllexport) int ImGuiHost_TryCopyTextureLevel(void* uTextur
 	default:
 		return ImGuiHostCopy_Failed;
 	}
+}
+
+// The shrink of the image library: draws a texture the copy above made into a new texture at the
+// stored size, with every smaller level. The source is not touched again once this returns Started:
+// the ring holds it until the shrink has run, so the caller frees its handle at once.
+extern "C" __declspec(dllexport) int ImGuiHost_ShrinkTexture(PluginTextureHandle source, unsigned maxSize, ImGuiHostShrinkOut* out)
+{
+	static constexpr const char* kCaller = "ShrinkTexture";
+	if (!out)
+		return ImGuiHostShrink_Failed;
+	*out = {};
+
+	std::lock_guard<std::mutex> lock(g_textureMutex);
+	const PluginTextureRecord* src = ValidateHandle(source);
+	if (!src || !g_device || g_shutdown || !g_cmdQueue || !g_iconCopy.fence || g_iconCopyOff)
+		return ImGuiHostShrink_Failed;
+	if (!CopyDone(src))
+		return ImGuiHostShrink_Busy;
+
+	ReclaimIconCopies();
+	IconCopyQueue& q = g_iconCopy;
+	const int entry = q.ring.FreeSlot();
+	const int slot  = AllocTextureSlot();
+	if (entry < 0 || slot < 0)
+		return ImGuiHostShrink_Busy;
+
+	static bool s_unavailable = false;
+	if (s_unavailable)
+		return ImGuiHostShrink_Failed;
+	if (!g_shrink.Ready())
+	{
+		ImageShrink::Failure failure;
+		if (!g_shrink.Create(g_device, IconCopy::kMaxInFlight, failure))
+		{
+			s_unavailable = true;
+			IMGUI_LOG_ERROR("[ImGuiBackend] %s: the shrink pass could not be made, failed at %s: 0x%08X -- no images are stored this session",
+				kCaller, failure.step ? failure.step : "?", static_cast<unsigned>(failure.hr));
+			return ImGuiHostShrink_Failed;
+		}
+	}
+
+	ID3D12Resource* const sourceResource = src->resource;
+	const D3D12_RESOURCE_DESC sourceDesc = sourceResource->GetDesc();
+	const ImageShrink::Size target = ImageShrink::StoredSize(static_cast<uint32_t>(sourceDesc.Width), sourceDesc.Height, maxSize);
+	const uint32_t levels = ImageShrink::LevelCount(target.width, target.height);
+
+	g_gpuCopyFailure = {};
+	ID3D12CommandAllocator*    allocator = q.allocators[entry];
+	ID3D12GraphicsCommandList* list      = q.list;
+	if (!GpuCopyStep("CommandAllocator::Reset", allocator->Reset()) ||
+		!GpuCopyStep("CommandList::Reset", list->Reset(allocator, nullptr)))
+	{
+		LogEngineCopyFailure(kCaller, nullptr);
+		return ImGuiHostShrink_Failed;
+	}
+
+	ImageShrink::Failure failure;
+	IconCopy::PendingHold<IconCopyOps> hold;
+	sourceResource->AddRef();
+	hold.Get().source = sourceResource;
+	hold.Get().dest   = g_shrink.Record(list, static_cast<uint32_t>(entry), sourceResource,
+		ResolveTypelessForSRV(sourceDesc.Format), target, failure);
+	if (!hold.Get().dest)
+	{
+		g_gpuCopyFailure = { failure.step, failure.hr };
+		list->Close();
+		LogEngineCopyFailure(kCaller, nullptr);
+		return ImGuiHostShrink_Failed;
+	}
+	ID3D12Resource* const stored = static_cast<ID3D12Resource*>(hold.Get().dest);
+
+	if (!GpuCopyStep("CommandList::Close", list->Close()))
+	{
+		LogEngineCopyFailure(kCaller, nullptr);
+		return ImGuiHostShrink_Failed;
+	}
+
+	// The unhooked ECL, as StartEngineTextureCopy does: this is our submit, not the game's.
+	ID3D12CommandList* const lists[] = { list };
+	if (g_originalECL)
+		g_originalECL(g_cmdQueue, 1, lists);
+	else
+		g_cmdQueue->ExecuteCommandLists(1, lists);
+	const UINT64 value = ++q.value;
+	if (!GpuCopyStep("Signal", g_cmdQueue->Signal(q.fence, value)))
+	{
+		hold.Abandon();
+		g_iconCopyOff = true;
+		IMGUI_LOG_WARN("[ImGuiBackend] A shrink was submitted but its fence could not be signalled -- "
+			"no more engine textures are copied this session");
+		return ImGuiHostShrink_Failed;
+	}
+	q.ring.Start(entry, value, hold.Take());
+	NoteIconCopyHolds();
+	stored->AddRef();
+
+	D3D12_CPU_DESCRIPTOR_HANDLE cpuHandle = g_srvHeap->GetCPUDescriptorHandleForHeapStart();
+	cpuHandle.ptr += (UINT64)(slot + 1) * g_srvDescSize;
+	D3D12_GPU_DESCRIPTOR_HANDLE gpuHandle = g_srvHeap->GetGPUDescriptorHandleForHeapStart();
+	gpuHandle.ptr += (UINT64)(slot + 1) * g_srvDescSize;
+
+	D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+	srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+	srvDesc.Format                  = ImageShrink::kStoredFormat;
+	srvDesc.ViewDimension           = D3D12_SRV_DIMENSION_TEXTURE2D;
+	srvDesc.Texture2D.MipLevels     = levels;
+	g_device->CreateShaderResourceView(stored, &srvDesc, cpuHandle);
+
+	PluginTextureRecord& rec = g_pluginTextures[slot];
+	// Before inUse, and atomic so it stays first: a stale handle to this slot must not draw it early.
+	std::atomic_ref<UINT64>(rec.copyFence).store(value);
+	rec.resource  = stored;
+	rec.gpuHandle = gpuHandle;
+	rec.width     = static_cast<int>(target.width);
+	rec.height    = static_cast<int>(target.height);
+	rec.inUse     = true;
+	rec.owned     = true;
+	rec.refCount  = 1;
+
+	out->texture = &rec;
+	out->width   = rec.width;
+	out->height  = rec.height;
+	out->levels  = levels;
+	return ImGuiHostShrink_Started;
 }
 
 extern "C" __declspec(dllexport) bool ImGuiHost_GpuReady()

@@ -170,6 +170,36 @@ struct ImGuiHostCopyOut
 
 IMGUI_HOST_API int                    ImGuiHost_TryCopyTextureLevel(void* uTexture2D, const char* name, unsigned minSize, ImGuiHostCopyOut* out);
 
+// The shrink for the image library: draws a texture made by ImGuiHost_TryCopyTextureLevel into a new
+// 8-bit RGBA texture and builds its smaller levels. The new texture is at most maxSize on the larger
+// side (a smaller image keeps its own size) with the full chain of levels down to 1x1. Game thread only.
+//
+// The source stays untouched and alive on the GPU until the shrink has run, so the caller frees its
+// handle right after Started. The new texture is a slot of the texture API and draws once the shrink
+// has finished.
+//
+// Results:
+//   Started  the shrink is on the GPU; *out is filled in.
+//   Busy     the source copy has not finished, or no copy entry or texture slot is free. Ask again.
+//   Failed   the shrink cannot be made (not a texture this DLL made, the GPU side is gone, or the
+//            pass could not be built). Asking again does not help.
+enum ImGuiHostShrinkResult : int
+{
+    ImGuiHostShrink_Started = 0,
+    ImGuiHostShrink_Busy    = 1,
+    ImGuiHostShrink_Failed  = 2,
+};
+
+struct ImGuiHostShrinkOut
+{
+    PluginTextureHandle texture;
+    int                 width;
+    int                 height;
+    unsigned            levels;   // levels in the chain, level 0 included
+};
+
+IMGUI_HOST_API int                    ImGuiHost_ShrinkTexture(PluginTextureHandle source, unsigned maxSize, ImGuiHostShrinkOut* out);
+
 // True once the overlay's GPU side is up (the first frame has set it up) and until it is shut
 // down or the device is lost. The image library does nothing before it. Any thread.
 IMGUI_HOST_API bool                   ImGuiHost_GpuReady();

@@ -225,6 +225,9 @@
     <ClInclude Include="UI\image_pump.h">
       <Filter>Source Files\UI\modloader</Filter>
     </ClInclude>
+    <ClInclude Include="UI\image_shrink.h">
+      <Filter>Source Files\UI\modloader</Filter>
+    </ClInclude>
     <ClInclude Include="UI\plugin_widget_registry.h">
       <Filter>Source Files\UI\modloader</Filter>
     </ClInclude>

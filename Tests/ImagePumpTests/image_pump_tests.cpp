@@ -6,7 +6,9 @@
 // A console program: no game, no GPU. The pump and the library are the loader's
 // own sources; a texture here is a number standing in for a texture slot.
 #include "UI/image_pump.h"
+#include "UI/image_shrink.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <map>
 #include <set>
@@ -54,6 +56,11 @@ public:
     int                                width = 256, height = 256;
     CopyState                          copyState = CopyState::Done;
     std::map<PluginTextureHandle, CopyState> copyStateOf;
+    ShrinkResult                       shrinkResult = ShrinkResult::Started;
+    std::vector<PluginTextureHandle>   shrunkFrom;
+    std::vector<PluginTextureHandle>   made;          // what each started shrink made, in order
+    std::vector<PluginTextureHandle>   copiesFreed;   // temporary copies let go after a shrink; not in `freed`
+    int                                shrinkCalls = 0;
 
     std::vector<std::string>           reads, loads, logs;
     std::vector<PluginTextureHandle>   freed;
@@ -99,7 +106,27 @@ public:
         return it == copyStateOf.end() ? copyState : it->second;
     }
 
-    void Free(PluginTextureHandle texture) override { freed.push_back(texture); }
+    // The host's shrink: the stored size and the full chain of levels, in a new texture.
+    ShrinkResult Shrink(PluginTextureHandle source, Shrunk& out) override
+    {
+        ++shrinkCalls;
+        if (shrinkResult != ShrinkResult::Started)
+            return shrinkResult;
+        shrunkFrom.push_back(source);
+        const ImageShrink::Size size = ImageShrink::StoredSize(static_cast<uint32_t>(width), static_cast<uint32_t>(height), ImageLibrary::kStoredSize);
+        out.texture = reinterpret_cast<PluginTextureHandle>(static_cast<uintptr_t>(nextTexture++) * 16);
+        out.width   = static_cast<int>(size.width);
+        out.height  = static_cast<int>(size.height);
+        out.levels  = ImageShrink::LevelCount(size.width, size.height);
+        made.push_back(out.texture);
+        return ShrinkResult::Started;
+    }
+
+    void Free(PluginTextureHandle texture) override
+    {
+        const bool isCopy = std::find(shrunkFrom.begin(), shrunkFrom.end(), texture) != shrunkFrom.end();
+        (isCopy ? copiesFreed : freed).push_back(texture);
+    }
     void Log(const std::string& line) override { logs.push_back(line); }
 
     size_t Freed(PluginTextureHandle texture) const
@@ -203,8 +230,82 @@ static void AStartedReadIsPublishedWhenTheCopyIsDone()
     rig.Tick();
     CHECK(rig.library.State(a) == PLUGIN_IMAGE_READY);
     CHECK(rig.library.Get(a) != nullptr);
-    CHECK(rig.library.BytesKept() == 256u * 256u * 4u);   // the copy as the read made it
+    CHECK(rig.library.BytesKept() == 349524);   // 256 x 256 with its 9 levels
     CHECK(rig.pump.GetStats().published == 1);
+}
+
+static void TheShrinkMakesTheStoredSizeAndCountsItsLevels()
+{
+    // A 1024 x 512 read is stored at 256 x 128, 9 levels.
+    Rig big;
+    big.host.width = 1024;
+    big.host.height = 512;
+    big.Loaded(kA);
+    big.Tick(2);
+    CHECK(big.library.BytesKept() == ImageShrink::Bytes({ 256, 128 }, 9));
+    CHECK(big.library.BytesKept() == 174764);
+
+    // A 128 x 128 read is under the stored size: it keeps its size, 8 levels.
+    Rig small;
+    small.host.width = 128;
+    small.host.height = 128;
+    small.Loaded(kA);
+    small.Tick(2);
+    CHECK(small.library.BytesKept() == ImageShrink::Bytes({ 128, 128 }, 8));
+    CHECK(small.library.BytesKept() == 87380);
+}
+
+static void TheTemporaryCopyIsLetGoOnceTheShrinkStarts()
+{
+    Rig rig;
+    const PluginImageId a = rig.Loaded(kA);
+    rig.host.copyState = CopyState::Pending;
+    rig.Tick(3);
+    CHECK(rig.host.shrinkCalls == 0);       // the shrink waits for the copy
+    CHECK(rig.host.copiesFreed.empty());
+
+    rig.host.copyState = CopyState::Done;
+    rig.Tick();
+    CHECK(rig.host.shrinkCalls == 1);
+    CHECK(rig.host.shrunkFrom.size() == 1);
+    CHECK(rig.host.copiesFreed.size() == 1 && rig.host.copiesFreed[0] == rig.host.shrunkFrom[0]);
+    CHECK(rig.host.freed.empty());          // what the library keeps is not freed
+    CHECK(rig.library.Get(a) == rig.host.made[0]);
+    rig.Tick(3);
+    CHECK(rig.host.shrinkCalls == 1);       // shrunk once
+}
+
+static void AShrinkWithNoRoomIsTriedAgainNextTick()
+{
+    Rig rig;
+    const PluginImageId a = rig.Loaded(kA);
+    rig.host.shrinkResult = ShrinkResult::Busy;
+    rig.Tick(4);
+    CHECK(rig.host.shrinkCalls == 3);       // once a tick after the read
+    CHECK(rig.library.State(a) == PLUGIN_IMAGE_WAITING);
+    CHECK(rig.host.copiesFreed.empty());
+    CHECK(rig.host.freed.empty());
+    CHECK(rig.pump.GetStats().failed == 0);
+
+    rig.host.shrinkResult = ShrinkResult::Started;
+    rig.Tick();
+    CHECK(rig.library.State(a) == PLUGIN_IMAGE_READY);
+    CHECK(rig.host.reads.size() == 1);      // the copy was kept, not read again
+    CHECK(rig.pump.GetStats().published == 1);
+}
+
+static void AShrinkThatFailsEndsAsNone()
+{
+    Rig rig;
+    const PluginImageId a = rig.Loaded(kA);
+    rig.host.shrinkResult = ShrinkResult::Failed;
+    rig.Tick(2);
+    CHECK(rig.library.State(a) == PLUGIN_IMAGE_NONE);
+    CHECK(rig.pump.GetStats().failed == 1);
+    CHECK(rig.host.freed.size() == 1);      // the copy is freed
+    rig.Tick(3);
+    CHECK(rig.host.shrinkCalls == 1);       // not tried again
+    CHECK(rig.host.reads.size() == 1);
 }
 
 static void TheRequestKeepsTheNameItWasAskedWith()
@@ -481,8 +582,9 @@ static void ACopyEvictedAtOnceIsFreedOnce()
     CHECK(rig.library.State(b) != PLUGIN_IMAGE_READY);
     CHECK(rig.library.State(a) == PLUGIN_IMAGE_READY);
     rig.Tick(3);
-    // Texture numbers are handed out in the order of the reads: 1 is A, 2 is B.
-    const PluginTextureHandle textureB = reinterpret_cast<PluginTextureHandle>(static_cast<uintptr_t>(2) * 16);
+    // The shrinks made A's texture, then B's.
+    CHECK(rig.host.made.size() == 2);
+    const PluginTextureHandle textureB = rig.host.made[1];
     CHECK(rig.host.Freed(textureB) == 1);
     CHECK(rig.host.freed.size() == 1);
 }
@@ -636,6 +738,10 @@ int main()
     RunTest("nothing happens before the GPU is up", NothingBeforeTheGpuIsUp);
     RunTest("caps follow the video budget", CapsFollowTheVideoBudget);
     RunTest("a started read is published when the copy is done", AStartedReadIsPublishedWhenTheCopyIsDone);
+    RunTest("the shrink makes the stored size and counts its levels", TheShrinkMakesTheStoredSizeAndCountsItsLevels);
+    RunTest("the temporary copy is let go once the shrink starts", TheTemporaryCopyIsLetGoOnceTheShrinkStarts);
+    RunTest("a shrink with no room is tried again next tick", AShrinkWithNoRoomIsTriedAgainNextTick);
+    RunTest("a shrink that fails ends as none", AShrinkThatFailsEndsAsNone);
     RunTest("the request keeps the name it was asked with", TheRequestKeepsTheNameItWasAskedWith);
     RunTest("a copy that is gone ends as none", ACopyThatIsGoneEndsAsNone);
     RunTest("a copy with no size is refused", ACopyWithNoSizeIsRefused);

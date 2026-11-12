@@ -171,6 +171,22 @@ namespace ImagePump
 				}
 			}
 
+			ShrinkResult Shrink(PluginTextureHandle source, Shrunk& out) override
+			{
+				ImGuiHostShrinkOut shrunk = {};
+				switch (UI::ImGuiBackend::ShrinkTexture(source, ImageLibrary::kStoredSize, &shrunk))
+				{
+				case ImGuiHostShrink_Started:
+					out.texture = shrunk.texture;
+					out.width   = shrunk.width;
+					out.height  = shrunk.height;
+					out.levels  = shrunk.levels;
+					return ShrinkResult::Started;
+				case ImGuiHostShrink_Busy: return ShrinkResult::Busy;
+				default:                   return ShrinkResult::Failed;
+				}
+			}
+
 			void Free(PluginTextureHandle texture) override
 			{
 				IPluginImGuiTextures* const api = UI::ImGuiBackend::GetTextureAPI();

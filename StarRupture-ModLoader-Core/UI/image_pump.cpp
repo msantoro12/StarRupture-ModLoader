@@ -1,4 +1,5 @@
 #include "UI/image_pump.h"
+#include "UI/image_shrink.h"
 
 #include <algorithm>
 #include <cstdio>
@@ -89,19 +90,26 @@ namespace ImagePump
 				++i;
 				continue;
 			}
+
+			Stored stored;
+			StoreResult made = StoreResult::Failed;
+			if (state == CopyState::Done)
+				made = Store(read, stored);
+			if (made == StoreResult::Later)
+			{
+				// The shrink has no room yet: the copy is kept and tried again next tick.
+				++i;
+				continue;
+			}
+
 			m_inFlight[i] = m_inFlight.back();
 			m_inFlight.pop_back();
 
-			Stored stored;
-			if (state == CopyState::Gone)
+			if (made == StoreResult::Failed)
 			{
-				m_library.Fail(read.id);
-				++m_stats.failed;
-				continue;
-			}
-			if (!Store(read, stored))
-			{
-				m_host.Free(read.copy.texture);
+				// A copy that is gone is not ours to free.
+				if (state == CopyState::Done)
+					m_host.Free(read.copy.texture);
 				m_library.Fail(read.id);
 				++m_stats.failed;
 				continue;
@@ -128,17 +136,31 @@ namespace ImagePump
 		}
 	}
 
-	// The hand-over from the read to the library. What the read made is
-	// published as it is: the single level it copied. A shrink to the stored
-	// size goes here: it takes read.copy.texture and gives the texture to keep
-	// and the bytes it takes. False means the image cannot be made.
-	bool Pump::Store(const InFlight& read, Stored& out)
+	// The hand-over from the read to the library. The read made one level of the
+	// game image in a temporary texture; the shrink draws it at the stored size with
+	// every smaller level, and the temporary texture is let go at once (the host
+	// keeps it until the shrink has run). Later: the shrink has no room, the copy
+	// stays as it is. Failed: the image cannot be made, and the caller frees the copy.
+	Pump::StoreResult Pump::Store(const InFlight& read, Stored& out)
 	{
 		if (!read.copy.texture || read.copy.width <= 0 || read.copy.height <= 0)
-			return false;
-		out.texture = read.copy.texture;
-		out.bytes   = static_cast<uint64_t>(read.copy.width) * static_cast<uint64_t>(read.copy.height) * 4;
-		return true;
+			return StoreResult::Failed;
+
+		Shrunk shrunk;
+		switch (m_host.Shrink(read.copy.texture, shrunk))
+		{
+		case ShrinkResult::Started:
+			break;
+		case ShrinkResult::Busy:
+			return StoreResult::Later;
+		default:
+			return StoreResult::Failed;
+		}
+
+		m_host.Free(read.copy.texture);
+		out.texture = shrunk.texture;
+		out.bytes   = ImageShrink::Bytes({ static_cast<uint32_t>(shrunk.width), static_cast<uint32_t>(shrunk.height) }, shrunk.levels);
+		return StoreResult::Stored;
 	}
 
 	void Pump::Serve()

@@ -839,9 +839,7 @@
 //      an older plugin ends before the field, and is never read past its end.
 //      A v75 plugin is refused by a v74 loader, which has neither the field
 //      nor the calls.
-//      A plugin built against these headers declares 75 by default
-//      (PLUGIN_INTERFACE_VERSION). Loader 1.23.0 accepts 70 through 75, so a
-//      plugin that uses nothing from v75 may still declare 74. A loader before
+//      A plugin that uses nothing from v75 may declare 74. A loader before
 //      1.23.0 refuses a plugin newer than its maximum.
 //
 //      Also in v75: a widget that takes the mouse over a game menu only where no menu
@@ -884,8 +882,9 @@
 //      and past its memory cap evicts the image drawn least recently; Get
 //      asks for an evicted image again.
 //      Item, Path, Get, State and Canonical are callable from any thread, render
-//      callbacks included, and return at once. Get, State and Canonical take
-//      no lock. Item, Path and FromTexture only hand out the id; the image is
+//      callbacks included, and never wait for the game. Get, State and Canonical take
+//      no lock. Item and Path take an internal lock for a moment, so ask once and
+//      keep the id. Item, Path and FromTexture only hand out the id; the image is
 //      read when Get is called for it (or by preload, for a set in use).
 //      FromTexture gives the same id as Path of the texture's object path,
 //      and Canonical maps any id to the one id of its image: the id of the
@@ -893,14 +892,15 @@
 //      that, so a plugin can compare images by id.
 //      UseSets records which sets of images the plugin draws from, for
 //      background preload.
-//      A plugin built for v76 is refused by a loader that ends at 75. The
-//      interface number below moves to 76 with the release that ships this
-//      table; LoadFromUTexture2D and the rest of IPluginImGuiTextures are
-//      unchanged.
+//      A plugin built for v76 is refused by a loader that ends at 75. A plugin
+//      built against these headers declares 76 by default
+//      (PLUGIN_INTERFACE_VERSION); a plugin that uses nothing from v76 may
+//      declare an older number, down to 70. LoadFromUTexture2D and the rest of
+//      IPluginImGuiTextures are unchanged.
 //
 #define PLUGIN_INTERFACE_VERSION_MIN 70
-#define PLUGIN_INTERFACE_VERSION_MAX 75
-#define PLUGIN_INTERFACE_VERSION 75
+#define PLUGIN_INTERFACE_VERSION_MAX 76
+#define PLUGIN_INTERFACE_VERSION 76
 
 enum class PluginLogLevel { Trace = 0, Debug = 1, Info = 2, Warn = 3, Error = 4 };
 enum class ConfigValueType { String, Integer, Float, Boolean, Keybind, Choice /* v71 */, Hidden /* v71 */ };
@@ -3702,7 +3702,8 @@ struct IPluginPak
 // THREADING RULES
 // ---------------
 // Item, Path, Get, State, UseSets and Canonical can be called from any thread,
-// including an ImGui render callback, and return at once. FromTexture reads a
+// including an ImGui render callback, and never wait for the game. Item and Path
+// take an internal lock for a moment: ask once and keep the id. FromTexture reads a
 // game object, so it is game thread only.
 // ---------------------------------------------------------------------------
 
@@ -3725,8 +3726,8 @@ enum PluginImageSet : uint32_t
 
 struct IPluginImages
 {
-	// Any thread. Returns at once. The same name or path always gives the same id.
-	// These only hand out the id; Get is what asks for the image.
+	// Any thread. Never waits for the game. The same name or path always gives the same id,
+	// so ask once and keep it. These only hand out the id; Get is what asks for the image.
 	PluginImageId (*Item)(const IPluginSelf* self, const char* uniqueItemName);
 	PluginImageId (*Path)(const IPluginSelf* self, const char* textureObjectPath); // "/Game/.../T_X.T_X"
 

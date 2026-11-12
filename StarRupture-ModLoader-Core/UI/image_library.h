@@ -85,6 +85,13 @@ namespace ImageLibrary
 		uint64_t            bytes  = 0;
 	};
 
+	// An image that belongs to sets, by the object path it is read from.
+	struct SetMember
+	{
+		uint32_t    sets = 0;   // PluginImageSet bits
+		std::string path;
+	};
+
 	class Library
 	{
 	public:
@@ -160,6 +167,9 @@ namespace ImageLibrary
 		void ReleaseAll(std::vector<Released>& released);
 
 		// ---- Limits and accounting ----------------------------------------
+
+		// Appends every texture path that is in a set, with its set bits.
+		void CollectSets(std::vector<SetMember>& out) const;
 
 		void SetCaps(uint64_t byteCap, uint32_t countCap);
 		uint64_t BytesKept() const;

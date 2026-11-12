@@ -110,6 +110,9 @@ namespace ImagePump
 					out.texture = copy.texture;
 					out.width   = copy.width;
 					out.height  = copy.height;
+					out.sourceWidth  = copy.sourceWidth;
+					out.sourceHeight = copy.sourceHeight;
+					out.sourceFormat = copy.sourceFormat;
 					return ReadResult::Started;
 				case ImGuiHostCopy_NotYet:      return ReadResult::NotYet;
 				case ImGuiHostCopy_Busy:        return ReadResult::Busy;
@@ -162,6 +165,7 @@ namespace ImagePump
 					out.width   = shrunk.width;
 					out.height  = shrunk.height;
 					out.levels  = shrunk.levels;
+					out.readback = shrunk.readback;
 					return ShrinkResult::Started;
 				case ImGuiHostShrink_Busy: return ShrinkResult::Busy;
 				default:                   return ShrinkResult::Failed;
@@ -185,7 +189,12 @@ namespace ImagePump
 		Pump& TheInstance()
 		{
 			static EngineHost* const host = new EngineHost();
-			static Pump* const pump = new Pump(ImageLibrary::Instance(), *host, ImageLookup::EngineItems());
+			static Pump* const pump = []
+			{
+				Pump* const made = new Pump(ImageLibrary::Instance(), *host, ImageLookup::EngineItems());
+				made->SetSaver(ImageDisk::EngineSaver());
+				return made;
+			}();
 			return *pump;
 		}
 	}

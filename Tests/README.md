@@ -432,6 +432,29 @@ build\tests\image_lookup_tests.exe
 
 It prints one line per test and exits 0 when every check passes.
 
+## ImageDiskTests
+
+The files the image library saves (`UI/image_cache_file`, `image_cache_writer`, `image_disk`), with no GPU
+and no game. It checks:
+
+- An image file and a set list read back as they were written, for every shape the shrink makes.
+- A file with a bad magic, another revision, a truncated or lengthened body, a changed byte, or a header
+  that disagrees with itself (too many levels, a size out of range) is refused.
+- The folder name changes when the game build, the pak set, the format revision or the stored size changes,
+  and the pak set hash does not depend on the order.
+- The writer, on a real temporary folder: the folders are made, no temporary file is left, a file of the
+  same size is left alone, a folder that cannot be written switches the disk part off with one log line,
+  the queue is bounded, and nothing is written after stop.
+- The saver, on a fake readback: a finished copy becomes a file, a copy with no readback or a lost one makes
+  none, a full queue drops the image, and the set list is written when it changes.
+
+```
+msbuild Tests\ImageDiskTests\ImageDiskTests.vcxproj /p:Configuration="Client Release" /p:Platform=x64
+build	ests\image_disk_tests.exe
+```
+
+It prints one line per test and exits 0 when every check passes.
+
 ## ImageShrinkTests
 
 The size, level and byte rules of the shrink (`UI/image_shrink.h`), with no GPU. It checks that a larger
@@ -449,6 +472,10 @@ The shrink pass itself (`UI/image_shrink_gpu.cpp`) on a desktop D3D12 device, wi
 chain. Each case builds an image like the game's (BC3, BGRA or RGBA16F, with or without smaller levels),
 copies the level the loader would copy, shrinks it, reads the result back and checks the size, the number
 of levels and the colour on every level, and times the pass on the GPU.
+
+It also records the readback of the stored copy (`UI/image_readback_gpu.cpp`) in the same command list and
+checks that the bytes of every level equal the pixels the shrink produced, and that the readback ring gives
+no ticket when full and gives a slot back when it is fetched or cancelled.
 
 The run ends with the debug layer's error count. It needs the Windows Graphics Tools feature; without it
 the harness says the debug layer is not available and exits 1 even though its checks passed.

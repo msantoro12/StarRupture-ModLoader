@@ -5,14 +5,19 @@
 //
 // A job names a folder and a file and holds a function that makes the file's bytes, which
 // the worker calls (so the CRC and the copy are not paid on the game thread). The worker
-// writes <name>.<pid>.tmp, flushes, and renames it over the file, so two game instances never
-// see a half-written file. A file that is already there with the same size is left alone.
+// writes <name>.<pid>.tmp and renames it over the file, so two game instances never see a
+// half-written file. There is no flush to the device: the file's checksum catches a torn one.
+// A file that is already there with the same size is left alone. A job whose folder function
+// gives an empty path (its key is no longer the session's) is dropped unwritten.
 //
 // The queue is bounded: when it is full a job is refused and that image is not saved now.
-// A folder that cannot be made or written (read-only, full disk) switches the whole disk part
-// off for the session, with one log line. A job marked runWhenOff is still taken then: it writes
-// nothing, it only deletes (the "Clear image cache" option, which is what a player presses when
-// the disk is full).
+// A folder that cannot be made or written (read-only, full disk, gone) switches the whole disk
+// part off for the session, with one log line. One file that cannot be written because something
+// else holds it (a virus scanner, a reader) is tried a few times with a short pause and then
+// skipped; only when a fresh probe file cannot be made in the folder either does the disk part
+// go off. A job marked runWhenOff is still taken then, and kept when the queue is dropped: it
+// writes nothing, it only deletes (the "Clear image cache" option, which is what a player presses
+// when the disk is full).
 //
 // Stop joins the thread. Nothing is written after Stop has been called: the job in hand
 // finishes, queued jobs are dropped.

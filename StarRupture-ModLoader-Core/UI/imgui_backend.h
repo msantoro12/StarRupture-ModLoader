@@ -74,6 +74,9 @@ namespace UI::ImGuiBackend
 
     // The adapter's local video memory budget in bytes, 0 when unknown. Game thread.
     unsigned long long LocalVideoBudget();
+
+    // The adapter's local video memory in use and its budget, in bytes. False when unknown. Game thread.
+    bool LocalVideoMemory(unsigned long long* usage, unsigned long long* budget);
 }
 
 #endif // MODLOADER_CLIENT_BUILD

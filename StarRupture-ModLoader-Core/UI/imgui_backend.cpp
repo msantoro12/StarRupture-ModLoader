@@ -4614,25 +4614,39 @@ extern "C" __declspec(dllexport) int ImGuiHost_CopyState(PluginTextureHandle tex
 	return CopyDone(rec) ? 1 : 0;
 }
 
-extern "C" __declspec(dllexport) unsigned long long ImGuiHost_LocalVideoBudget()
+static bool QueryLocalVideoMemory(DXGI_QUERY_VIDEO_MEMORY_INFO* info)
 {
 	if (!g_device)
-		return 0;
+		return false;
 	const LUID luid = g_device->GetAdapterLuid();
 	IDXGIFactory4* factory = nullptr;
 	if (FAILED(CreateDXGIFactory1(IID_PPV_ARGS(&factory))))
-		return 0;
-	unsigned long long budget = 0;
+		return false;
+	bool ok = false;
 	IDXGIAdapter3* adapter = nullptr;
 	if (SUCCEEDED(factory->EnumAdapterByLuid(luid, IID_PPV_ARGS(&adapter))))
 	{
-		DXGI_QUERY_VIDEO_MEMORY_INFO info = {};
-		if (SUCCEEDED(adapter->QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &info)))
-			budget = info.Budget;
+		ok = SUCCEEDED(adapter->QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, info));
 		adapter->Release();
 	}
 	factory->Release();
-	return budget;
+	return ok;
+}
+
+extern "C" __declspec(dllexport) unsigned long long ImGuiHost_LocalVideoBudget()
+{
+	DXGI_QUERY_VIDEO_MEMORY_INFO info = {};
+	return QueryLocalVideoMemory(&info) ? info.Budget : 0;
+}
+
+extern "C" __declspec(dllexport) int ImGuiHost_LocalVideoMemory(unsigned long long* usage, unsigned long long* budget)
+{
+	DXGI_QUERY_VIDEO_MEMORY_INFO info = {};
+	if (!usage || !budget || !QueryLocalVideoMemory(&info))
+		return 0;
+	*usage  = info.CurrentUsage;
+	*budget = info.Budget;
+	return 1;
 }
 
 static PluginTextureHandle TextureLoadFromMemory(const void* data, size_t size, const char* name)

@@ -1797,6 +1797,25 @@ namespace UI::ModLoaderWindow
         }
 
         ImGui::Spacing();
+        ImGui::SeparatorText("Images");
+        ImGui::Spacing();
+
+        bool preloadImages = UI::GlobalSettings::GetPreloadImages();
+        if (UI::Theme::ToggleSwitch("Preload images from the game", &preloadImages))
+            UI::GlobalSettings::SetPreloadImages(preloadImages);
+        ImGui::SameLine();
+        ImGui::TextDisabled("(?)");
+        if (ImGui::IsItemHovered())
+        {
+            ImGui::SetTooltip(
+                "Plugins that show item or building images can ask the loader to have\n"
+                "them ready before they are drawn. With this on, the loader reads those\n"
+                "images from the game in the background, one at a time, and pauses\n"
+                "whenever an image on screen is waiting or memory is short. Off, each\n"
+                "image is read when it is first drawn. Takes effect at once.");
+        }
+
+        ImGui::Spacing();
         ImGui::SeparatorText("Networking");
         ImGui::Spacing();
 

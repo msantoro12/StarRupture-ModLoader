@@ -30,6 +30,7 @@ namespace
     std::atomic<bool (*)()>                         g_gpuReadyFn{ nullptr };
     std::atomic<int  (*)(PluginTextureHandle)>      g_copyStateFn{ nullptr };
     std::atomic<unsigned long long (*)()>           g_localVideoBudgetFn{ nullptr };
+    std::atomic<int (*)(unsigned long long*, unsigned long long*)> g_localVideoMemoryFn{ nullptr };
 }
 
 namespace UI::ImGuiBackend
@@ -66,6 +67,7 @@ namespace UI::ImGuiBackend
         g_gpuReadyFn.store(reinterpret_cast<bool (*)()>(GetProcAddress(g_hostDll, "ImGuiHost_GpuReady")));
         g_copyStateFn.store(reinterpret_cast<int (*)(PluginTextureHandle)>(GetProcAddress(g_hostDll, "ImGuiHost_CopyState")));
         g_localVideoBudgetFn.store(reinterpret_cast<unsigned long long (*)()>(GetProcAddress(g_hostDll, "ImGuiHost_LocalVideoBudget")));
+        g_localVideoMemoryFn.store(reinterpret_cast<int (*)(unsigned long long*, unsigned long long*)>(GetProcAddress(g_hostDll, "ImGuiHost_LocalVideoMemory")));
 
         if (!g_initFn)
         {
@@ -87,6 +89,7 @@ namespace UI::ImGuiBackend
         g_gpuReadyFn.store(nullptr);
         g_copyStateFn.store(nullptr);
         g_localVideoBudgetFn.store(nullptr);
+        g_localVideoMemoryFn.store(nullptr);
         if (g_shutdownFn) g_shutdownFn();
         g_submitUiOverlayFn.store(nullptr);
         if (g_hostDll)
@@ -174,6 +177,12 @@ namespace UI::ImGuiBackend
     {
         const auto fn = g_localVideoBudgetFn.load();
         return fn ? fn() : 0;
+    }
+
+    bool LocalVideoMemory(unsigned long long* usage, unsigned long long* budget)
+    {
+        const auto fn = g_localVideoMemoryFn.load();
+        return fn && fn(usage, budget) != 0;
     }
 }
 

@@ -210,3 +210,5 @@ IMGUI_HOST_API int                    ImGuiHost_CopyState(PluginTextureHandle te
 
 // The adapter's local video memory budget in bytes, or 0 when it cannot be read. Game thread.
 IMGUI_HOST_API unsigned long long     ImGuiHost_LocalVideoBudget();
+// The adapter's local video memory in use and its budget, in bytes. False when the adapter cannot be asked.
+IMGUI_HOST_API int                    ImGuiHost_LocalVideoMemory(unsigned long long* usage, unsigned long long* budget);

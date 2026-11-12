@@ -44,6 +44,8 @@ namespace ImagePump
 		FreeDeferred();
 		if (!m_gone)
 			Collect();
+		if (m_saver)
+			m_saver->Poll(begin / 1000);
 		if (m_off)
 			FailQueued();
 		else
@@ -75,6 +77,8 @@ namespace ImagePump
 	{
 		m_gone = true;
 		m_off  = true;
+		if (m_saver)
+			m_saver->Abandon();
 
 		size_t dropped = m_inFlight.size();
 		for (const InFlight& read : m_inFlight)
@@ -173,6 +177,9 @@ namespace ImagePump
 		}
 
 		m_host.Free(read.copy.texture);
+		if (m_saver)
+			m_saver->Begin({ read.path, read.copy.sourceFormat, static_cast<uint32_t>(read.copy.sourceWidth), static_cast<uint32_t>(read.copy.sourceHeight),
+				static_cast<uint32_t>(shrunk.width), static_cast<uint32_t>(shrunk.height), shrunk.levels, shrunk.readback });
 		out.texture = shrunk.texture;
 		out.bytes   = ImageShrink::Bytes({ static_cast<uint32_t>(shrunk.width), static_cast<uint32_t>(shrunk.height) }, shrunk.levels);
 		return StoreResult::Stored;
@@ -434,7 +441,7 @@ namespace ImagePump
 		switch (result)
 		{
 		case ReadResult::Started:
-			m_inFlight.push_back({ request.id, copy });
+			m_inFlight.push_back({ request.id, copy, request.name });
 			if (m_causedLoad.erase(request.id))
 			{
 				const uint64_t width  = static_cast<uint64_t>(copy.sourceWidth > 0 ? copy.sourceWidth : copy.width);
@@ -497,6 +504,8 @@ namespace ImagePump
 		if (m_stopped)
 			return;
 		m_stopped = true;
+		if (m_saver)
+			m_saver->Stop();
 		LogSummary();
 		FailHeld();
 

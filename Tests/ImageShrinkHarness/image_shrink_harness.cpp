@@ -8,6 +8,7 @@
 // error count, which must be 0.
 //
 // With /sheet it draws real images at the sizes the UI uses instead; see the project file.
+#include "UI/image_readback_gpu.h"
 #include "UI/image_shrink_gpu.h"
 #include "UI/icon_copy.h"
 
@@ -575,7 +576,7 @@ struct Case
 static const uint32_t kStoredSize = 256;      // ImageLibrary::kStoredSize; the shrink takes the size as an argument
 static const int      kTimedRuns  = 10;
 
-static void RunCase(Context& c, ImageShrink::Gpu& gpu, ID3D12QueryHeap* queries, ID3D12Resource* queryReadback, const Case& test)
+static void RunCase(Context& c, ImageShrink::Gpu& gpu, ImageReadback::Ring& ring, ID3D12QueryHeap* queries, ID3D12Resource* queryReadback, const Case& test)
 {
     const Image image = MakeImage(c, test.format, test.width, test.height, test.withMips, test.pattern);
     const Picked picked = CopyPickedLevel(c, image, kStoredSize);
@@ -583,6 +584,7 @@ static void RunCase(Context& c, ImageShrink::Gpu& gpu, ID3D12QueryHeap* queries,
 
     // One warm-up shrink, then the timed ones. Each is its own submission, as in the game.
     ComPtr<ID3D12Resource> stored;
+    uint32_t ticket = 0;
     double totalMs = 0, minMs = 1e9, maxMs = 0;
     for (int run = 0; run <= kTimedRuns; ++run)
     {
@@ -594,6 +596,9 @@ static void RunCase(Context& c, ImageShrink::Gpu& gpu, ID3D12QueryHeap* queries,
         c.list->ResolveQueryData(queries, D3D12_QUERY_TYPE_TIMESTAMP, 0, 2, queryReadback, 0);
         if (!made)
             throw std::runtime_error(std::string("Record failed at ") + failure.step);
+        // The last shrink also records the readback of its result in the same list, as the loader does.
+        if (run == kTimedRuns)
+            ticket = ring.Record(c.list.Get(), made, c.value + 1);
         c.Submit();
         stored.Attach(made);
 
@@ -648,10 +653,77 @@ static void RunCase(Context& c, ImageShrink::Gpu& gpu, ID3D12QueryHeap* queries,
             CHECK(Near(last, 255, 0, 0, 128, 12));        }
     }
 
+    // The readback recorded in the same list holds every level, tightly packed, as the shrink made it.
+    CHECK(ticket != 0);
+    if (ticket != 0 && read.size() == levels)
+    {
+        std::vector<uint8_t> expected;
+        for (const Pixels& level : read)
+            expected.insert(expected.end(), level.rgba.begin(), level.rgba.end());
+        CHECK(expected.size() == ImageShrink::Bytes(target, levels));
+
+        std::vector<uint8_t> bytes(expected.size());
+        CHECK(ring.Fetch(ticket, c.fence->GetCompletedValue(), bytes.data(), bytes.size()) == ImageReadback::Fetched::Done);
+        CHECK(bytes == expected);
+        // The ticket is spent.
+        CHECK(ring.Fetch(ticket, c.fence->GetCompletedValue(), bytes.data(), bytes.size()) == ImageReadback::Fetched::Gone);
+    }
+
     printf("%-34s %-10s %4ux%-4u -> %3ux%-3u %2u levels  %-4s  %.3f ms (min %.3f, max %.3f)\n", test.name,
         test.format == DXGI_FORMAT_BC3_UNORM ? "BC3" : test.format == DXGI_FORMAT_B8G8R8A8_UNORM ? "BGRA" : "RGBA16F",
         picked.size.width, picked.size.height, target.width, target.height, levels,
         g_failed == failedBefore ? "ok" : "FAIL", totalMs / kTimedRuns, minMs, maxMs);
+}
+
+// The ring has a fixed number of slots: with all taken a copy gets no ticket, a ticket is pending
+// until the list has run, and a slot comes back once it has been fetched or cancelled.
+static void RunRingChecks(Context& c, ImageShrink::Gpu& gpu, ImageReadback::Ring& ring)
+{
+    const Image image = MakeImage(c, DXGI_FORMAT_B8G8R8A8_UNORM, 512, 512, false, Pattern::Split);
+    const Picked picked = CopyPickedLevel(c, image, kStoredSize);
+    const Size target = ImageShrink::StoredSize(picked.size.width, picked.size.height, kStoredSize);
+    const uint32_t levels = ImageShrink::LevelCount(target.width, target.height);
+    const size_t bytes = static_cast<size_t>(ImageShrink::Bytes(target, levels));
+
+    ImageShrink::Failure failure;
+    c.Begin();
+    ID3D12Resource* made = gpu.Record(c.list.Get(), 0, picked.texture.Get(), DXGI_FORMAT_B8G8R8A8_UNORM, target, failure);
+    if (!made)
+        throw std::runtime_error(std::string("Record failed at ") + failure.step);
+    ComPtr<ID3D12Resource> stored;
+    stored.Attach(made);
+
+    uint32_t tickets[ImageReadback::kSlots] = {};
+    for (uint32_t i = 0; i < ImageReadback::kSlots; ++i)
+    {
+        tickets[i] = ring.Record(c.list.Get(), stored.Get(), c.value + 1);
+        CHECK(tickets[i] != 0);
+    }
+    // Every slot is taken: this image is not saved.
+    CHECK(ring.Record(c.list.Get(), stored.Get(), c.value + 1) == 0);
+
+    // The list has not run: the copy is pending.
+    std::vector<uint8_t> dest(bytes);
+    CHECK(ring.Fetch(tickets[0], c.fence->GetCompletedValue(), dest.data(), dest.size()) == ImageReadback::Fetched::Pending);
+    c.Submit();
+
+    // A copy asked for at the wrong size is refused; a fetched slot comes back, and only once.
+    std::vector<uint8_t> wrong(bytes - 1);
+    CHECK(ring.Fetch(tickets[1], c.fence->GetCompletedValue(), wrong.data(), wrong.size()) == ImageReadback::Fetched::Gone);
+    CHECK(ring.Fetch(tickets[0], c.fence->GetCompletedValue(), dest.data(), dest.size()) == ImageReadback::Fetched::Done);
+    CHECK(ring.Fetch(tickets[0], c.fence->GetCompletedValue(), dest.data(), dest.size()) == ImageReadback::Fetched::Gone);
+    for (uint32_t i = 2; i < ImageReadback::kSlots; ++i)
+        CHECK(ring.Fetch(tickets[i], c.fence->GetCompletedValue(), dest.data(), dest.size()) == ImageReadback::Fetched::Done);
+
+    // A slot whose list was never run is given back.
+    c.Begin();
+    const uint32_t first = ring.Record(c.list.Get(), stored.Get(), c.value + 1);
+    CHECK(first != 0);
+    ring.Cancel(first);
+    const uint32_t second = ring.Record(c.list.Get(), stored.Get(), c.value + 1);
+    CHECK(second != 0);
+    ring.Cancel(second);
+    OK(c.list->Close());
 }
 
 static int RunChecks(Context& c)
@@ -684,12 +756,19 @@ static int RunChecks(Context& c)
         { "BGRA 512, transparent white half",  bgra, 512,  512,  false, Pattern::Premul },
     };
 
+    ImageReadback::Ring ring;
+    if (!ring.Create(c.device.Get(), kStoredSize))
+        throw std::runtime_error("Ring::Create failed");
+
     printf("adapter: %s\n", c.adapter.c_str());
     printf("%-34s %-10s %-9s    %-11s %-9s %-5s  GPU time per shrink (%d timed, 1 warm-up)\n",
         "case", "source", "picked", "stored", "levels", "", kTimedRuns);
     for (const Case& test : cases)
-        RunCase(c, gpu, queries.Get(), queryReadback.Get(), test);
+        RunCase(c, gpu, ring, queries.Get(), queryReadback.Get(), test);
 
+    RunRingChecks(c, gpu, ring);
+
+    ring.Release();
     gpu.Release();
     return 0;
 }

@@ -65,6 +65,9 @@ namespace UI::ImGuiBackend
     // ImGuiHostShrinkResult it returns. ImGuiHostShrink_Failed when the host DLL is not loaded.
     int  ShrinkTexture(PluginTextureHandle source, unsigned maxSize, ImGuiHostShrinkOut* out);
 
+    // The pixels of a shrink's stored copy; see ImGuiHost_TakeReadback. -1 when the host DLL is not loaded.
+    int  TakeReadback(unsigned ticket, unsigned char* dest, unsigned long long bytes);
+
     // True while the overlay's GPU side is up; false before the first frame, after a lost device
     // and after shutdown. Any thread.
     bool GpuReady();

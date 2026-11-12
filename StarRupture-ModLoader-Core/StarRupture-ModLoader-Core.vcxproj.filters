@@ -234,6 +234,15 @@
     <ClInclude Include="UI\image_shrink.h">
       <Filter>Source Files\UI\modloader</Filter>
     </ClInclude>
+    <ClInclude Include="UI\image_cache_file.h">
+      <Filter>Source Files\UI\modloader</Filter>
+    </ClInclude>
+    <ClInclude Include="UI\image_cache_writer.h">
+      <Filter>Source Files\UI\modloader</Filter>
+    </ClInclude>
+    <ClInclude Include="UI\image_disk.h">
+      <Filter>Source Files\UI\modloader</Filter>
+    </ClInclude>
     <ClInclude Include="UI\plugin_widget_registry.h">
       <Filter>Source Files\UI\modloader</Filter>
     </ClInclude>
@@ -696,6 +705,18 @@
       <Filter>Source Files\UI\modloader</Filter>
     </ClCompile>
     <ClCompile Include="UI\image_pump_host.cpp">
+      <Filter>Source Files\UI\modloader</Filter>
+    </ClCompile>
+    <ClCompile Include="UI\image_cache_file.cpp">
+      <Filter>Source Files\UI\modloader</Filter>
+    </ClCompile>
+    <ClCompile Include="UI\image_cache_writer.cpp">
+      <Filter>Source Files\UI\modloader</Filter>
+    </ClCompile>
+    <ClCompile Include="UI\image_disk.cpp">
+      <Filter>Source Files\UI\modloader</Filter>
+    </ClCompile>
+    <ClCompile Include="UI\image_disk_host.cpp">
       <Filter>Source Files\UI\modloader</Filter>
     </ClCompile>
     <ClCompile Include="UI\plugin_widget_registry.cpp">

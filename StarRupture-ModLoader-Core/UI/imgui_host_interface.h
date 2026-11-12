@@ -166,6 +166,7 @@ struct ImGuiHostCopyOut
     int                 sourceWidth;   // level 0 of the source
     int                 sourceHeight;
     unsigned            level;         // which level of the source was copied
+    unsigned            sourceFormat;  // the source's DXGI_FORMAT
 };
 
 IMGUI_HOST_API int                    ImGuiHost_TryCopyTextureLevel(void* uTexture2D, const char* name, unsigned minSize, ImGuiHostCopyOut* out);
@@ -196,9 +197,19 @@ struct ImGuiHostShrinkOut
     int                 width;
     int                 height;
     unsigned            levels;   // levels in the chain, level 0 included
+    unsigned            readback; // ticket for ImGuiHost_TakeReadback, 0 when none was made
 };
 
 IMGUI_HOST_API int                    ImGuiHost_ShrinkTexture(PluginTextureHandle source, unsigned maxSize, ImGuiHostShrinkOut* out);
+
+// The pixels of a shrink's stored copy, for saving to disk. The shrink's command list also copied
+// every level into a readback buffer; this takes them once the GPU has finished. dest receives
+// every level tightly packed (8-bit RGBA, level 0 first) and bytes must be exactly that size. With
+// a null dest the readback is only freed. Never waits. Game thread.
+//
+// Returns 1 done (dest is filled, the ticket is spent), 0 still on the GPU (ask again), -1 gone
+// (never given, already taken, wrong size, or the GPU side is gone; the ticket is spent).
+IMGUI_HOST_API int                    ImGuiHost_TakeReadback(unsigned ticket, unsigned char* dest, unsigned long long bytes);
 
 // True once the overlay's GPU side is up (the first frame has set it up) and until it is shut
 // down or the device is lost. The image library does nothing before it. Any thread.

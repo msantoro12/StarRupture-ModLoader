@@ -20,6 +20,7 @@
 // Game thread only. The pump keeps no pointer into the engine: a texture is
 // found, read and forgotten inside one Host::Read call.
 
+#include "UI/image_disk.h"
 #include "UI/image_library.h"
 #include "UI/image_lookup.h"
 
@@ -99,10 +100,11 @@ namespace ImagePump
 	// size, with the full chain of smaller levels.
 	struct Shrunk
 	{
-		PluginTextureHandle texture = nullptr;
-		int                 width   = 0;
-		int                 height  = 0;
-		uint32_t            levels  = 0;
+		PluginTextureHandle texture  = nullptr;
+		int                 width    = 0;
+		int                 height   = 0;
+		uint32_t            levels   = 0;
+		uint32_t            readback = 0;   // 0: the stored copy is not read back
 	};
 
 	// What a started read made: a texture slot of the texture API, holding one
@@ -114,6 +116,7 @@ namespace ImagePump
 		int                 height  = 0;
 		int                 sourceWidth  = 0;   // level 0 of the game image
 		int                 sourceHeight = 0;
+		uint32_t            sourceFormat = 0;
 	};
 
 	class Host
@@ -167,6 +170,9 @@ namespace ImagePump
 	public:
 		Pump(ImageLibrary::Library& library, Host& host, ImageLookup::ItemSource& items, ImageLookup::ItemSource& buildings);
 
+		// Where the stored copies are saved. None by default; the pump does not own it.
+		void SetSaver(ImageDisk::Saver* saver) { m_saver = saver; }
+
 		// Once per engine tick, after the plugin callbacks.
 		void Tick();
 
@@ -182,6 +188,7 @@ namespace ImagePump
 		{
 			PluginImageId id = 0;
 			Copy          copy;
+			std::string   path;
 		};
 
 		// What a read becomes before it is published: the texture to keep and the bytes
@@ -236,6 +243,7 @@ namespace ImagePump
 		Host&                  m_host;
 		ImageLookup::ItemIndex m_items;
 		ImageLookup::ItemIndex m_buildings;
+		ImageDisk::Saver*      m_saver = nullptr;
 
 		bool m_started = false;   // the GPU side was up at least once
 		bool m_off     = false;   // no read can run any more this session

@@ -624,6 +624,19 @@ namespace ImageLibrary
 		m_kept = 0;
 	}
 
+	void Library::CollectSets(std::vector<SetMember>& out) const
+	{
+		std::lock_guard<std::mutex> lock(m_lock);
+		const uint32_t count = m_count.load(std::memory_order_relaxed);
+		for (PluginImageId id = 1; id <= count; ++id)
+		{
+			const Entry* e = Find(id);
+			// An item that resolved to a texture is an alias, and its sets moved to that texture.
+			if (e->sets != 0 && e->kind == Kind::Path && e->target.load(std::memory_order_relaxed) == 0)
+				out.push_back({ e->sets, e->name });
+		}
+	}
+
 	void Library::SetCaps(uint64_t byteCap, uint32_t countCap)
 	{
 		std::lock_guard<std::mutex> lock(m_lock);

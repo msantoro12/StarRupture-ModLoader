@@ -7,6 +7,7 @@
 #include "imgui_host_interface.h"
 #include "icon_copy.h"
 #include "image_shrink_gpu.h"
+#include "image_readback_gpu.h"
 #include "imgui.h"
 #include "imgui_impl_dx12.h"
 #include "imgui_impl_win32.h"
@@ -2871,6 +2872,8 @@ namespace
 	IconCopyQueue            g_iconCopy;
 	// The shrink pass of the image library, on the same queue and ring. Made on the first shrink.
 	ImageShrink::Gpu         g_shrink;
+	// The buffers the shrink's stored copy is read back into, for the disk cache.
+	ImageReadback::Ring      g_readback;
 	IconCopy::TickBudget     g_iconTickBudget;
 	IconCopy::ResidentBackoff g_iconResidentBackoff;  // mutex held
 
@@ -2993,6 +2996,7 @@ static void ReleaseIconCopies()
 		q.ring.ReleaseAll();
 		q.parked.ReleaseAll();
 		g_shrink.Release();
+		g_readback.Release();
 		ReleaseIconCopyQueue();
 	}
 	else
@@ -3000,6 +3004,7 @@ static void ReleaseIconCopies()
 		IMGUI_LOG_WARN("[ImGuiBackend] Icon copies may still be on the GPU at shutdown -- their resources are left to process exit");
 		q.ring.AbandonAll();
 		q.parked.AbandonAll();
+		g_readback.Abandon();
 		q = {};
 	}
 	g_iconCopyHolds   = 0;
@@ -4467,6 +4472,7 @@ extern "C" __declspec(dllexport) int ImGuiHost_TryCopyTextureLevel(void* uTextur
 		out->sourceWidth  = static_cast<int>(source.desc.Width);
 		out->sourceHeight = static_cast<int>(source.desc.Height);
 		out->level        = pick.level;
+		out->sourceFormat = static_cast<unsigned>(source.desc.Format);
 		return ImGuiHostCopy_Started;
 	case Commit::RingFull:
 	case Commit::NoSlot:
@@ -4514,6 +4520,13 @@ extern "C" __declspec(dllexport) int ImGuiHost_ShrinkTexture(PluginTextureHandle
 			return ImGuiHostShrink_Failed;
 		}
 	}
+	// A failure here only means no image is saved to disk.
+	static bool s_noReadback = false;
+	if (!g_readback.Ready() && !s_noReadback && !g_readback.Create(g_device, maxSize))
+	{
+		s_noReadback = true;
+		IMGUI_LOG_WARN("[ImGuiBackend] %s: the readback buffers could not be made -- no images are saved to disk this session", kCaller);
+	}
 
 	ID3D12Resource* const sourceResource = src->resource;
 	const D3D12_RESOURCE_DESC sourceDesc = sourceResource->GetDesc();
@@ -4545,8 +4558,13 @@ extern "C" __declspec(dllexport) int ImGuiHost_ShrinkTexture(PluginTextureHandle
 	}
 	ID3D12Resource* const stored = static_cast<ID3D12Resource*>(hold.Get().dest);
 
+	// The pixels are copied out in the same list, after the shrink. With every buffer taken the
+	// image is not saved.
+	const uint32_t readback = g_readback.Record(list, stored, q.value + 1);
+
 	if (!GpuCopyStep("CommandList::Close", list->Close()))
 	{
+		g_readback.Cancel(readback);
 		LogEngineCopyFailure(kCaller, nullptr);
 		return ImGuiHostShrink_Failed;
 	}
@@ -4597,7 +4615,24 @@ extern "C" __declspec(dllexport) int ImGuiHost_ShrinkTexture(PluginTextureHandle
 	out->width   = rec.width;
 	out->height  = rec.height;
 	out->levels  = levels;
+	out->readback = readback;
 	return ImGuiHostShrink_Started;
+}
+
+extern "C" __declspec(dllexport) int ImGuiHost_TakeReadback(unsigned ticket, unsigned char* dest, unsigned long long bytes)
+{
+	std::lock_guard<std::mutex> lock(g_textureMutex);
+	if (!g_iconCopy.fence || g_iconCopyOff)
+	{
+		// A copy may never end, or the queue is gone: the buffer is not freed here.
+		return -1;
+	}
+	switch (g_readback.Fetch(ticket, g_iconCopy.fence->GetCompletedValue(), dest, static_cast<size_t>(bytes)))
+	{
+	case ImageReadback::Fetched::Done:    return 1;
+	case ImageReadback::Fetched::Pending: return 0;
+	default:                              return -1;
+	}
 }
 
 extern "C" __declspec(dllexport) bool ImGuiHost_GpuReady()

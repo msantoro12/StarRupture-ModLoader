@@ -592,14 +592,17 @@ static void AnItemWhoseIconIsAPlaceholderIsNoImage()
     Rig rig;
     rig.items.Add("Item_White", "/Engine/EngineResources/WhiteSquareTexture.WhiteSquareTexture");
     rig.items.Add("Item_Grid", "/Engine/EngineMaterials/DefaultWhiteGrid.DefaultWhiteGrid");
+    rig.items.Add("Item_NoItem", "/Game/UI/Icons/T_NoItem_White_Icon.T_NoItem_White_Icon");
     const PluginImageId white = rig.library.Item("Item_White");
     const PluginImageId grid = rig.library.Item("Item_Grid");
+    const PluginImageId noItem = rig.library.Item("Item_NoItem");
     rig.Tick(3);
     CHECK(rig.library.State(white) == PLUGIN_IMAGE_NO_IMAGE);
     CHECK(rig.library.State(grid) == PLUGIN_IMAGE_NO_IMAGE);
+    CHECK(rig.library.State(noItem) == PLUGIN_IMAGE_NO_IMAGE);
     CHECK(rig.host.reads.empty());
     CHECK(rig.host.loads.empty());
-    CHECK(rig.library.ImageCount() == 2);   // no path request was made for either
+    CHECK(rig.library.ImageCount() == 3);   // no path request was made for either
 }
 
 static void APathToAPlaceholderIsNoImage()
@@ -619,14 +622,15 @@ static void APathToAPlaceholderIsNoImage()
     CHECK(rig.library.State(other) == PLUGIN_IMAGE_READY);
 }
 
-static void AnItemThatIsNotInTheGameIsNoImageOnceTheListIsRead()
+static void AnItemThatIsNotInTheGameIsNoneOnceTheListIsRead()
 {
     Rig rig;
     rig.items.Add("Item_X", kA);
     const PluginImageId unknown = rig.library.Item("Item_Nobody");
     rig.Tick(2);
-    CHECK(rig.library.State(unknown) == PLUGIN_IMAGE_NO_IMAGE);
-    CHECK(rig.pump.GetStats().noImage == 1);
+    CHECK(rig.library.State(unknown) == PLUGIN_IMAGE_NONE);
+    CHECK(rig.pump.GetStats().failed == 1);
+    CHECK(rig.pump.GetStats().noImage == 0);
 }
 
 static void AnItemWaitsWhileTheListIsStillBeingRead()
@@ -722,7 +726,7 @@ static void ManyItemsAskedForAreHeldWithoutCostingReads()
     CHECK(rig.library.State(b) == PLUGIN_IMAGE_READY);
     CHECK(rig.library.State(ids[0]) == PLUGIN_IMAGE_READY);
     for (int i = 1; i < 30; ++i)
-        CHECK(rig.library.State(ids[i]) == PLUGIN_IMAGE_NO_IMAGE);
+        CHECK(rig.library.State(ids[i]) == PLUGIN_IMAGE_NONE);
 }
 
 static void WhenTheListCannotBeMadeItemsAreNone()
@@ -770,7 +774,7 @@ static void AnItemThatCannotBeReadIsSkipped()
     const PluginImageId broken = rig.library.Item("Item_Broken");
     rig.Tick(3);
     CHECK(rig.library.State(item) == PLUGIN_IMAGE_READY);
-    CHECK(rig.library.State(broken) == PLUGIN_IMAGE_NO_IMAGE);
+    CHECK(rig.library.State(broken) == PLUGIN_IMAGE_NONE);
 }
 
 static void WaitingItemsEndWhenTheGpuGoes()
@@ -1042,7 +1046,7 @@ int main()
     RunTest("an item with no icon is no image", AnItemWithNoIconIsNoImage);
     RunTest("an item whose icon is a placeholder is no image", AnItemWhoseIconIsAPlaceholderIsNoImage);
     RunTest("a path to a placeholder is no image", APathToAPlaceholderIsNoImage);
-    RunTest("an item that is not in the game is no image once the list is read", AnItemThatIsNotInTheGameIsNoImageOnceTheListIsRead);
+    RunTest("an item that is not in the game is none once the list is read", AnItemThatIsNotInTheGameIsNoneOnceTheListIsRead);
     RunTest("an item waits while the list is still being read", AnItemWaitsWhileTheListIsStillBeingRead);
     RunTest("the item index reads nothing until an item is asked for", TheItemIndexReadsNothingUntilAnItemIsAskedFor);
     RunTest("the item index is built once and stops when nobody waits", TheItemIndexIsBuiltOnceAndStopsWhenNobodyWaits);

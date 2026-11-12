@@ -7,7 +7,7 @@ namespace ImageLookup
 	bool IsPlaceholderImage(const char* texturePath)
 	{
 		// The key is an object path in lower case, so the asset is what follows the last dot.
-		static const char* const kPlaceholders[] = { "whitesquaretexture", "defaultwhitegrid", "whiteplaceholder" };
+		static const char* const kPlaceholders[] = { "whitesquaretexture", "defaultwhitegrid", "whiteplaceholder", "t_noitem_white_icon" };
 
 		const std::string key = ImageLibrary::NormalizeObjectPath(texturePath);
 		const size_t dot = key.rfind('.');

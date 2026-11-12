@@ -233,8 +233,8 @@ namespace ImagePump
 			switch (m_items.GetState())
 			{
 			case ImageLookup::ItemIndex::State::Done:   // there is no item of that name
-				m_library.PublishNoImage(item.id);
-				++m_stats.noImage;
+				m_library.Fail(item.id);
+				++m_stats.failed;
 				return true;
 			case ImageLookup::ItemIndex::State::Failed:
 				m_library.Fail(item.id);

@@ -42,6 +42,7 @@ static void PlaceholdersAreNoImage()
     CHECK(IsPlaceholderImage("/Engine/EngineResources/WhiteSquareTexture.WhiteSquareTexture"));
     CHECK(IsPlaceholderImage("/Engine/EngineMaterials/DefaultWhiteGrid.DefaultWhiteGrid"));
     CHECK(IsPlaceholderImage("/Game/Scene_UnfinishedBuilding/Textures/WhitePlaceholder.WhitePlaceholder"));
+    CHECK(IsPlaceholderImage("/Game/UI/Icons/T_NoItem_White_Icon.T_NoItem_White_Icon"));
 }
 
 static void PlaceholdersAreRecognisedInEveryFormAPathComesIn()
@@ -59,6 +60,7 @@ static void OtherTexturesAreNotPlaceholders()
     CHECK(!IsPlaceholderImage("/Game/UI/T_WhiteSquareTextureIcon.T_WhiteSquareTextureIcon"));
     CHECK(!IsPlaceholderImage("/Game/WhiteSquareTexture/T_A.T_A"));
     CHECK(!IsPlaceholderImage("/Game/UI/T_A.WhiteSquareTexture_Extra"));
+    CHECK(!IsPlaceholderImage("/Game/UI/T_NoItem_White_Icon_Big.T_NoItem_White_Icon_Big"));
     CHECK(!IsPlaceholderImage(""));
     CHECK(!IsPlaceholderImage("WhiteSquareTexture"));   // not a path
     CHECK(!IsPlaceholderImage(nullptr));

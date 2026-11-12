@@ -10,6 +10,7 @@
 #endif
 #include <Windows.h>
 
+#include <algorithm>
 #include <cstdio>
 
 namespace ImageCache
@@ -25,26 +26,33 @@ namespace ImageCache
 			return path;
 		}
 
-		enum class ReadState { Ok, Missing, Failed };
+		// Busy: the file could not be opened or read now (a scanner has it); it is not at fault.
+		// TooBig: it is not one of ours.
+		enum class ReadState { Ok, Missing, Busy, TooBig };
 
 		// The whole file, or why not.
 		ReadState ReadAll(const std::wstring& path, uint64_t limit, std::vector<uint8_t>& bytes)
 		{
-			HANDLE file = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+			HANDLE file = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
 			if (file == INVALID_HANDLE_VALUE)
 			{
 				const DWORD error = GetLastError();
-				return error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND ? ReadState::Missing : ReadState::Failed;
+				return error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND ? ReadState::Missing : ReadState::Busy;
 			}
 
 			LARGE_INTEGER size = {};
-			ReadState state = ReadState::Failed;
-			if (GetFileSizeEx(file, &size) && size.QuadPart >= 0 && static_cast<uint64_t>(size.QuadPart) <= limit)
+			ReadState state = ReadState::Busy;
+			if (GetFileSizeEx(file, &size) && size.QuadPart >= 0)
 			{
-				bytes.resize(static_cast<size_t>(size.QuadPart));
-				DWORD read = 0;
-				if (bytes.empty() || (ReadFile(file, bytes.data(), static_cast<DWORD>(bytes.size()), &read, nullptr) && read == bytes.size()))
-					state = ReadState::Ok;
+				if (static_cast<uint64_t>(size.QuadPart) > limit)
+					state = ReadState::TooBig;
+				else
+				{
+					bytes.resize(static_cast<size_t>(size.QuadPart));
+					DWORD read = 0;
+					if (bytes.empty() || (ReadFile(file, bytes.data(), static_cast<DWORD>(bytes.size()), &read, nullptr) && read == bytes.size()))
+						state = ReadState::Ok;
+				}
 			}
 			CloseHandle(file);
 			return state;
@@ -120,6 +128,8 @@ namespace ImageCache
 	bool Reader::Has(const std::string& key)
 	{
 		if (m_state != State::Ready)
+			return false;
+		if (IsTransientPath(key))
 			return false;
 		const std::string name = FileName(key);
 		std::lock_guard<std::mutex> lock(m_lock);
@@ -210,6 +220,13 @@ namespace ImageCache
 	void Reader::Open(const Job& job)
 	{
 		m_folder = job.folder();
+		if (m_folder.empty())
+		{
+			// No folder for this session's key: nothing to list.
+			std::lock_guard<std::mutex> lock(m_lock);
+			m_opened = true;
+			return;
+		}
 
 		std::unordered_set<std::string> index;
 		WIN32_FIND_DATAW found = {};
@@ -239,6 +256,20 @@ namespace ImageCache
 			if (ParseSets(bytes.data(), bytes.size(), lists.sets) != Parsed::Ok)
 				lists.sets.clear();
 
+		// Saved names and set entries for run-time objects are not used, and their files go.
+		const auto dropTransient = [&](const std::string& path)
+		{
+			if (!IsTransientPath(path))
+				return false;
+			DeleteFileW(Join(m_folder, FileName(path)).c_str());
+			index.erase(FileName(path));
+			return true;
+		};
+		lists.names.erase(std::remove_if(lists.names.begin(), lists.names.end(),
+			[&](const NamePair& pair) { return dropTransient(pair.path); }), lists.names.end());
+		for (SetEntry& entry : lists.sets)
+			entry.paths.erase(std::remove_if(entry.paths.begin(), entry.paths.end(), dropTransient), entry.paths.end());
+
 		std::lock_guard<std::mutex> lock(m_lock);
 		m_index  = std::move(index);
 		m_lists  = std::move(lists);
@@ -251,6 +282,14 @@ namespace ImageCache
 	{
 		const std::wstring path = Join(m_folder, FileName(job.key));
 
+		// A run-time object's name stands for another texture next session: its file is not used.
+		if (IsTransientPath(job.key))
+		{
+			DeleteFileW(path.c_str());
+			Finish(job.id, job.key, ImageDisk::FileOutcome::Failed, nullptr, 0);
+			return;
+		}
+
 		std::vector<uint8_t> bytes;
 		switch (ReadAll(path, kMaxFileBytes, bytes))
 		{
@@ -259,9 +298,12 @@ namespace ImageCache
 		case ReadState::Missing:
 			Finish(job.id, job.key, ImageDisk::FileOutcome::Failed, nullptr, 0);
 			return;
-		case ReadState::Failed:
-			// Too big or unreadable: a file that is not ours to keep.
-			Reject(path, job.key, "cannot be read");
+		case ReadState::Busy:
+			// Held by something else just now: a good file is not deleted for that.
+			Finish(job.id, job.key, ImageDisk::FileOutcome::Failed, nullptr, 0);
+			return;
+		case ReadState::TooBig:
+			Reject(path, job.key, "too big");
 			Finish(job.id, job.key, ImageDisk::FileOutcome::Rejected, nullptr, 0);
 			return;
 		}

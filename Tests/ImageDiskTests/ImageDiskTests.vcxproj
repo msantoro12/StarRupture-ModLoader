@@ -97,11 +97,13 @@
     <ClCompile Include="image_disk_tests.cpp" />
   </ItemGroup>
   <ItemGroup Label="Loader sources under test">
+    <ClCompile Include="$(CoreDir)UI\image_cache_care.cpp" />
     <ClCompile Include="$(CoreDir)UI\image_cache_file.cpp" />
     <ClCompile Include="$(CoreDir)UI\image_cache_reader.cpp" />
     <ClCompile Include="$(CoreDir)UI\image_cache_writer.cpp" />
     <ClCompile Include="$(CoreDir)UI\image_disk.cpp" />
     <ClCompile Include="$(CoreDir)UI\image_library.cpp" />
+    <ClInclude Include="$(CoreDir)UI\image_cache_care.h" />
     <ClInclude Include="$(CoreDir)UI\image_cache_file.h" />
     <ClInclude Include="$(CoreDir)UI\image_cache_reader.h" />
     <ClInclude Include="$(CoreDir)UI\image_cache_writer.h" />

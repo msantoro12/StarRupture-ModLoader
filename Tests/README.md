@@ -465,6 +465,27 @@ build\tests\image_disk_tests.exe
 
 It prints one line per test and exits 0 when every check passes.
 
+## ImageCacheCareTests
+
+The housekeeping of the image cache folder (`UI/image_cache_care`), on a real temporary folder, with no GPU
+and no game. It checks:
+
+- The current folder and the newest other one are kept and the rest of the root goes, with its set list; a
+  current folder that is not made yet keeps one other.
+- The 256 MB cap deletes the least recently used `*.img` files, the older folder before the current one, and
+  never the set list. A file that is written again or used again counts as new.
+- Temp files of game instances that are gone are removed; one of a running instance, one with another name and
+  one that is held open are left alone.
+- Clear empties the root and keeps the root; a file another instance holds open is skipped without an error.
+- The tidy and clear jobs run on the writer's worker, not on the calling thread.
+
+```
+msbuild Tests\ImageCacheCareTests\ImageCacheCareTests.vcxproj /p:Configuration="Client Release" /p:Platform=x64
+build\tests\image_cache_care_tests.exe
+```
+
+It prints one line per test and exits 0 when every check passes.
+
 ## ImageShrinkTests
 
 The size, level and byte rules of the shrink (`UI/image_shrink.h`), with no GPU. It checks that a larger

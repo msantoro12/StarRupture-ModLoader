@@ -3,6 +3,7 @@
 
 #ifdef MODLOADER_CLIENT_BUILD
 
+#include "UI/image_cache_care.h"
 #include "UI/image_cache_reader.h"
 #include "UI/imgui_backend.h"
 #include "core/startup_utils.h"
@@ -18,7 +19,18 @@ namespace ImageDisk
 {
 	namespace
 	{
-		// The folder the files of this game build go in, under the loader's own data folder:
+		// Where every game build's folder goes, under the loader's own data folder.
+		std::wstring CacheRoot()
+		{
+			return GetExeDir() + L"ModLoader\\image-cache\\";
+		}
+
+		void LogLine(const std::string& line)
+		{
+			LogToFile::Info("%s", line.c_str());
+		}
+
+		// The folder the files of this game build go in:
 		// image-cache\<build, pak set, revision, stored size>. Made by the worker.
 		std::wstring FolderFor(uint64_t pakHash)
 		{
@@ -35,7 +47,7 @@ namespace ImageDisk
 			key.section    = section;
 			key.pakHash    = pakHash;
 			key.storedSize = ImageLibrary::kStoredSize;
-			return GetExeDir() + L"ModLoader\\image-cache\\" + ImageCache::FolderName(key);
+			return CacheRoot() + ImageCache::FolderName(key);
 		}
 
 		// The mounted pak set as it is now. Paks mounted later give later files another folder.
@@ -57,12 +69,13 @@ namespace ImageDisk
 		}
 
 		// The folder of this session. The key of the mounted pak set is taken once, when the disk part
-		// is first used (the first tick the GPU side is up, after the plugins' paks are mounted at
-		// start), and every file read or written goes by it. It is looked at again at most every
-		// kPakCheckMs; if the pak set has changed, the disk part goes off for the rest of the session:
-		// images read from the game after a pak was mounted might differ from what the key stands for,
-		// and must never be saved under it. Files written before the change were read under the set
-		// they are filed under. Game thread only.
+		// is first used (the pump's first tick, which is after every plugin's PluginInit has mounted
+		// its paks: the main thread is held until then), and every file read, written or tidied goes by
+		// it. It is looked at again at most every kPakCheckMs; if the pak set has changed, the disk part
+		// goes off for the rest of the session: images read from the game after a pak was mounted might
+		// differ from what the key stands for, and must never be saved under it. Files written before
+		// the change were read under the set they are filed under.
+		// Folder() is for the game thread; Key() may be asked by the worker that tidies.
 		class Session
 		{
 		public:
@@ -71,23 +84,29 @@ namespace ImageDisk
 			// The function that gives the folder, or an empty one when the disk part is off.
 			std::function<std::wstring()> Folder()
 			{
-				if (m_off)
+				if (Off())
 					return {};
 				const ULONGLONG now = GetTickCount64();
-				if (!m_taken)
+				if (!m_folder)
 				{
-					m_taken     = true;
 					m_checkedMs = now;
-					m_pakHash   = MountedPakHash();
-					const uint64_t pakHash = m_pakHash;
+					const uint64_t pakHash = MountedPakHash();
+					{
+						std::lock_guard<std::mutex> lock(m_lock);
+						m_taken   = true;
+						m_pakHash = pakHash;
+					}
 					m_folder = [pakHash] { return FolderFor(pakHash); };
 				}
 				else if (now - m_checkedMs >= kPakCheckMs)
 				{
 					m_checkedMs = now;
-					if (MountedPakHash() != m_pakHash)
+					if (MountedPakHash() != Hash())
 					{
-						m_off = true;
+						{
+							std::lock_guard<std::mutex> lock(m_lock);
+							m_off = true;
+						}
 						LogToFile::Warn("[Images] The mounted paks changed: the image cache is not used for the rest of this session");
 						return {};
 					}
@@ -95,18 +114,48 @@ namespace ImageDisk
 				return m_folder;
 			}
 
+			// Any thread. The pak set key the session works under; false before it is taken and once the
+			// disk part is off.
+			bool Key(uint64_t& pakHash) const
+			{
+				std::lock_guard<std::mutex> lock(m_lock);
+				pakHash = m_pakHash;
+				return m_taken && !m_off;
+			}
+
 		private:
+			bool Off() const
+			{
+				std::lock_guard<std::mutex> lock(m_lock);
+				return m_off;
+			}
+
+			uint64_t Hash() const
+			{
+				std::lock_guard<std::mutex> lock(m_lock);
+				return m_pakHash;
+			}
+
+			mutable std::mutex            m_lock;
 			bool                          m_taken = false;
 			bool                          m_off   = false;
 			uint64_t                      m_pakHash = 0;
-			ULONGLONG                     m_checkedMs = 0;
-			std::function<std::wstring()> m_folder;
+			ULONGLONG                     m_checkedMs = 0;      // game thread only
+			std::function<std::wstring()> m_folder;             // game thread only
 		};
 
 		Session& TheSession()
 		{
 			static Session* const session = new Session();
 			return *session;
+		}
+
+		// The folder this session reads and writes, for the worker that tidies. Empty before the key is
+		// taken and once the disk part is off, so the tidy job then touches nothing.
+		std::wstring SessionFolder()
+		{
+			uint64_t pakHash = 0;
+			return TheSession().Key(pakHash) ? FolderFor(pakHash) : std::wstring();
 		}
 
 		class EngineUploader final : public ImageCache::Uploader
@@ -142,12 +191,30 @@ namespace ImageDisk
 		};
 	}
 
-	// Never destroyed: the pump can still be asked at process exit.
+	namespace
+	{
+		// Never destroyed: the pump can still be asked at process exit.
+		ImageCache::Writer& EngineWriter()
+		{
+			static ImageCache::Writer* const writer = new ImageCache::Writer([](const std::string& line) { LogToFile::Warn("%s", line.c_str()); });
+			return *writer;
+		}
+	}
+
 	Saver* EngineSaver()
 	{
 		static EngineHost* const host = new EngineHost();
-		static ImageCache::Writer* const writer = new ImageCache::Writer([](const std::string& line) { LogToFile::Warn("%s", line.c_str()); });
-		static DiskSaver* const saver = new DiskSaver(ImageLibrary::Instance(), *host, *writer);
+		static DiskSaver* const saver = [&]
+		{
+			ImageCache::Writer& writer = EngineWriter();
+			// The session's key is taken here if it has not been, so the tidy job below has a folder to keep.
+			TheSession().Folder();
+			// Old folders, leftovers and the size cap are looked after once, as the first job. It asks the
+			// session for the folder when it runs, and does nothing when the disk part is off by then.
+			writer.Submit(ImageCache::Care::TidyJob(&CacheRoot,
+				[&writer] { return writer.Off() ? std::wstring() : SessionFolder(); }, &LogLine));
+			return new DiskSaver(ImageLibrary::Instance(), *host, writer);
+		}();
 		return saver;
 	}
 
@@ -158,6 +225,14 @@ namespace ImageDisk
 			[] { return TheSession().Folder(); }, *uploader,
 			[](const std::string& line) { LogToFile::Info("%s", line.c_str()); });
 		return reader;
+	}
+
+	bool ClearCache()
+	{
+		if (EngineWriter().Submit(ImageCache::Care::ClearJob(&CacheRoot, &LogLine)))
+			return true;
+		LogToFile::Info("[Images] Image cache not cleared: the job could not be queued");
+		return false;
 	}
 }
 

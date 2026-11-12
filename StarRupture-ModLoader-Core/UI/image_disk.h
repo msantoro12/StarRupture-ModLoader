@@ -169,4 +169,10 @@ namespace ImageDisk
 	Saver* EngineSaver();
 	// The loader's source, on its own worker, for the same folder. Client builds only.
 	Source* EngineSource();
+
+	// The "Clear image cache" option: queues deleting everything in the cache folder on the same
+	// worker, also after the writer went off (disk full, read-only). Any thread, and no file I/O
+	// here. False when the job was not queued (queue full, or the loader is shutting down). Images
+	// already in memory stay; the next launch saves them again.
+	bool ClearCache();
 }

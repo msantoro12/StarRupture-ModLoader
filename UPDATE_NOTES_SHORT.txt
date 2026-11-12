@@ -6,5 +6,5 @@
 - Mod overlay buttons can now be clicked while the build menu is open
 - New image library: mods load item and building pictures only when shown, through one shared read, and keep them under a memory cap
 - Pictures are saved to disk after the first run and load from there on later launches
-- New settings: Preload images from the game (off by default) and Clear image cache
+- New settings: Preload images from the game (off by default) and a Clear image cache button
 - Full release notes are on GitHub and Nexus

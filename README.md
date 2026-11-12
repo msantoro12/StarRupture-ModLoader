@@ -229,8 +229,9 @@ splash have none. How a plugin declares these is in the SDK's `PluginDevelopment
 - **Preload images from the game** (off by default) lets the loader read the item and building images
   that mods list, in the background, before they are drawn. See [Image library](#image-library).
   <sup>[✦](#msantoro12)</sup>
-- **Clear image cache** deletes the images the loader saved to disk. They are saved again as mods
-  show them. <sup>[✦](#msantoro12)</sup>
+- **Clear image cache** (a button under **Preload images from the game**) deletes the images the
+  loader saved to disk, for every game build. Pictures already loaded stay for this session, and the
+  next launch saves them again. <sup>[✦](#msantoro12)</sup>
 - **Connection Timeout**: see [Net timeouts](#net-timeouts).
 - **Enable Auto Updates** takes effect next launch. A mod loader update asks Yes or No first; a No
   is remembered for that version.
@@ -261,11 +262,13 @@ place in the loader instead of each copying game textures itself.
 - All mods read game pictures the same way, with checks on the game's texture before it is copied.
 - A picture is saved to disk after the first time it is read, in `ModLoader\image-cache\`. On later
   launches it loads from there instead of from the game. The folder belongs to one game build and one
-  set of loaded paks, so a game update or a pak change starts a new folder, and folders left by earlier
-  builds are removed. The saved images stay under 256 MB.
+  set of mod paks, so a game update or a pak change starts a new folder. At each launch the loader keeps
+  the folder in use and the newest earlier one, removes the others, and trims what is left to 256 MB,
+  the pictures used longest ago first. If a mod mounts a pak after the game has started, saved pictures
+  are not used for the rest of that launch.
 - **Preload images from the game** in the [Settings tab](#settings-tab) is off by default. On, the
   loader reads the picture sets that mods list a few at a time, and pauses while a picture on screen
-  is waiting or video memory is short. **Clear image cache** is next to it.
+  is waiting or video memory is short. The **Clear image cache** button is under it.
 - On a game build whose version object map has no rows for the texture layout, pictures show as
   placeholders. See [VersionMap.md](VersionMap.md#native-members-the-image-library-reads).
 
@@ -683,7 +686,7 @@ Other files, all under `ModLoader\`:
 | `Logs\Proxy.log`, `Logs\AutoUpdate.log` | The `dwmapi.dll` proxy and the startup updater. Ten runs kept, as for `ModLoader.log` |
 | `update_state.ini` | Versions the auto-updater has installed. Not for editing |
 | `scan_cache.ini` | Pattern scan results for the current game exe, kept per ProductVersion, PE timestamp and image size. A file from an older loader is discarded and rebuilt on the first launch |
-| `image-cache\<folder>\` | Pictures saved by the [image library](#image-library), one folder per game build and pak set. **Clear image cache** empties it |
+| `image-cache\<folder>\` | Pictures saved by the [image library](#image-library) (`*.img`, with `names.lst` and `sets.lst`, the item names and preload sets they belong to), one folder per game build and pak set. **Clear image cache** empties it |
 | `Preload\.state` | Marks a preload plugin that did not finish loading |
 
 ---

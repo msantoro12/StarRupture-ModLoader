@@ -460,7 +460,9 @@ and no game. It checks:
 - The reader (`UI/image_cache_reader`), on a real temporary folder and a fake uploader: it lists the folder and
   its two lists; a good file becomes a texture of the file's own bytes; a corrupt file, a file of another
   image or one of the wrong size is rejected, deleted and counted; an upload that fails keeps the file; a
-  file gone after the listing fails; an off session reads nothing; and stop keeps what was finished.
+  file gone after the listing fails; an off session reads nothing; and stop keeps what was finished. A file
+  served from disk gets a new last-write time (so the size cap counts it as used), and one that could not be
+  served does not.
 
 ```
 msbuild Tests\ImageDiskTests\ImageDiskTests.vcxproj /p:Configuration="Client Release" /p:Platform=x64
@@ -482,6 +484,8 @@ and no game. It checks:
   one that is held open are left alone.
 - Clear empties the root and keeps the root; a file another instance holds open is skipped without an error.
 - The tidy and clear jobs run on the writer's worker, not on the calling thread.
+- Tidy with no current folder (the session's disk part is off) deletes nothing, and the clear job is still
+  taken, and empties the root, after the writer has switched itself off.
 
 ```
 msbuild Tests\ImageCacheCareTests\ImageCacheCareTests.vcxproj /p:Configuration="Client Release" /p:Platform=x64

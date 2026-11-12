@@ -169,3 +169,14 @@ struct ImGuiHostCopyOut
 };
 
 IMGUI_HOST_API int                    ImGuiHost_TryCopyTextureLevel(void* uTexture2D, const char* name, unsigned minSize, ImGuiHostCopyOut* out);
+
+// True once the overlay's GPU side is up (the first frame has set it up) and until it is shut
+// down or the device is lost. The image library does nothing before it. Any thread.
+IMGUI_HOST_API bool                   ImGuiHost_GpuReady();
+
+// Where a copy made by ImGuiHost_TryCopyTextureLevel stands: 1 finished, 0 still on the GPU,
+// -1 the texture is gone (freed, or the host shut down). Game thread.
+IMGUI_HOST_API int                    ImGuiHost_CopyState(PluginTextureHandle texture);
+
+// The adapter's local video memory budget in bytes, or 0 when it cannot be read. Game thread.
+IMGUI_HOST_API unsigned long long     ImGuiHost_LocalVideoBudget();

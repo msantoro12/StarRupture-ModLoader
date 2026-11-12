@@ -4472,6 +4472,41 @@ extern "C" __declspec(dllexport) int ImGuiHost_TryCopyTextureLevel(void* uTextur
 	}
 }
 
+extern "C" __declspec(dllexport) bool ImGuiHost_GpuReady()
+{
+	return g_initialized.load(std::memory_order_acquire) && !g_shutdown.load(std::memory_order_acquire);
+}
+
+extern "C" __declspec(dllexport) int ImGuiHost_CopyState(PluginTextureHandle texture)
+{
+	std::lock_guard<std::mutex> lock(g_textureMutex);
+	const PluginTextureRecord* rec = ValidateHandle(texture);
+	if (!rec)
+		return -1;
+	return CopyDone(rec) ? 1 : 0;
+}
+
+extern "C" __declspec(dllexport) unsigned long long ImGuiHost_LocalVideoBudget()
+{
+	if (!g_device)
+		return 0;
+	const LUID luid = g_device->GetAdapterLuid();
+	IDXGIFactory4* factory = nullptr;
+	if (FAILED(CreateDXGIFactory1(IID_PPV_ARGS(&factory))))
+		return 0;
+	unsigned long long budget = 0;
+	IDXGIAdapter3* adapter = nullptr;
+	if (SUCCEEDED(factory->EnumAdapterByLuid(luid, IID_PPV_ARGS(&adapter))))
+	{
+		DXGI_QUERY_VIDEO_MEMORY_INFO info = {};
+		if (SUCCEEDED(adapter->QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &info)))
+			budget = info.Budget;
+		adapter->Release();
+	}
+	factory->Release();
+	return budget;
+}
+
 static PluginTextureHandle TextureLoadFromMemory(const void* data, size_t size, const char* name)
 {
 	if (!data || size == 0) return nullptr;

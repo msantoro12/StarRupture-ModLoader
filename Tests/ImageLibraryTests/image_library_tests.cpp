@@ -453,6 +453,52 @@ static void AnEvictedImageIsAskedForAgainByGet()
     CHECK(lib.Item("a") == a);
 }
 
+static void PathsOnlyLeavesItemRequestsQueued()
+{
+    Library lib;
+    const PluginImageId item = lib.Item("Item_X");
+    const PluginImageId path = lib.Path("/Game/UI/T_A.T_A");
+    lib.SetNow(1);
+    lib.Get(item);
+    lib.Get(path);
+
+    Request request;
+    CHECK(lib.TakeNext(request, true) && request.id == path);
+    CHECK(!lib.TakeNext(request, true));   // only the item is left
+    CHECK(lib.State(item) == PLUGIN_IMAGE_WAITING);
+
+    // Taken without the flag, the item is served as before.
+    CHECK(lib.TakeNext(request) && request.id == item);
+}
+
+static void ReleaseAllHandsBackEveryKeptCopy()
+{
+    Library lib;
+    std::vector<Released> evicted;
+    const PluginImageId a = lib.Item("a");
+    const PluginImageId b = lib.Item("b");
+    const PluginImageId c = lib.Item("c");
+    lib.SetNow(1);
+    lib.Get(a); lib.Get(b); lib.Get(c);
+    ReadNext(lib, 10, evicted);
+    ReadNext(lib, 20, evicted);   // c stays queued
+    CHECK(lib.CountKept() == 2);
+
+    std::vector<Released> released;
+    lib.ReleaseAll(released);
+    CHECK(released.size() == 2);
+    CHECK(lib.CountKept() == 0);
+    CHECK(lib.BytesKept() == 0);
+    CHECK(lib.State(a) == PLUGIN_IMAGE_NONE);
+    CHECK(lib.State(b) == PLUGIN_IMAGE_NONE);
+    CHECK(lib.Get(a) == nullptr);
+
+    // A second call finds nothing to give back.
+    released.clear();
+    lib.ReleaseAll(released);
+    CHECK(released.empty());
+}
+
 static void ANewCapEvictsOnTheNextPublish()
 {
     Library lib;
@@ -659,6 +705,8 @@ int main()
     RunTest("a copy over the byte cap is refused", ACopyOverTheByteCapIsRefused);
     RunTest("an evicted image is asked for again by Get", AnEvictedImageIsAskedForAgainByGet);
     RunTest("a lower cap evicts on the next publish", ANewCapEvictsOnTheNextPublish);
+    RunTest("paths only leaves item requests queued", PathsOnlyLeavesItemRequestsQueued);
+    RunTest("ReleaseAll hands back every kept copy", ReleaseAllHandsBackEveryKeptCopy);
     RunTest("the byte cap follows the video budget", ByteCapFollowsTheVideoBudget);
     RunTest("aliased ids are one image", AliasedIdsAreOneImage);
     RunTest("alias refusals", AliasRefusals);

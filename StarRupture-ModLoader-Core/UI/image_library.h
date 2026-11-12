@@ -123,7 +123,8 @@ namespace ImageLibrary
 		// The next image to read, or false. The most recently seen first;
 		// requests not seen lately and outside every used set are dropped on
 		// the way. The image stays WAITING until one of the four calls below.
-		bool TakeNext(Request& out);
+		// With pathsOnly, item requests stay queued and are not handed out.
+		bool TakeNext(Request& out, bool pathsOnly = false);
 
 		// The read finished. Takes the copy and its size into the table, then
 		// evicts the images seen least recently until the caps hold again;
@@ -153,6 +154,11 @@ namespace ImageLibrary
 		// Adds the image to the sets (PluginImageSet bits). Requests for an
 		// image in a set some plugin uses are not dropped for being unseen.
 		void AddToSets(PluginImageId id, uint32_t sets);
+
+		// Every kept copy leaves the table, for the pump to free or drop (the
+		// loader is shutting down, or the device is gone). Those images read as
+		// NONE from then on. Appended to released.
+		void ReleaseAll(std::vector<Released>& released);
 
 		// ---- Limits and accounting ----------------------------------------
 

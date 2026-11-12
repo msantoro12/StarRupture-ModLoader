@@ -60,6 +60,16 @@ namespace UI::ImGuiBackend
     // The image library's read; see ImGuiHost_TryCopyTextureLevel for the arguments and the
     // ImGuiHostCopyResult it returns. ImGuiHostCopy_Unavailable when the host DLL is not loaded.
     int  TryCopyTextureLevel(void* uTexture2D, const char* name, unsigned minSize, ImGuiHostCopyOut* out);
+
+    // True while the overlay's GPU side is up; false before the first frame, after a lost device
+    // and after shutdown. Any thread.
+    bool GpuReady();
+
+    // Where a copy TryCopyTextureLevel made stands: 1 finished, 0 on the GPU, -1 gone. Game thread.
+    int  CopyState(PluginTextureHandle texture);
+
+    // The adapter's local video memory budget in bytes, 0 when unknown. Game thread.
+    unsigned long long LocalVideoBudget();
 }
 
 #endif // MODLOADER_CLIENT_BUILD

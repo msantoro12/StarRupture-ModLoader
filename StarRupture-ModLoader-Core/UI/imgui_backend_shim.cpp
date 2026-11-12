@@ -26,6 +26,9 @@ namespace
     std::atomic<bool (*)(int, ImGuiUiOverlaySync*)> g_submitUiOverlayFn{ nullptr };
     // And this one: the image library calls it from the game thread, shutdown clears it.
     std::atomic<int  (*)(void*, const char*, unsigned, ImGuiHostCopyOut*)> g_tryCopyTextureLevelFn{ nullptr };
+    std::atomic<bool (*)()>                         g_gpuReadyFn{ nullptr };
+    std::atomic<int  (*)(PluginTextureHandle)>      g_copyStateFn{ nullptr };
+    std::atomic<unsigned long long (*)()>           g_localVideoBudgetFn{ nullptr };
 }
 
 namespace UI::ImGuiBackend
@@ -58,6 +61,9 @@ namespace UI::ImGuiBackend
         g_recordUiOverlayFn.store(reinterpret_cast<int (*)(void*)>(GetProcAddress(g_hostDll, "ImGuiHost_RecordUiOverlay")));
         g_submitUiOverlayFn.store(reinterpret_cast<bool (*)(int, ImGuiUiOverlaySync*)>(GetProcAddress(g_hostDll, "ImGuiHost_SubmitUiOverlay")));
         g_tryCopyTextureLevelFn.store(reinterpret_cast<int (*)(void*, const char*, unsigned, ImGuiHostCopyOut*)>(GetProcAddress(g_hostDll, "ImGuiHost_TryCopyTextureLevel")));
+        g_gpuReadyFn.store(reinterpret_cast<bool (*)()>(GetProcAddress(g_hostDll, "ImGuiHost_GpuReady")));
+        g_copyStateFn.store(reinterpret_cast<int (*)(PluginTextureHandle)>(GetProcAddress(g_hostDll, "ImGuiHost_CopyState")));
+        g_localVideoBudgetFn.store(reinterpret_cast<unsigned long long (*)()>(GetProcAddress(g_hostDll, "ImGuiHost_LocalVideoBudget")));
 
         if (!g_initFn)
         {
@@ -75,6 +81,9 @@ namespace UI::ImGuiBackend
         g_getGameWindowFn.store(nullptr);
         g_recordUiOverlayFn.store(nullptr);
         g_tryCopyTextureLevelFn.store(nullptr);
+        g_gpuReadyFn.store(nullptr);
+        g_copyStateFn.store(nullptr);
+        g_localVideoBudgetFn.store(nullptr);
         if (g_shutdownFn) g_shutdownFn();
         g_submitUiOverlayFn.store(nullptr);
         if (g_hostDll)
@@ -138,6 +147,24 @@ namespace UI::ImGuiBackend
     {
         const auto fn = g_tryCopyTextureLevelFn.load();
         return fn ? fn(uTexture2D, name, minSize, out) : ImGuiHostCopy_Unavailable;
+    }
+
+    bool GpuReady()
+    {
+        const auto fn = g_gpuReadyFn.load();
+        return fn && fn();
+    }
+
+    int CopyState(PluginTextureHandle texture)
+    {
+        const auto fn = g_copyStateFn.load();
+        return fn ? fn(texture) : -1;
+    }
+
+    unsigned long long LocalVideoBudget()
+    {
+        const auto fn = g_localVideoBudgetFn.load();
+        return fn ? fn() : 0;
     }
 }
 

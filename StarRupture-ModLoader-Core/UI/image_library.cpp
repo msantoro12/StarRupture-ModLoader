@@ -281,7 +281,7 @@ namespace ImageLibrary
 		}
 	}
 
-	bool Library::TakeNext(Request& out)
+	bool Library::TakeNext(Request& out, bool pathsOnly)
 	{
 		std::lock_guard<std::mutex> lock(m_lock);
 		Drain();
@@ -304,6 +304,11 @@ namespace ImageLibrary
 				e->state.store(kIdle, std::memory_order_release);
 				m_queue[i] = m_queue.back();
 				m_queue.pop_back();
+				continue;
+			}
+			if (pathsOnly && e->kind != Kind::Path)
+			{
+				++i;
 				continue;
 			}
 
@@ -464,6 +469,24 @@ namespace ImageLibrary
 		Entry* e = Find(id);
 		if (e && (e = Resolve(e)) != nullptr)
 			e->sets |= sets & kKnownSets;
+	}
+
+	void Library::ReleaseAll(std::vector<Released>& released)
+	{
+		std::lock_guard<std::mutex> lock(m_lock);
+		const uint32_t count = m_count.load(std::memory_order_relaxed);
+		for (PluginImageId id = 1; id <= count; ++id)
+		{
+			Entry* e = Find(id);
+			if (e->state.load(std::memory_order_relaxed) != kReady)
+				continue;
+			released.push_back({ id, e->handle.load(std::memory_order_relaxed), e->bytes });
+			e->bytes = 0;
+			e->handle.store(nullptr, std::memory_order_relaxed);
+			e->state.store(kFailed, std::memory_order_release);
+		}
+		m_bytes = 0;
+		m_kept = 0;
 	}
 
 	void Library::SetCaps(uint64_t byteCap, uint32_t countCap)

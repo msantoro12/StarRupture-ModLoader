@@ -10,7 +10,9 @@
 //
 // The queue is bounded: when it is full a job is refused and that image is not saved now.
 // A folder that cannot be made or written (read-only, full disk) switches the whole disk part
-// off for the session, with one log line.
+// off for the session, with one log line. A job marked runWhenOff is still taken then: it writes
+// nothing, it only deletes (the "Clear image cache" option, which is what a player presses when
+// the disk is full).
 //
 // Stop joins the thread. Nothing is written after Stop has been called: the job in hand
 // finishes, queued jobs are dropped.
@@ -33,6 +35,7 @@ namespace ImageCache
 		std::string                           name;     // file name inside it
 		std::function<std::vector<uint8_t>()> make;     // the bytes; empty means nothing to write
 		bool                                  replace = false;   // write even when a file of that size is there
+		bool                                  runWhenOff = false;   // taken even after the disk part went off (deleting jobs)
 	};
 
 	// What the saver queues jobs on.

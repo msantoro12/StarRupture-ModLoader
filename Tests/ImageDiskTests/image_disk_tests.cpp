@@ -1186,6 +1186,84 @@ static void TestReaderGoodFileBecomesATexture()
     reader.Stop();
 }
 
+// The file's last-write time in seconds before now (0 when it cannot be read).
+static long long AgeSeconds(const std::wstring& path)
+{
+    WIN32_FILE_ATTRIBUTE_DATA data = {};
+    if (!GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &data))
+        return 0;
+    FILETIME now;
+    GetSystemTimeAsFileTime(&now);
+    ULARGE_INTEGER a, b;
+    a.LowPart = now.dwLowDateTime;            a.HighPart = now.dwHighDateTime;
+    b.LowPart = data.ftLastWriteTime.dwLowDateTime; b.HighPart = data.ftLastWriteTime.dwHighDateTime;
+    return static_cast<long long>((a.QuadPart - b.QuadPart) / 10000000ull);
+}
+
+static void SetAgeSeconds(const std::wstring& path, long long seconds)
+{
+    HANDLE h = CreateFileW(path.c_str(), FILE_WRITE_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (h == INVALID_HANDLE_VALUE)
+        return;
+    FILETIME now;
+    GetSystemTimeAsFileTime(&now);
+    ULARGE_INTEGER t;
+    t.LowPart = now.dwLowDateTime;
+    t.HighPart = now.dwHighDateTime;
+    t.QuadPart -= static_cast<unsigned long long>(seconds) * 10000000ull;
+    FILETIME then;
+    then.dwLowDateTime  = t.LowPart;
+    then.dwHighDateTime = t.HighPart;
+    SetFileTime(h, nullptr, nullptr, &then);
+    CloseHandle(h);
+}
+
+static void TestReaderTouchesAFileItServes()
+{
+    TempFolder temp;
+    Info info;
+    std::vector<uint8_t> pixels;
+    const std::vector<uint8_t> file = Valid(&info, &pixels);
+    const std::string name = FileName(KeyOf(info));
+    WriteFileIn(temp, name, file);
+    const std::wstring path = temp.path + L"\\" + std::wstring(name.begin(), name.end());
+    SetAgeSeconds(path, 3600);
+    CHECK(AgeSeconds(path) >= 3500);
+
+    FakeUploader uploader;
+    Reader reader(SessionOf(temp), uploader, nullptr);
+    CHECK(Open(reader));
+    CHECK(AgeSeconds(path) >= 3500);   // listing the folder uses nothing
+    CHECK(reader.Request(7, KeyOf(info)));
+    const std::vector<ImageDisk::FileResult> got = Results(reader, 1);
+    CHECK(got.size() == 1 && got[0].outcome == ImageDisk::FileOutcome::Texture);
+    // Served from disk: the size cap now counts it as used just now (the touch is done before the result is out).
+    CHECK(AgeSeconds(path) < 60);
+    reader.Stop();
+}
+
+static void TestReaderDoesNotTouchAFileItCouldNotUse()
+{
+    TempFolder temp;
+    Info info;
+    std::vector<uint8_t> pixels;
+    const std::vector<uint8_t> file = Valid(&info, &pixels);
+    const std::string name = FileName(KeyOf(info));
+    WriteFileIn(temp, name, file);
+    const std::wstring path = temp.path + L"\\" + std::wstring(name.begin(), name.end());
+    SetAgeSeconds(path, 3600);
+
+    FakeUploader uploader;
+    uploader.fail = true;   // kept, but not served
+    Reader reader(SessionOf(temp), uploader, nullptr);
+    CHECK(Open(reader));
+    CHECK(reader.Request(7, KeyOf(info)));
+    const std::vector<ImageDisk::FileResult> got = Results(reader, 1);
+    CHECK(got.size() == 1 && got[0].outcome == ImageDisk::FileOutcome::Failed);
+    CHECK(AgeSeconds(path) >= 3500);
+    reader.Stop();
+}
+
 static void TestReaderCorruptFileIsRejectedAndDeleted()
 {
     TempFolder temp;
@@ -1285,7 +1363,8 @@ static void TestReaderFileGoneAfterTheListingFails()
     FakeUploader uploader;
     Reader reader(SessionOf(temp), uploader, nullptr);
     CHECK(Open(reader));
-    DeleteFileW((temp.path + L"\\" + std::wstring(FileName(KeyOf(info)).begin(), FileName(KeyOf(info)).end())).c_str());
+    const std::string name = FileName(KeyOf(info));   // one string: begin() and end() of two temporaries are not a range
+    DeleteFileW((temp.path + L"\\" + std::wstring(name.begin(), name.end())).c_str());
     CHECK(reader.Request(8, KeyOf(info)));
     const std::vector<ImageDisk::FileResult> got = Results(reader, 1);
     CHECK(got.size() == 1 && got[0].outcome == ImageDisk::FileOutcome::Failed);
@@ -1396,6 +1475,8 @@ int main()
     RunTest("a bad list is left empty", TestReaderBadListsAreEmpty);
     RunTest("a missing folder lists nothing", TestReaderMissingFolderIsEmpty);
     RunTest("a good file becomes a texture of its bytes", TestReaderGoodFileBecomesATexture);
+    RunTest("a file served from disk is touched", TestReaderTouchesAFileItServes);
+    RunTest("a file that could not be served is not touched", TestReaderDoesNotTouchAFileItCouldNotUse);
     RunTest("a corrupt file is rejected and deleted", TestReaderCorruptFileIsRejectedAndDeleted);
     RunTest("a file of another image is rejected", TestReaderRefusesAFileOfAnotherImage);
     RunTest("a file of the wrong size is rejected", TestReaderRefusesAFileOfTheWrongSize);

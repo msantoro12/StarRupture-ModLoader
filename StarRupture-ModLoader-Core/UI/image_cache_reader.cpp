@@ -1,4 +1,5 @@
 #include "UI/image_cache_reader.h"
+#include "UI/image_cache_care.h"
 #include "UI/image_shrink.h"
 
 #ifndef WIN32_LEAN_AND_MEAN
@@ -289,6 +290,7 @@ namespace ImageCache
 			Finish(job.id, job.key, ImageDisk::FileOutcome::Failed, nullptr, 0);
 			return;
 		}
+		Care::Touch(path);   // in use again: the size cap deletes the least recently used first
 		Finish(job.id, job.key, ImageDisk::FileOutcome::Texture, texture, pixelBytes);
 	}
 

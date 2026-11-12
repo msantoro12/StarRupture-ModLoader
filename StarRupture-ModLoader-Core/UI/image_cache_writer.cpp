@@ -79,7 +79,7 @@ namespace ImageCache
 	bool Writer::Submit(Job&& job)
 	{
 		std::lock_guard<std::mutex> lock(m_lock);
-		if (m_stop || m_off || m_queue.size() >= m_maxQueued || !job.make || !job.folder)
+		if (m_stop || (m_off && !job.runWhenOff) || m_queue.size() >= m_maxQueued || !job.make || !job.folder)
 			return false;
 		if (!m_thread.joinable())
 			m_thread = std::thread(&Writer::Run, this);

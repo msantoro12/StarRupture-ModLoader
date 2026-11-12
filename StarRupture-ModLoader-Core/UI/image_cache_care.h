@@ -7,7 +7,10 @@
 //   Tidy  at start: keeps the current folder and the newest other one (a folder is as new as
 //         its newest file) and deletes the rest of the root; removes the temp files of game
 //         instances that are gone; then trims the kept folders to the size cap.
-//   Clear deletes everything in the root (the "Clear image cache" option).
+//   Clear deletes everything in the root (the "Clear image cache" option). Its job is also
+//         taken by a writer that has gone off, and Tidy does nothing without a current folder
+//         (a session whose disk part is off has none), so tidying can never delete the folder
+//         in use.
 //   Touch marks a file as used, which is what "least recently used" means below.
 //
 // Least recently used is the file's last-write time. Nothing reads the clock per frame: a

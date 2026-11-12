@@ -577,6 +577,73 @@ static void TestTheWriterTouchesAFileItSkips()
     CHECK(!root.Exists(L"cur\\b.img"));
 }
 
+static void TestTidyWithoutACurrentFolderTouchesNothing()
+{
+    Root root;
+    root.Folder(L"cur");
+    root.Folder(L"prev");
+    root.Folder(L"old");
+    root.File(L"cur\\a.img");
+    root.File(L"prev\\a.img");
+    root.File(L"old\\b.img");
+    root.File(L"old\\x.99.tmp");
+    root.AgeFolder(L"cur", 10);
+    root.AgeFolder(L"prev", 20);
+    root.AgeFolder(L"old", 30);
+
+    // The disk part is off, so the session has no folder: neither the pruning nor the cap runs, and
+    // the folder the session reads from cannot be among the deleted ones.
+    const Care::Result result = Care::Tidy(root.path, L"", 1);
+    CHECK(result.foldersRemoved == 0 && result.filesRemoved == 0);
+    CHECK(root.Exists(L"cur\\a.img") && root.Exists(L"prev\\a.img") && root.Exists(L"old\\b.img"));
+
+    Lines lines;
+    Writer writer([](const std::string&) {});
+    const std::wstring rootPath = root.path;
+    CHECK(writer.Submit(Care::TidyJob([rootPath] { return rootPath; }, [] { return std::wstring(); }, lines.Sink())));
+    Job probe;
+    probe.folder = [rootPath] { return rootPath + L"\\probe"; };
+    probe.name   = "p.img";
+    probe.make   = [] { return std::vector<uint8_t>{ 1 }; };
+    CHECK(writer.Submit(std::move(probe)));
+    CHECK(WaitFor([&] { return root.Exists(L"probe\\p.img"); }));
+    writer.Stop();
+    CHECK(root.Exists(L"cur\\a.img") && root.Exists(L"prev\\a.img") && root.Exists(L"old\\b.img"));
+    CHECK(lines.Count() == 0);
+}
+
+static void TestClearJobRunsAfterTheWriterWentOff()
+{
+    Root root;
+    root.Folder(L"cur");
+    root.File(L"cur\\a.img");
+    root.File(L"cur\\sets.lst", 20);
+    root.File(L"blocked");   // a file where a folder should be: the folder cannot be made
+    Lines lines;
+
+    Writer writer([](const std::string&) {});
+    const std::wstring rootPath = root.path;
+    Job bad;
+    bad.folder = [rootPath] { return rootPath + L"\\blocked\\sub"; };
+    bad.name   = "a.img";
+    bad.make   = [] { return std::vector<uint8_t>{ 1 }; };
+    CHECK(writer.Submit(std::move(bad)));
+    CHECK(WaitFor([&] { return writer.Off(); }));
+
+    // An ordinary job is refused now, the clear job is not, and it empties the root.
+    Job plain;
+    plain.folder = [rootPath] { return rootPath + L"\\fine"; };
+    plain.name   = "b.img";
+    plain.make   = [] { return std::vector<uint8_t>{ 1 }; };
+    CHECK(!writer.Submit(std::move(plain)));
+    CHECK(writer.Submit(Care::ClearJob([rootPath] { return rootPath; }, lines.Sink())));
+    CHECK(WaitFor([&] { return lines.Count() == 1; }));
+    writer.Stop();
+    CHECK(root.Count() == 0 && root.Exists(L""));
+    CHECK(lines.lines[0].find("cleared") != std::string::npos);
+    CHECK(!root.Exists(L"fine"));
+}
+
 int main()
 {
     RunTest("the current folder and the newest other are kept", TestKeepsCurrentAndNewestOther);
@@ -597,6 +664,8 @@ int main()
     RunTest("the tidy job runs and the writer keeps working", TestTidyJobRunsAndWriterKeepsWorking);
     RunTest("the tidy job says nothing when there is nothing to do", TestTidyJobSaysNothingWhenThereIsNothingToDo);
     RunTest("the writer touches a file it skips", TestTheWriterTouchesAFileItSkips);
+    RunTest("tidy without a current folder touches nothing", TestTidyWithoutACurrentFolderTouchesNothing);
+    RunTest("the clear job runs after the writer went off", TestClearJobRunsAfterTheWriterWentOff);
 
     printf("\n%d checks, %d failed\n", g_checks, g_failed);
     return g_failed == 0 ? 0 : 1;

@@ -214,7 +214,8 @@ namespace ImageCache::Care
 		Result result;
 		const std::wstring root = Trim(rootPath);
 		const std::wstring current = Leaf(currentPath);
-		if (root.empty())
+		// Without a current folder there is nothing to keep it by, and the one in use could be deleted.
+		if (root.empty() || current.empty())
 			return result;
 
 		// A folder is as new as its newest file: deleting from a folder (or finding a file in
@@ -296,7 +297,7 @@ namespace ImageCache::Care
 		job.name   = "tidy";
 		job.make   = [root, current, log]() -> std::vector<uint8_t>
 		{
-			const Result result = Tidy(root(), current ? current() : std::wstring());
+			const Result result = Tidy(root(), current ? current() : std::wstring());   // no current folder: nothing is touched
 			if (result.filesRemoved || result.foldersRemoved)
 				Say(log, "tidied", result);
 			return {};
@@ -309,6 +310,7 @@ namespace ImageCache::Care
 		Job job;
 		job.folder = root;
 		job.name   = "clear";
+		job.runWhenOff = true;
 		job.make   = [root, log]() -> std::vector<uint8_t>
 		{
 			Say(log, "cleared", Clear(root()));

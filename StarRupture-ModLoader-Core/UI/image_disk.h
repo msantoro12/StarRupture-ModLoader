@@ -20,6 +20,8 @@
 #include <cstdint>
 #include <functional>
 #include <map>
+#include <memory>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -70,9 +72,57 @@ namespace ImageDisk
 		// Takes the pixels of a readback into dest (bytes long), or only frees the readback
 		// when dest is null. Done and Gone free it; Pending leaves it.
 		virtual Readback Take(uint32_t ticket, uint8_t* dest, size_t bytes) = 0;
-		// The folder the files of the current game build and pak set go in. The pak set is read now;
-		// the returned function is called by the worker, which is where the exe is read.
+		// The folder the files of the current game build and pak set go in. The pak set is checked now
+		// (an empty function when it is not the session's any more); the returned function is called
+		// by the worker, which is where the exe and the pak files are read, and gives an empty path
+		// once the session's key is gone.
 		virtual std::function<std::wstring()> CacheFolder() = 0;
+		// How many times the cache was cleared so far. The two lists are written again after a change.
+		virtual uint32_t ClearCount() const { return 0; }
+	};
+
+	// The session's folder key. The mounted pak set is listed on the game thread (no file I/O);
+	// the sizes and times of the pak files are read by whoever asks for the folder, which is a
+	// worker. The set taken on the first call is the session's: a later look that finds another set
+	// (a pak mounted or unmounted, a different priority) switches the disk part off for the rest
+	// of the session, as does a set that cannot be listed or a pak file that cannot be read. There
+	// is never a key for part of the set.
+	class PakSession
+	{
+	public:
+		// Lists the mounted paks with path, mount point, order and file count; false when it cannot.
+		using List = std::function<bool(std::vector<ImageCache::PakEntry>&)>;
+		// The size and last-write time of a file; false when it is not there.
+		using Stamp = std::function<bool(const std::string& path, ImageCache::FileStamp&)>;
+		// The folder for a pak set hash.
+		using FolderOf = std::function<std::wstring(uint64_t pakHash)>;
+		using Log = std::function<void(const std::string&)>;
+
+		PakSession(List list, Stamp stamp, FolderOf folderOf, Log log, uint64_t recheckMs = 250);
+
+		// Game thread. The function that gives the folder (called by a worker), or an empty one when
+		// the disk part is off. The first call takes the key. A later call looks at the pak set again
+		// when `recheck` is set or recheckMs have passed since the last look.
+		std::function<std::wstring()> Folder(uint64_t nowMs, bool recheck);
+
+		// Worker. The folder in use, or empty before the key is taken and once the disk part is off.
+		std::wstring CurrentFolder();
+
+	private:
+		struct State;
+		std::shared_ptr<State> Current() const;
+
+		List     m_list;
+		Stamp    m_stamp;
+		FolderOf m_folderOf;
+		Log      m_log;
+		uint64_t m_recheckMs;
+
+		mutable std::mutex     m_lock;
+		std::shared_ptr<State> m_state;         // written by the game thread, read by any
+		uint64_t               m_shallow = 0;   // game thread only: the hash of the set without file stamps
+		uint64_t               m_checkedMs = 0;
+		std::function<std::wstring()> m_folder;
 	};
 
 	// ---- Reading -------------------------------------------------------------
@@ -148,7 +198,7 @@ namespace ImageDisk
 		void Stop() override;
 
 	private:
-		void Finish(const Started& started, std::vector<uint8_t>&& pixels);
+		void Finish(const Started& started, std::vector<uint8_t>&& pixels, std::function<std::wstring()> folder);
 		void WriteSetList();
 		void WriteNameList();
 
@@ -156,7 +206,16 @@ namespace ImageDisk
 		Host&                  m_host;
 		ImageCache::Sink&      m_sink;
 
-		std::vector<Started>   m_pending;
+		struct Waiting
+		{
+			Started started;
+			bool    wanted = true;   // false for an image that is not saved (a run-time object)
+		};
+
+		std::vector<Waiting>   m_pending;
+		std::vector<uint8_t>   m_scratch;     // what a readback is taken into; grows, never shrinks
+		uint32_t               m_clearSeen = 0;
+		bool                   m_folderOff = false;   // the session's key is gone: nothing is copied or queued
 		ImageCache::SetList    m_lastSets;
 		std::map<std::string, std::string> m_names;   // name -> texture path, sorted so the file is stable
 		bool                   m_namesChanged = false;

@@ -1,0 +1,207 @@
+#include "pch.h"
+#include "UI/image_pump.h"
+
+#ifdef MODLOADER_CLIENT_BUILD
+
+#include "UI/imgui_backend.h"
+#include "hooks/game/object_lookup/object_lookup.h"
+#include "hooks/game/scan_patterns.h"
+#include "logging/log.h"
+#include "memory_scanner/scanner.h"
+#include "Engine_classes.hpp"
+
+namespace ImagePump
+{
+	namespace
+	{
+		using FindObject_t = SDK::UObject* (__fastcall*)(SDK::UClass*, SDK::UObject*, const wchar_t*, bool);
+		using LoadObject_t = SDK::UObject* (__fastcall*)(SDK::UClass*, SDK::UObject*, const wchar_t*, const wchar_t*,
+		                                                 uint32_t, void*, bool, const void*);
+
+		// A bad pointer inside the engine reads as an access violation or a page
+		// error. Anything else (a breakpoint, a stack overflow) is not ours to swallow.
+		int SehFilter(DWORD code, DWORD* out)
+		{
+			*out = code;
+			return (code == EXCEPTION_ACCESS_VIOLATION || code == EXCEPTION_IN_PAGE_ERROR)
+				? EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH;
+		}
+
+		bool FindSEH(FindObject_t fn, SDK::UClass* cls, const wchar_t* path, SDK::UObject** out, DWORD* code)
+		{
+			__try
+			{
+				*out = fn(cls, nullptr, path, false);
+				return true;
+			}
+			__except (SehFilter(GetExceptionCode(), code))
+			{
+				return false;
+			}
+		}
+
+		bool LoadSEH(LoadObject_t fn, SDK::UClass* cls, const wchar_t* path, SDK::UObject** out, DWORD* code)
+		{
+			__try
+			{
+				*out = fn(cls, nullptr, path, nullptr, 0, nullptr, false, nullptr);
+				return true;
+			}
+			__except (SehFilter(GetExceptionCode(), code))
+			{
+				return false;
+			}
+		}
+
+		bool CopySEH(void* texture, const char* name, unsigned minSize, ImGuiHostCopyOut* out, int* result, DWORD* code)
+		{
+			__try
+			{
+				*result = UI::ImGuiBackend::TryCopyTextureLevel(texture, name, minSize, out);
+				return true;
+			}
+			__except (SehFilter(GetExceptionCode(), code))
+			{
+				return false;
+			}
+		}
+
+		std::wstring Widen(const std::string& text)
+		{
+			if (text.empty())
+				return {};
+			const int length = MultiByteToWideChar(CP_UTF8, 0, text.c_str(), static_cast<int>(text.size()), nullptr, 0);
+			if (length <= 0)
+				return {};
+			std::wstring wide(static_cast<size_t>(length), L'\0');
+			MultiByteToWideChar(CP_UTF8, 0, text.c_str(), static_cast<int>(text.size()), wide.data(), length);
+			return wide;
+		}
+
+		class EngineHost final : public Host
+		{
+		public:
+			bool GpuReady() override { return UI::ImGuiBackend::GpuReady(); }
+
+			uint64_t LocalVideoBudget() override { return UI::ImGuiBackend::LocalVideoBudget(); }
+
+			uint64_t NowUs() override
+			{
+				static const LONGLONG frequency = []{ LARGE_INTEGER f; QueryPerformanceFrequency(&f); return f.QuadPart; }();
+				LARGE_INTEGER now;
+				QueryPerformanceCounter(&now);
+				return static_cast<uint64_t>(now.QuadPart * 1000000 / frequency);
+			}
+
+			ReadResult Read(const std::string& objectPath, Copy& out) override
+			{
+				const FindObject_t find = reinterpret_cast<FindObject_t>(Hooks::ObjectLookup::GetStaticFindObject_ByNameAddress());
+				SDK::UClass* const textureClass = SDK::UTexture2D::StaticClass();
+				if (!find || !textureClass)
+					return ReadResult::Unavailable;
+
+				const std::wstring path = Widen(objectPath);
+				if (path.empty())
+					return ReadResult::Failed;
+
+				// The texture pointer lives in this call and no longer.
+				SDK::UObject* texture = nullptr;
+				DWORD code = 0;
+				if (!FindSEH(find, textureClass, path.c_str(), &texture, &code))
+				{
+					LogToFile::Warn("[Images] Exception 0x%08lX finding %s", code, objectPath.c_str());
+					return ReadResult::Failed;
+				}
+				if (!texture)
+					return ReadResult::NotLoaded;
+
+				ImGuiHostCopyOut copy = {};
+				int result = ImGuiHostCopy_Unavailable;
+				if (!CopySEH(texture, nullptr, ImageLibrary::kStoredSize, &copy, &result, &code))
+				{
+					LogToFile::Warn("[Images] Exception 0x%08lX reading %s", code, objectPath.c_str());
+					return ReadResult::Failed;
+				}
+
+				switch (result)
+				{
+				case ImGuiHostCopy_Started:
+					out.texture = copy.texture;
+					out.width   = copy.width;
+					out.height  = copy.height;
+					return ReadResult::Started;
+				case ImGuiHostCopy_NotYet:      return ReadResult::NotYet;
+				case ImGuiHostCopy_Busy:        return ReadResult::Busy;
+				case ImGuiHostCopy_Unavailable: return ReadResult::Unavailable;
+				default:                        return ReadResult::Failed;
+				}
+			}
+
+			// Synchronous: the game thread waits while the package loads. This is
+			// the one function to replace to load in the background.
+			LoadResult Load(const std::string& objectPath) override
+			{
+				static const LoadObject_t load = reinterpret_cast<LoadObject_t>(
+					Scanner::FindPatternInMainModule("StaticLoadObject", ScanPatterns::StaticLoadObject));
+				SDK::UClass* const textureClass = SDK::UTexture2D::StaticClass();
+				if (!load || !textureClass)
+					return LoadResult::Unsupported;
+
+				const std::wstring path = Widen(objectPath);
+				if (path.empty())
+					return LoadResult::Missing;
+
+				SDK::UObject* texture = nullptr;
+				DWORD code = 0;
+				if (!LoadSEH(load, textureClass, path.c_str(), &texture, &code))
+				{
+					LogToFile::Warn("[Images] Exception 0x%08lX loading %s", code, objectPath.c_str());
+					return LoadResult::Fault;
+				}
+				return texture ? LoadResult::Loaded : LoadResult::Missing;
+			}
+
+			CopyState StateOf(PluginTextureHandle texture) override
+			{
+				switch (UI::ImGuiBackend::CopyState(texture))
+				{
+				case 1:  return CopyState::Done;
+				case 0:  return CopyState::Pending;
+				default: return CopyState::Gone;
+				}
+			}
+
+			void Free(PluginTextureHandle texture) override
+			{
+				IPluginImGuiTextures* const api = UI::ImGuiBackend::GetTextureAPI();
+				if (api && api->FreeTexture)
+					api->FreeTexture(texture);
+			}
+
+			void Log(const std::string& line) override
+			{
+				LogToFile::Info("%s", line.c_str());
+			}
+		};
+
+		// Never destroyed: the pump can still be asked at process exit.
+		Pump& TheInstance()
+		{
+			static EngineHost* const host = new EngineHost();
+			static Pump* const pump = new Pump(ImageLibrary::Instance(), *host);
+			return *pump;
+		}
+	}
+
+	void Tick()
+	{
+		TheInstance().Tick();
+	}
+
+	void Shutdown()
+	{
+		TheInstance().Shutdown();
+	}
+}
+
+#endif // MODLOADER_CLIENT_BUILD

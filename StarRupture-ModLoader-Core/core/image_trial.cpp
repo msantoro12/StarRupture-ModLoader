@@ -198,7 +198,9 @@ namespace
         __except (Filter(GetExceptionCode())) { return false; }
     }
 
-    void FullNameInto(SDK::UObject* o, std::string* out) { *out = o->GetFullName(); }
+    // The engine's own path ("/Game/.../T_X.T_X"). The SDK's GetFullName builds it from GetName, which drops everything
+    // up to the last '/', so it gives "T_X.T_X", which no lookup finds.
+    void FullNameInto(SDK::UObject* o, std::string* out) { *out = SDK::UKismetSystemLibrary::GetPathName(o).ToString(); }
 
     bool PathSEH(SDK::UObject* o, std::string* out)
     {
@@ -271,7 +273,7 @@ namespace
         registryObject->ProcessEvent(func, &parms);
         func->FunctionFlags = flags;
         for (int i = 0; i < parms.OutDependencies.Num(); ++i)
-            out->push_back(parms.OutDependencies[i].ToString());
+            out->push_back(parms.OutDependencies[i].GetRawString());
         return parms.ReturnValue;
     }
 
@@ -286,7 +288,7 @@ namespace
         bool         used        = false;   // taken as a timed sample
         bool         done        = false;   // brush resolved and facts taken
         bool         factLogged  = false;
-        int          kind        = -1;      // ResolveBrushSEH result; 5 = package would not load
+        int          kind        = -2;      // ResolveBrushSEH result; 5 = package would not load, 6 = texture path unusable, -2 = not asked
         std::string  texPath, texPkg;
         int          texResident = -1;      // image texture loaded before the entry was asked for: 1, 0, or -1 unknown
     };
@@ -367,6 +369,7 @@ namespace
     Stats                                    g_stats;
     const char*                              g_part = "menu";
     int                                      g_sampleNo = 0, g_seq = 0, g_depsLogged = 0;
+    int                                      g_texPathsLogged[2] = {};
     int                                      g_dumpItems = 0, g_dumpBuildings = 0, g_dumpTries = 0;
     std::vector<Watch>                       g_watch;
     bool                                     g_watchActive = false;
@@ -459,16 +462,42 @@ namespace
 
     void AddAssets(SDK::TArray<SDK::FAssetData>& assets, bool building)
     {
+        int logged = 0;
         for (int i = 0; i < assets.Num(); ++i)
         {
             Entry e;
             e.building = building;
             e.pkgName  = assets[i].PackageName;
-            e.pkg      = assets[i].PackageName.ToString();
+            // FName::ToString keeps only what follows the last '/', so a package name must be read raw.
+            e.pkg      = assets[i].PackageName.GetRawString();
             e.asset    = assets[i].AssetName.ToString();
             if (e.pkg.empty() || e.asset.empty()) continue;
             if (e.asset.find("WhiteSquareTexture") != std::string::npos) continue;
+            if (logged < 5)
+            {
+                ++logged;
+                LogToFile::Info("[ImgTrial] PATHS set=%s n=%d pkg=%s object=%s.%s%s", building ? "building" : "item", logged, e.pkg.c_str(),
+                    e.pkg.c_str(), e.asset.c_str(), building ? "" : "_C");
+            }
             g_entries.push_back(std::move(e));
+        }
+    }
+
+    // Per set: how each entry ended, so one line shows whether the lookup works and where it stops.
+    void LogKinds(const char* when, const std::vector<size_t>& which)
+    {
+        for (int s = 0; s < 2; ++s)
+        {
+            int k[9] = {};   // -2..6
+            for (size_t i : which)
+            {
+                const Entry& e = g_entries[i];
+                if (int(e.building) != s) continue;
+                const int kind = std::clamp(e.kind, -2, 6);
+                ++k[kind + 2];
+            }
+            LogToFile::Info("[ImgTrial] KINDS when=%s set=%s texture=%d other=%d empty=%d not-found=%d wrong-type=%d no-package=%d "
+                "bad-path=%d fault=%d not-asked=%d", when, s ? "building" : "item", k[2], k[3], k[4], k[5], k[6], k[7], k[8], k[1], k[0]);
         }
     }
 
@@ -535,8 +564,10 @@ namespace
             {
                 ++g_depsLogged;
                 loggedDeps = true;
-                LogToFile::Info("[ImgTrial] DEPS item=%s pkg=%s query=%d queryMs=%.3f deps=%zu depsLoaded=%d blueprintLoaded=0",
-                    e.asset.c_str(), e.pkg.c_str(), ok, t.query, names.size(), loaded);
+                std::string first;
+                for (size_t i = 0; i < names.size() && i < 3; ++i) first += (i ? "," : "") + names[i];
+                LogToFile::Info("[ImgTrial] DEPS item=%s pkg=%s query=%d queryMs=%.3f deps=%zu depsLoaded=%d blueprintLoaded=0 first=%s",
+                    e.asset.c_str(), e.pkg.c_str(), ok, t.query, names.size(), loaded, first.empty() ? "-" : first.c_str());
             }
         }
 
@@ -570,10 +601,13 @@ namespace
 
         std::string full;
         if (!PathSEH(res, &full)) { t.fault = true; e.kind = -1; return nullptr; }
-        const size_t sp = full.find(' ');
-        e.texPath = sp == std::string::npos ? full : full.substr(sp + 1);
+        if (full.empty() || full[0] != '/') { e.kind = 6; return nullptr; }
+        e.texPath = full;
         const size_t dot = e.texPath.find('.');
         e.texPkg = dot == std::string::npos ? e.texPath : e.texPath.substr(0, dot);
+        if (g_texPathsLogged[e.building ? 1 : 0] < 5)
+            LogToFile::Info("[ImgTrial] TEXPATH set=%s n=%d name=%s tex=%s texPkg=%s", e.building ? "building" : "item",
+                ++g_texPathsLogged[e.building ? 1 : 0], e.asset.c_str(), e.texPath.c_str(), e.texPkg.c_str());
         if (t.resident) e.texResident = 1;
         else
         {
@@ -598,6 +632,8 @@ namespace
         case 3: return "not-found";
         case 4: return "wrong-type";
         case 5: return "no-package";
+        case 6: return "bad-path";
+        case -2: return "not-asked";
         default: return "fault";
         }
     }
@@ -655,6 +691,7 @@ namespace
     {
         LogToFile::Info("[ImgTrial] SUMMARY part=%s hits=%d misses=%d loadFail=%d noTexture=%d copyFail=%d faults=%d parked=%d fenceTimeout=%d", g_part,
             g_stats.hits, g_stats.misses, g_stats.loadFail, g_stats.noTexture, g_stats.copyFail, g_stats.faults, g_stats.parked, g_stats.fenceTimeout);
+        LogKinds(g_part[0] == 'm' ? "menu-sample" : "world-sample", g_queue);
         Summary("find", g_stats.find);
         Summary("load", g_stats.load);
         Summary("fullyload", g_stats.fullload);
@@ -865,6 +902,9 @@ namespace
             "buildingTextures=%zu texturesInBoth=%zu itemsMaterialOrOther=%zu itemsEmpty=%zu buildingsMaterialOrOther=%zu buildingsEmpty=%zu "
             "unresolved=%zu", items, itemTex, itemSet.size(), buildings, buildingTex, buildSet.size(), both, other[0], empty[0], other[1],
             empty[1], unresolved);
+        std::vector<size_t> all(g_entries.size());
+        for (size_t i = 0; i < all.size(); ++i) all[i] = i;
+        LogKinds(g_part[0] == 'm' ? "menu-scan" : "world-scan", all);
         LogToFile::Info("[ImgTrial] RESIDENT when=menu itemPackages=%zu/%zu buildingPackages=%zu/%zu itemTexturesLoadedBeforeAsked=%zu/%zu "
             "buildingTexturesLoadedBeforeAsked=%zu/%zu", pkgRes[0], items, pkgRes[1], buildings, texRes[0], texKnown[0], texRes[1], texKnown[1]);
 

@@ -342,22 +342,23 @@ static void ByteCapEvictsLeastRecentlySeen()
     lib.SetCaps(300, 100);
     std::vector<Released> evicted;
 
+    lib.SetNow(10000);
     const PluginImageId a = Wanted(lib, lib.Item("a"));
     const PluginImageId b = Wanted(lib, lib.Item("b"));
     const PluginImageId c = Wanted(lib, lib.Item("c"));
     const PluginImageId d = Wanted(lib, lib.Item("d"));
 
     // Read in id order, then draw them in the order c, a, b so that c is the
-    // oldest by the time the cap is hit.
-    lib.SetNow(10);
+    // oldest by the time the cap is hit. The stamps are further apart than the
+    // window of "seen lately", which nothing is evicted inside.
     for (int i = 0; i < 3; ++i)
         ReadNext(lib, 100, evicted);
     CHECK(evicted.empty() && lib.BytesKept() == 300);
-    lib.SetNow(20); lib.Get(c);
-    lib.SetNow(30); lib.Get(a);
-    lib.SetNow(40); lib.Get(b);
+    lib.SetNow(20000); lib.Get(c);
+    lib.SetNow(30000); lib.Get(a);
+    lib.SetNow(40000); lib.Get(b);
 
-    lib.SetNow(50);
+    lib.SetNow(50000);
     lib.Get(d);
     CHECK(ReadNext(lib, 100, evicted) == d);
     CHECK(evicted.size() == 1);
@@ -367,9 +368,8 @@ static void ByteCapEvictsLeastRecentlySeen()
     CHECK(lib.BytesKept() == 300 && lib.CountKept() == 3);
 
     // A big one pushes out as many as it takes, oldest first: a (30), b (40), d (50).
+    lib.SetNow(60000);
     const PluginImageId big = Wanted(lib, lib.Item("big"));
-    lib.SetNow(60);
-    lib.Get(big);
     evicted.clear();
     CHECK(ReadNext(lib, 250, evicted) == big);
     CHECK(evicted.size() == 3 && evicted[0].id == a && evicted[1].id == b && evicted[2].id == d);
@@ -383,15 +383,15 @@ static void CountCapEvictsLeastRecentlySeen()
     lib.SetCaps(1000000, 2);
     std::vector<Released> evicted;
 
+    lib.SetNow(1000);
     const PluginImageId a = Wanted(lib, lib.Item("a"));
     const PluginImageId b = Wanted(lib, lib.Item("b"));
     const PluginImageId c = Wanted(lib, lib.Item("c"));
-    lib.SetNow(1);
     ReadNext(lib, 10, evicted);
     ReadNext(lib, 10, evicted);
-    lib.SetNow(2); lib.Get(b);
-    lib.SetNow(3); lib.Get(a);
-    lib.SetNow(4); lib.Get(c);
+    lib.SetNow(2000); lib.Get(b);
+    lib.SetNow(3000); lib.Get(a);
+    lib.SetNow(4000); lib.Get(c);
     ReadNext(lib, 10, evicted);
 
     CHECK(evicted.size() == 1 && evicted[0].id == b);
@@ -410,6 +410,79 @@ static void EqualStampsEvictTheLowerIdFirst()
     for (int i = 0; i < 3; ++i)
         ReadNext(lib, 10, evicted);
     CHECK(evicted.size() == 1 && evicted[0].id == a);
+}
+
+static void AnImageSeenLatelyIsNeverEvicted()
+{
+    Library lib;
+    lib.SetCaps(1000000, 2);
+    std::vector<Released> evicted;
+    lib.SetNow(1000);
+    const PluginImageId a = Wanted(lib, lib.Item("a"));
+    const PluginImageId b = Wanted(lib, lib.Item("b"));
+    const PluginImageId c = Wanted(lib, lib.Item("c"));
+    for (int i = 0; i < 3; ++i)
+        ReadNext(lib, 10, evicted);
+
+    // All three are drawn now: the cap is passed rather than a drawn image taken away.
+    CHECK(evicted.empty());
+    CHECK(lib.CountKept() == 3);
+    CHECK(lib.State(a) == PLUGIN_IMAGE_READY && lib.State(b) == PLUGIN_IMAGE_READY && lib.State(c) == PLUGIN_IMAGE_READY);
+
+    // Once they have not been drawn for longer than the window the next copy brings the count back.
+    lib.SetNow(1000 + kSeenLatelyMs + 1);
+    lib.Get(a);
+    const PluginImageId d = Wanted(lib, lib.Item("d"));
+    CHECK(ReadNext(lib, 10, evicted) == d);
+    CHECK(lib.CountKept() == 2);
+    CHECK(evicted.size() == 2 && evicted[0].id == b && evicted[1].id == c);
+    CHECK(lib.State(a) == PLUGIN_IMAGE_READY && lib.State(d) == PLUGIN_IMAGE_READY);
+}
+
+static void RoomForCountsFreeSlotsAndWhatCanBeEvicted()
+{
+    Library lib;
+    lib.SetCaps(1000000000, 3);
+    std::vector<Released> evicted;
+    lib.SetNow(1000);
+    CHECK(lib.RoomFor(8) == 3);   // an empty table: the count cap
+    CHECK(lib.RoomFor(2) == 2);   // never more than asked about
+
+    Wanted(lib, lib.Item("a"));
+    Wanted(lib, lib.Item("b"));
+    const PluginImageId c = Wanted(lib, lib.Item("c"));
+    for (int i = 0; i < 3; ++i)
+        ReadNext(lib, 10, evicted);
+    CHECK(lib.RoomFor(8) == 0);   // full, and all three drawn lately
+
+    lib.SetNow(1000 + kSeenLatelyMs + 1);
+    lib.Get(c);
+    CHECK(lib.RoomFor(8) == 2);   // a and b can go; c is drawn
+    CHECK(lib.RoomFor(1) == 1);
+}
+
+static void RoomForFollowsTheByteCap()
+{
+    // One full-size image is 349524 bytes: three fit under 1.1 MB.
+    Library lib;
+    lib.SetCaps(1100000, 2048);
+    CHECK(lib.RoomFor(8) == 3);
+
+    // A cap under one image: with nothing kept, one is let through so that it is refused at publish.
+    Library tiny;
+    tiny.SetCaps(1000, 2048);
+    CHECK(tiny.RoomFor(8) == 1);
+}
+
+static void HasQueuedSeesAskedForImages()
+{
+    Library lib;
+    CHECK(!lib.HasQueued());
+    const PluginImageId a = Wanted(lib, lib.Item("a"));
+    CHECK(lib.HasQueued());
+    Request request;
+    CHECK(lib.TakeNext(request) && request.id == a);
+    CHECK(!lib.HasQueued());
 }
 
 static void ACopyOverTheByteCapIsRefused()
@@ -437,11 +510,11 @@ static void AnEvictedImageIsAskedForAgainByGet()
     lib.SetCaps(100, 1);
     std::vector<Released> evicted;
 
+    lib.SetNow(1000);
     const PluginImageId a = Wanted(lib, lib.Item("a"));
     const PluginImageId b = Wanted(lib, lib.Item("b"));
-    lib.SetNow(1);
     ReadNext(lib, 10, evicted);
-    lib.SetNow(2); lib.Get(b);
+    lib.SetNow(2000); lib.Get(b);
     ReadNext(lib, 10, evicted);
     CHECK(evicted.size() == 1 && evicted[0].id == a);
     CHECK(lib.State(a) == PLUGIN_IMAGE_NONE);
@@ -449,7 +522,7 @@ static void AnEvictedImageIsAskedForAgainByGet()
     Request request;
     CHECK(!lib.TakeNext(request));   // nobody asked yet
 
-    lib.SetNow(3);
+    lib.SetNow(3000);
     CHECK(lib.Get(a) == nullptr);
     CHECK(lib.State(a) == PLUGIN_IMAGE_WAITING);
     evicted.clear();
@@ -537,10 +610,10 @@ static void AliasedIdsAreOneImage()
 
     // Drawing through either id keeps the one image seen.
     lib.SetCaps(100, 10);
-    lib.SetNow(5);
+    lib.SetNow(5000);
     const PluginImageId other = Wanted(lib, lib.Item("other"));
-    lib.SetNow(6); lib.Get(item);
-    lib.SetNow(7); lib.Get(other);
+    lib.SetNow(6000); lib.Get(item);
+    lib.SetNow(7000); lib.Get(other);
     CHECK(ReadNext(lib, 100, evicted) == other);   // the image seen through item is the older
     CHECK(evicted.size() == 1 && evicted[0].id == path);
     CHECK(lib.State(item) == PLUGIN_IMAGE_NONE);
@@ -709,13 +782,16 @@ static void ReadersSeeConsistentStatesWhileTheTableChanges()
     std::atomic<bool> stop{ false };
     std::atomic<int> wrong{ 0 };
     std::atomic<long> reads{ 0 };
+    // The images the readers draw: a window that moves on, so the older ones can be evicted.
+    constexpr uint32_t kWindow = 30;
+    std::atomic<uint32_t> windowStart{ 0 };
 
     auto reader = [&]()
     {
         uint32_t n = 0;
         while (!stop.load())
         {
-            const PluginImageId id = ids[n++ % kImages];
+            const PluginImageId id = ids[(windowStart.load() + n++ % kWindow) % kImages];
             const PluginTextureHandle handle = lib.Get(id);
             const int state = lib.State(id);
             if (handle && handle != Texture(id))
@@ -742,7 +818,9 @@ static void ReadersSeeConsistentStatesWhileTheTableChanges()
     uint64_t now = 0;
     for (int round = 0; round < 20000; ++round)
     {
-        lib.SetNow(++now);
+        now += 100;
+        lib.SetNow(now);
+        windowStart.store(static_cast<uint32_t>(round / 500) * kWindow);
         if (round % 50 == 0)
             lib.Item(("extra_" + std::to_string(round)).c_str());
         Request request;
@@ -763,6 +841,7 @@ static void ReadersSeeConsistentStatesWhileTheTableChanges()
 
     CHECK(wrong.load() == 0);
     CHECK(reads.load() > 0);
+    // The last window was drawn for long enough that every older image could go.
     CHECK(lib.CountKept() <= 40 && lib.BytesKept() <= 400);
     CHECK(!evicted.empty());
 }
@@ -987,12 +1066,17 @@ static void PreloadStaysStoppedOnceAnImageHasBeenEvicted()
     Wanted(full, full.Path(kPathB));
     full.SetNow(100002);
     Wanted(full, full.Path(kPathC));
-    // The most recently asked is read first, so the third read is the oldest and is the one pushed out.
-    for (int i = 0; i < 3; ++i)
+    // The most recently asked is read first, so the third read is the oldest and is the one pushed out,
+    // once none of them is seen lately any more.
+    PluginImageId taken[3] = {};
+    for (PluginImageId& id : taken)
     {
         CHECK(full.TakeNext(request));
-        full.Publish(request.id, Texture(request.id), 100, evicted);
+        id = request.id;
     }
+    full.SetNow(101000);
+    for (PluginImageId id : taken)
+        full.Publish(id, Texture(id), 100, evicted);
     CHECK(evicted.size() == 1);
     CHECK(full.CountKept() == 2);
     full.SetCaps(1000000000, 100);
@@ -1104,6 +1188,10 @@ int main()
     RunTest("the byte cap evicts the least recently seen", ByteCapEvictsLeastRecentlySeen);
     RunTest("the count cap evicts the least recently seen", CountCapEvictsLeastRecentlySeen);
     RunTest("equal stamps evict the lower id first", EqualStampsEvictTheLowerIdFirst);
+    RunTest("an image seen lately is never evicted", AnImageSeenLatelyIsNeverEvicted);
+    RunTest("room counts free slots and what can be evicted", RoomForCountsFreeSlotsAndWhatCanBeEvicted);
+    RunTest("room follows the byte cap", RoomForFollowsTheByteCap);
+    RunTest("has queued sees asked for images", HasQueuedSeesAskedForImages);
     RunTest("a copy over the byte cap is refused", ACopyOverTheByteCapIsRefused);
     RunTest("an evicted image is asked for again by Get", AnEvictedImageIsAskedForAgainByGet);
     RunTest("a lower cap evicts on the next publish", ANewCapEvictsOnTheNextPublish);

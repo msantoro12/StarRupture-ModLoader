@@ -399,6 +399,8 @@ namespace ImageLibrary
 		return e->state.load(std::memory_order_relaxed) == kReady;
 	}
 
+	// Evicts the kept images seen least recently, never one seen lately: what is drawn stays,
+	// and the caps may be passed for as long as everything over them is in use.
 	void Library::Trim(std::vector<Released>& evicted)
 	{
 		if (m_bytes <= m_byteCap && m_kept <= m_countCap)
@@ -406,11 +408,12 @@ namespace ImageLibrary
 
 		struct Kept { uint64_t seen; PluginImageId id; };
 		std::vector<Kept> kept;
+		const uint64_t now = m_now.load(std::memory_order_relaxed);
 		const uint32_t count = m_count.load(std::memory_order_relaxed);
 		for (PluginImageId id = 1; id <= count; ++id)
 		{
 			const Entry* e = Find(id);
-			if (e->state.load(std::memory_order_relaxed) == kReady)
+			if (e->state.load(std::memory_order_relaxed) == kReady && !SeenLately(*e, now))
 				kept.push_back({ e->lastSeen.load(std::memory_order_relaxed), id });
 		}
 		std::sort(kept.begin(), kept.end(), [](const Kept& a, const Kept& b)
@@ -431,6 +434,38 @@ namespace ImageLibrary
 			e->handle.store(nullptr, std::memory_order_relaxed);
 			e->state.store(kIdle, std::memory_order_release);
 		}
+	}
+
+	uint32_t Library::RoomFor(uint32_t wanted) const
+	{
+		static const uint64_t kImageBytes = ImageShrink::Bytes({ kStoredSize, kStoredSize }, ImageShrink::LevelCount(kStoredSize, kStoredSize));
+		std::lock_guard<std::mutex> lock(m_lock);
+
+		uint64_t fit = m_kept < m_countCap ? m_countCap - m_kept : 0;
+		uint64_t byteFit = m_bytes + kImageBytes <= m_byteCap ? (m_byteCap - m_bytes) / kImageBytes : 0;
+		// A cap under one image: the image is refused when it is published, and nothing is waiting for room.
+		if (m_kept == 0 && byteFit == 0)
+			byteFit = 1;
+		fit = (std::min)(fit, byteFit);
+		if (fit >= wanted)
+			return wanted;
+
+		const uint64_t now = m_now.load(std::memory_order_relaxed);
+		const uint32_t count = m_count.load(std::memory_order_relaxed);
+		for (PluginImageId id = 1; id <= count && fit < wanted; ++id)
+		{
+			const Entry* e = Find(id);
+			if (e->state.load(std::memory_order_relaxed) == kReady && !SeenLately(*e, now))
+				++fit;
+		}
+		return static_cast<uint32_t>(fit);
+	}
+
+	bool Library::HasQueued()
+	{
+		std::lock_guard<std::mutex> lock(m_lock);
+		Drain();
+		return !m_queue.empty();
 	}
 
 	void Library::PublishNoImage(PluginImageId id)

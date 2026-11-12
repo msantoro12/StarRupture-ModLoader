@@ -8,9 +8,10 @@
 // and hand back what they made. That keeps every rule here testable with fakes.
 //
 // Threads. Item, Path, Get, State, UseSets and ForgetPlugin can be called from
-// any thread. Get and State take no lock: they read per-image atomics from a
-// table that never moves. Everything the pump calls takes the table's mutex,
-// which no reader waits on.
+// any thread. Get, State and Canonical take no lock: they read per-image atomics
+// from a table that never moves. Item, Path and UseSets take the table's mutex
+// briefly, and so does everything the pump calls, so a plugin that asks for an id
+// every frame should ask once and keep it: ids stay the same for the session.
 
 #include "plugins/plugin_interface.h"
 
@@ -24,8 +25,7 @@
 
 namespace ImageLibrary
 {
-	// ---- Constants that the in-game trial settles -------------------------
-	// The values here are the plan's starting picks.
+	// ---- Constants ----------------------------------------------------------
 
 	// The one size an image is stored at, in pixels.
 	inline constexpr uint32_t kStoredSize = 256;
@@ -138,9 +138,20 @@ namespace ImageLibrary
 		// the way. The image stays WAITING until one of the four calls below.
 		bool TakeNext(Request& out);
 
+		// How many more images, up to wanted, can be kept: the room under both caps,
+		// plus the kept images that were not seen lately and can be evicted for a
+		// newcomer. The pump takes no request that has no room, so a screen that
+		// draws more images than the caps hold keeps what it has and the rest wait.
+		uint32_t RoomFor(uint32_t wanted) const;
+
+		// Whether any request is queued (WAITING and not taken yet).
+		bool HasQueued();
+
 		// The read finished. Takes the copy and its size into the table, then
 		// evicts the images seen least recently until the caps hold again;
-		// those are appended to evicted for the pump to free. Returns whether
+		// those are appended to evicted for the pump to free. An image seen lately
+		// is never evicted, so the caps can be passed by the images in flight.
+		// Returns whether
 		// the image is READY now. False means the pump frees handle itself:
 		// the copy alone is over the byte cap, or the image was no longer
 		// waiting for it.

@@ -24,6 +24,8 @@ namespace
     // Atomic too: the render and RHI threads call these.
     std::atomic<int  (*)(void*)>                    g_recordUiOverlayFn{ nullptr };
     std::atomic<bool (*)(int, ImGuiUiOverlaySync*)> g_submitUiOverlayFn{ nullptr };
+    // And this one: the image library calls it from the game thread, shutdown clears it.
+    std::atomic<int  (*)(void*, const char*, unsigned, ImGuiHostCopyOut*)> g_tryCopyTextureLevelFn{ nullptr };
 }
 
 namespace UI::ImGuiBackend
@@ -55,6 +57,7 @@ namespace UI::ImGuiBackend
         g_getGameWindowFn.store(reinterpret_cast<HWND (*)()>(GetProcAddress(g_hostDll, "ImGuiHost_GetGameWindow")));
         g_recordUiOverlayFn.store(reinterpret_cast<int (*)(void*)>(GetProcAddress(g_hostDll, "ImGuiHost_RecordUiOverlay")));
         g_submitUiOverlayFn.store(reinterpret_cast<bool (*)(int, ImGuiUiOverlaySync*)>(GetProcAddress(g_hostDll, "ImGuiHost_SubmitUiOverlay")));
+        g_tryCopyTextureLevelFn.store(reinterpret_cast<int (*)(void*, const char*, unsigned, ImGuiHostCopyOut*)>(GetProcAddress(g_hostDll, "ImGuiHost_TryCopyTextureLevel")));
 
         if (!g_initFn)
         {
@@ -71,6 +74,7 @@ namespace UI::ImGuiBackend
     {
         g_getGameWindowFn.store(nullptr);
         g_recordUiOverlayFn.store(nullptr);
+        g_tryCopyTextureLevelFn.store(nullptr);
         if (g_shutdownFn) g_shutdownFn();
         g_submitUiOverlayFn.store(nullptr);
         if (g_hostDll)
@@ -128,6 +132,12 @@ namespace UI::ImGuiBackend
     {
         const auto fn = g_submitUiOverlayFn.load();
         return fn ? fn(slot, sync) : false;
+    }
+
+    int TryCopyTextureLevel(void* uTexture2D, const char* name, unsigned minSize, ImGuiHostCopyOut* out)
+    {
+        const auto fn = g_tryCopyTextureLevelFn.load();
+        return fn ? fn(uTexture2D, name, minSize, out) : ImGuiHostCopy_Unavailable;
     }
 }
 

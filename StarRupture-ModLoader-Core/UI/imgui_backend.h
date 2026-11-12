@@ -56,6 +56,10 @@ namespace UI::ImGuiBackend
     // ImGuiHost_RecordUiOverlay / ImGuiHost_SubmitUiOverlay.
     int  RecordUiOverlay(void* rhiBackBuffer);
     bool SubmitUiOverlay(int slot, ImGuiUiOverlaySync* sync);
+
+    // The image library's read; see ImGuiHost_TryCopyTextureLevel for the arguments and the
+    // ImGuiHostCopyResult it returns. ImGuiHostCopy_Unavailable when the host DLL is not loaded.
+    int  TryCopyTextureLevel(void* uTexture2D, const char* name, unsigned minSize, ImGuiHostCopyOut* out);
 }
 
 #endif // MODLOADER_CLIENT_BUILD

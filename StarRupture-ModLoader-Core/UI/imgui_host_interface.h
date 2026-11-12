@@ -132,3 +132,40 @@ IMGUI_HOST_API int                    ImGuiHost_RecordUiOverlay(void* rhiBackBuf
 // ready fence and wait on the done fence on UE's queue. False: nothing was
 // queued and there is nothing to signal or wait on.
 IMGUI_HOST_API bool                   ImGuiHost_SubmitUiOverlay(int slot, ImGuiUiOverlaySync* sync);
+
+// Try mode for the image library: copies one level of an engine texture (a UTexture2D*) into a
+// texture of that level's size, and never waits on the game thread. Game thread only.
+//
+// The level is the smallest whose larger side is at least minSize, or level 0 when none is (an
+// image smaller than that is read at its own size). name is for the log. The texture is a slot of
+// the texture API: the caller frees it with FreeTexture once the copy is no longer wanted.
+//
+// Results:
+//   Started      the copy is on the GPU; *out is filled in and draws once it has finished.
+//   NotYet       the source is not ready: not streamed in, not in a readable state, or its
+//                memory is still being made resident. Ask again on a later tick.
+//   Busy         over the per-tick or in-flight limit, or no texture slot is free. Ask again.
+//   Failed       this texture cannot be copied (not a texture the copy can read, or the copy
+//                failed). Asking again does not help.
+//   Unavailable  no copy can run: no version map rows for this game build, the device is lost,
+//                or copies are off for the session.
+enum ImGuiHostCopyResult : int
+{
+    ImGuiHostCopy_Started     = 0,
+    ImGuiHostCopy_NotYet      = 1,
+    ImGuiHostCopy_Busy        = 2,
+    ImGuiHostCopy_Failed      = 3,
+    ImGuiHostCopy_Unavailable = 4,
+};
+
+struct ImGuiHostCopyOut
+{
+    PluginTextureHandle texture;       // the new texture, at the size below
+    int                 width;
+    int                 height;
+    int                 sourceWidth;   // level 0 of the source
+    int                 sourceHeight;
+    unsigned            level;         // which level of the source was copied
+};
+
+IMGUI_HOST_API int                    ImGuiHost_TryCopyTextureLevel(void* uTexture2D, const char* name, unsigned minSize, ImGuiHostCopyOut* out);

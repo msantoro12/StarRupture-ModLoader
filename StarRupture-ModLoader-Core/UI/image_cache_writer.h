@@ -15,6 +15,7 @@
 // Stop joins the thread. Nothing is written after Stop has been called: the job in hand
 // finishes, queued jobs are dropped.
 
+#include <atomic>
 #include <condition_variable>
 #include <cstdint>
 #include <deque>
@@ -42,6 +43,8 @@ namespace ImageCache
 		// Any thread. False when the job was not queued (full, off, or stopped).
 		virtual bool Submit(Job&& job) = 0;
 		virtual bool Off() const = 0;
+		// How many files the worker has written (renamed into place) so far.
+		virtual uint64_t Written() const { return 0; }
 		// Joins the worker; nothing is written after this. Idempotent.
 		virtual void Stop() = 0;
 	};
@@ -58,6 +61,7 @@ namespace ImageCache
 
 		bool Submit(Job&& job) override;
 		bool Off() const override;
+		uint64_t Written() const override { return m_written; }
 
 		void Stop() override;
 
@@ -76,5 +80,6 @@ namespace ImageCache
 		std::thread             m_thread;
 		bool                    m_stop = false;
 		bool                    m_off  = false;
+		std::atomic<uint64_t>   m_written{ 0 };
 	};
 }

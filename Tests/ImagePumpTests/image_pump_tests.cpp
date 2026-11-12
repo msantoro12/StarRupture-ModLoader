@@ -1528,6 +1528,452 @@ static void AListThatCannotBeReadLeavesTheOtherSetWorking()
     CHECK(ReadyCount(rig, 10, 3, kBuildingsSet) == 3);
 }
 
+// ---------------------------------------------------------------------------
+// The disk cache: files are read first, on a worker the fake stands in for
+
+class FakeSource : public ImageDisk::Source
+{
+public:
+    State                                  state = State::Ready;
+    std::set<std::string>                  files;       // normalised paths that have a file
+    std::vector<std::pair<PluginImageId, std::string>> requests;
+    std::vector<ImageDisk::FileResult>     done;        // handed over by the next Collect
+    ImageDisk::Lists                       lists;
+    bool                                   haveLists = false;
+    bool                                   listsTaken = false;
+    bool                                   full = false;
+    uint64_t                               rejected = 0;
+    bool                                   abandoned = false;
+    bool                                   stopped = false;
+    size_t                                 finished = 0;
+    uintptr_t                              nextTexture = 0x100000;
+
+    State Poll(uint64_t) override { return state; }
+    bool Has(const std::string& key) override { return files.count(key) != 0; }
+    bool Request(PluginImageId id, const std::string& key) override
+    {
+        if (full)
+            return false;
+        requests.push_back({ id, key });
+        return true;
+    }
+    void Collect(std::vector<ImageDisk::FileResult>& out) override
+    {
+        out.insert(out.end(), done.begin(), done.end());
+        done.clear();
+    }
+    bool TakeLists(ImageDisk::Lists& out) override
+    {
+        if (!haveLists || listsTaken)
+            return false;
+        listsTaken = true;
+        out = lists;
+        return true;
+    }
+    uint64_t Rejected() const override { return rejected; }
+    void Abandon() override { abandoned = true; }
+    void Stop() override { stopped = true; }
+
+    // The worker ends every request it has not ended yet with a good texture.
+    void FinishAll()
+    {
+        for (; finished < requests.size(); ++finished)
+        {
+            ImageDisk::FileResult result;
+            result.id      = requests[finished].first;
+            result.outcome = ImageDisk::FileOutcome::Texture;
+            result.texture = reinterpret_cast<PluginTextureHandle>(nextTexture += 16);
+            result.bytes   = 349524;
+            done.push_back(result);
+        }
+    }
+    void Reject(PluginImageId id)
+    {
+        ImageDisk::FileResult result;
+        result.id      = id;
+        result.outcome = ImageDisk::FileOutcome::Rejected;
+        done.push_back(result);
+    }
+};
+
+class FakeSaver : public ImageDisk::Saver
+{
+public:
+    std::vector<std::string> begun;
+    std::map<std::string, std::string> names;
+    void Begin(const ImageDisk::Started& started) override { begun.push_back(started.path); }
+    void Name(const std::string& name, const std::string& path) override { names[name] = path; }
+    void Poll(uint64_t) override {}
+    void Abandon() override {}
+    void Stop() override {}
+};
+
+static std::string Key(const std::string& path)
+{
+    return ImageLibrary::NormalizeObjectPath(path.c_str());
+}
+
+// Ticks, and the worker ends each request as it comes.
+static void RunWithFiles(Rig& rig, FakeSource& source, uint32_t ticks)
+{
+    while (ticks--)
+    {
+        rig.Tick();
+        source.FinishAll();
+    }
+}
+
+static void AFileHitNeverCallsTheEngineHost()
+{
+    Rig rig;
+    FakeSource source;
+    rig.pump.SetSource(&source);
+    source.files.insert(Key(kA));
+
+    // Not in memory: a game read would have to load the package first.
+    const PluginImageId a = rig.Want(rig.library.Path(kA));
+    rig.Tick(3);
+    CHECK(source.requests.size() == 1);
+    CHECK(source.requests[0].second == Key(kA));
+    CHECK(rig.host.reads.empty());
+    CHECK(rig.host.loads.empty());
+    CHECK(rig.host.shrinkCalls == 0);
+    CHECK(rig.library.State(a) == PLUGIN_IMAGE_WAITING);
+
+    source.FinishAll();
+    rig.Tick();
+    CHECK(rig.library.State(a) == PLUGIN_IMAGE_READY);
+    CHECK(rig.library.Get(a) != nullptr);
+    CHECK(rig.library.BytesKept() == 349524);
+    CHECK(rig.pump.GetStats().published == 1);
+    CHECK(rig.pump.GetStats().fromDisk == 1);
+    CHECK(rig.pump.GetStats().fromGame == 0);
+    CHECK(rig.host.reads.empty());
+    CHECK(rig.host.loads.empty());
+}
+
+static void AnImageWithNoFileIsReadFromTheGame()
+{
+    Rig rig;
+    FakeSource source;
+    rig.pump.SetSource(&source);
+    source.files.insert(Key(kB));
+
+    const PluginImageId a = rig.Loaded(kA);
+    rig.Tick(3);
+    CHECK(source.requests.empty());
+    CHECK(rig.host.reads.size() == 1);
+    CHECK(rig.library.State(a) == PLUGIN_IMAGE_READY);
+    CHECK(rig.pump.GetStats().fromGame == 1);
+    CHECK(rig.pump.GetStats().fromDisk == 0);
+}
+
+static void ACorruptFileFallsBackToTheGameAndIsSavedAgain()
+{
+    Rig rig;
+    FakeSource source;
+    FakeSaver saver;
+    rig.pump.SetSource(&source);
+    rig.pump.SetSaver(&saver);
+    source.files.insert(Key(kA));
+
+    const PluginImageId a = rig.Loaded(kA);
+    rig.Tick(2);
+    CHECK(source.requests.size() == 1);
+    CHECK(rig.host.reads.empty());
+
+    // The worker found the file bad and deleted it: it is no longer listed.
+    source.files.erase(Key(kA));
+    source.Reject(a);
+    source.rejected = 1;
+    rig.Tick(4);
+    CHECK(rig.host.reads.size() == 1);
+    CHECK(rig.library.State(a) == PLUGIN_IMAGE_READY);
+    CHECK(saver.begun.size() == 1);            // the read is saved again
+    CHECK(saver.begun[0] == Key(kA) || saver.begun[0] == kA);
+    CHECK(source.requests.size() == 1);        // and not asked of the files twice
+    CHECK(rig.pump.GetStats().fromGame == 1);
+    CHECK(rig.pump.GetStats().fromDisk == 0);
+
+    rig.host.clockUs += 61ull * 1000 * 1000;
+    rig.Tick();
+    CHECK(LastSummary(rig).find("rejected=1") != std::string::npos);
+}
+
+static void AFileThatCouldNotBeUploadedFallsBackToTheGame()
+{
+    Rig rig;
+    FakeSource source;
+    rig.pump.SetSource(&source);
+    source.files.insert(Key(kA));
+
+    const PluginImageId a = rig.Loaded(kA);
+    rig.Tick(2);
+    ImageDisk::FileResult failed;
+    failed.id      = a;
+    failed.outcome = ImageDisk::FileOutcome::Failed;
+    source.files.erase(Key(kA));
+    source.done.push_back(failed);
+    rig.Tick(4);
+    CHECK(rig.library.State(a) == PLUGIN_IMAGE_READY);
+    CHECK(rig.host.reads.size() == 1);
+}
+
+static void ARequestTheWorkerHasNoRoomForWaits()
+{
+    Rig rig;
+    FakeSource source;
+    rig.pump.SetSource(&source);
+    source.files.insert(Key(kA));
+    source.full = true;
+
+    const PluginImageId a = rig.Want(rig.library.Path(kA));
+    rig.Tick(5);
+    CHECK(source.requests.empty());
+    CHECK(rig.host.reads.empty());
+    CHECK(rig.library.State(a) == PLUGIN_IMAGE_WAITING);
+
+    source.full = false;
+    RunWithFiles(rig, source, 4);
+    CHECK(rig.library.State(a) == PLUGIN_IMAGE_READY);
+}
+
+static void NothingIsServedWhileTheFolderIsBeingListed()
+{
+    Rig rig;
+    FakeSource source;
+    rig.pump.SetSource(&source);
+    source.state = ImageDisk::Source::State::Loading;
+    source.files.insert(Key(kA));
+
+    const PluginImageId a = rig.Want(rig.library.Path(kA));
+    const PluginImageId b = rig.Loaded(kB);
+    rig.Tick(10);
+    CHECK(source.requests.empty());
+    CHECK(rig.host.reads.empty());
+    CHECK(rig.host.loads.empty());
+    CHECK(rig.library.State(a) == PLUGIN_IMAGE_WAITING);
+    CHECK(rig.library.State(b) == PLUGIN_IMAGE_WAITING);
+
+    source.state = ImageDisk::Source::State::Ready;
+    RunWithFiles(rig, source, 4);
+    CHECK(rig.library.State(a) == PLUGIN_IMAGE_READY);
+    CHECK(rig.library.State(b) == PLUGIN_IMAGE_READY);
+    CHECK(rig.host.reads.size() == 1);   // only b came from the game
+}
+
+static void AnOffSourceLeavesTheGameRoute()
+{
+    Rig rig;
+    FakeSource source;
+    rig.pump.SetSource(&source);
+    source.state = ImageDisk::Source::State::Off;
+    source.files.insert(Key(kA));
+
+    const PluginImageId a = rig.Loaded(kA);
+    rig.Tick(3);
+    CHECK(source.requests.empty());
+    CHECK(rig.library.State(a) == PLUGIN_IMAGE_READY);
+    CHECK(rig.host.reads.size() == 1);
+}
+
+static void SavedNamesTieAnItemToItsPathWithTheIndexUntouched()
+{
+    Rig rig;
+    FakeSource source;
+    FakeSaver saver;
+    rig.pump.SetSource(&source);
+    rig.pump.SetSaver(&saver);
+    rig.items.Add("Iron Plate", kA);
+    rig.items.Add("Copper", kB);
+    rig.host.loaded.insert(kB);
+    source.files.insert(Key(kA));
+    source.haveLists = true;
+    source.lists.names.push_back({ "iron plate", kA });
+
+    rig.Tick(2);
+    const PluginImageId item = rig.library.Item("Iron Plate");
+    const PluginImageId path = rig.library.Path(kA);
+    CHECK(item != 0 && path != 0);
+    CHECK(rig.library.Canonical(item) == path);
+    CHECK(rig.items.lists == 0);
+    CHECK(rig.items.reads.empty());
+    CHECK(saver.names["iron plate"] == kA);   // kept, so the next name list still has it
+
+    // Drawn: served from its file. The item package is not loaded and the index is not built.
+    rig.Want(item);
+    RunWithFiles(rig, source, 4);
+    CHECK(rig.library.State(item) == PLUGIN_IMAGE_READY);
+    CHECK(rig.library.Get(item) == rig.library.Get(path));
+    CHECK(source.requests.size() == 1);
+    CHECK(source.requests[0].second == Key(kA));
+    CHECK(rig.items.lists == 0);
+    CHECK(rig.items.reads.empty());
+    CHECK(rig.host.reads.empty());
+    CHECK(rig.host.loads.empty());
+
+    // A name that is not in the file takes the normal route, and is then saved.
+    const PluginImageId copper = rig.Want(rig.library.Item("Copper"));
+    RunWithFiles(rig, source, 30);
+    CHECK(rig.items.lists == 1);
+    CHECK(rig.library.State(copper) == PLUGIN_IMAGE_READY);
+    CHECK(rig.library.Canonical(copper) == rig.library.Path(kB));
+    CHECK(saver.names["copper"] == kB);
+}
+
+static void ASavedSetListFillsTheSetAndLoadsNoPackage()
+{
+    Rig rig;
+    FakeSource source;
+    rig.pump.SetSource(&source);
+    Prepare(rig, kItemsSet);
+    // The game has items, but its list is not to be read: the saved list answers.
+    AddIcons(rig.items, 0, 4, "Item");
+    source.haveLists = true;
+    ImageCache::SetEntry entry;
+    entry.set = kItemsSet;
+    for (int i = 0; i < 4; ++i)
+    {
+        entry.paths.push_back(PathN(i));
+        source.files.insert(Key(PathN(i)));
+    }
+    source.lists.sets.push_back(entry);
+
+    RunWithFiles(rig, source, 40);
+    CHECK(rig.items.lists == 0);
+    CHECK(rig.items.reads.empty());
+    CHECK(rig.host.loads.empty());
+    CHECK(rig.host.reads.empty());
+    CHECK(source.requests.size() == 4);
+    CHECK(ReadyCount(rig, 0, 4, kItemsSet) == 4);
+    CHECK(rig.library.CountKept() == 4);
+    CHECK(Logged(rig, "[Images] Preload set: 4 item images (from the cache folder)"));
+    CHECK(rig.pump.GetStats().fromDisk == 4);
+}
+
+static void ASetWithNoSavedListIsListedFromTheGame()
+{
+    Rig rig;
+    FakeSource source;
+    rig.pump.SetSource(&source);
+    Prepare(rig, kItemsSet | kBuildingsSet);
+    AddIcons(rig.items, 0, 3, "Item");
+    PutInMemory(rig, 0, 3);
+    AddIcons(rig.buildings, 10, 2, "Building");
+    PutInMemory(rig, 10, 2);
+    source.haveLists = true;
+    ImageCache::SetEntry entry;
+    entry.set = kBuildingsSet;
+    for (int i = 10; i < 12; ++i)
+    {
+        entry.paths.push_back(PathN(i));
+        source.files.insert(Key(PathN(i)));
+    }
+    source.lists.sets.push_back(entry);
+
+    RunWithFiles(rig, source, 60);
+    CHECK(rig.items.lists == 1);        // no saved list for the items
+    CHECK(rig.buildings.lists == 0);    // the buildings' came from the file
+    CHECK(ReadyCount(rig, 0, 3, kItemsSet) == 3);
+    CHECK(ReadyCount(rig, 10, 2, kBuildingsSet) == 2);
+    CHECK(rig.host.reads.size() == 3);  // only the items touched the game
+}
+
+static void FilesAreNotHeldBackWhenTheGameHoldsTooMuch()
+{
+    Rig rig;
+    FakeSource source;
+    rig.pump.SetSource(&source);
+    AddIcons(rig.items, 0, 24, "Item");
+    Prepare(rig, kItemsSet);
+    rig.host.sourceSize = 1024;
+    for (int i = 16; i < 24; ++i)
+        source.files.insert(Key(PathN(i)));
+
+    RunWithFiles(rig, source, 300);
+    CHECK(rig.host.loads.size() == 16);       // the game's own limit still holds for game reads
+    CHECK(source.requests.size() == 8);       // and the files behind it went through
+    CHECK(ReadyCount(rig, 0, 24, kItemsSet) == 24);
+}
+
+static void PreloadAsksForSeveralFilesOnATick()
+{
+    Rig rig;
+    FakeSource source;
+    rig.pump.SetSource(&source);
+    AddIcons(rig.items, 0, 20, "Item");
+    Prepare(rig, kItemsSet);
+    for (int i = 0; i < 20; ++i)
+        source.files.insert(Key(PathN(i)));
+
+    size_t most = 0, last = 0;
+    for (int i = 0; i < 12; ++i)
+    {
+        rig.Tick();
+        most = std::max(most, source.requests.size() - last);
+        last = source.requests.size();
+    }
+    CHECK(most > 1);
+    CHECK(most <= kDiskPreloadPerTick);
+    CHECK(rig.host.reads.empty());
+    CHECK(rig.host.loads.empty());
+}
+
+static void TheSummaryLineHasTheCacheFigures()
+{
+    Rig rig;
+    FakeSource source;
+    FakeSaver saver;
+    rig.pump.SetSource(&source);
+    rig.pump.SetSaver(&saver);
+    source.files.insert(Key(kA));
+    rig.Want(rig.library.Path(kA));
+    RunWithFiles(rig, source, 4);
+    rig.Loaded(kB);
+    RunWithFiles(rig, source, 4);
+
+    rig.host.clockUs += 61ull * 1000 * 1000;
+    rig.Tick();
+    CHECK(LastSummary(rig).find("cache: from disk=1 from game=1 written=0 rejected=0") != std::string::npos);
+}
+
+static void TheGpuGoingAwayFailsTheFilesInFlight()
+{
+    Rig rig;
+    FakeSource source;
+    rig.pump.SetSource(&source);
+    source.files.insert(Key(kA));
+    const PluginImageId a = rig.Want(rig.library.Path(kA));
+    rig.Tick(3);
+    CHECK(source.requests.size() == 1);
+
+    rig.host.ready = false;
+    rig.Tick(2);
+    CHECK(source.abandoned);
+    CHECK(rig.library.State(a) == PLUGIN_IMAGE_NONE);
+    CHECK(rig.host.freed.empty());
+}
+
+static void ShutdownFreesFinishedFilesNobodyCollected()
+{
+    Rig rig;
+    FakeSource source;
+    rig.pump.SetSource(&source);
+    source.files.insert(Key(kA));
+    source.files.insert(Key(kB));
+    const PluginImageId a = rig.Want(rig.library.Path(kA));
+    const PluginImageId b = rig.Want(rig.library.Path(kB));
+    rig.Tick(4);
+    CHECK(source.requests.size() == 2);
+    source.FinishAll();   // finished on the worker, not collected yet
+
+    rig.pump.Shutdown();
+    CHECK(source.stopped);
+    CHECK(rig.host.freed.size() == 2);
+    CHECK(rig.library.State(a) == PLUGIN_IMAGE_NONE);
+    CHECK(rig.library.State(b) == PLUGIN_IMAGE_NONE);
+}
+
 int main()
 {
     setvbuf(stdout, nullptr, _IONBF, 0);
@@ -1598,6 +2044,21 @@ int main()
     RunTest("the summary line has the preload figures", TheSummaryLineHasThePreloadFigures);
     RunTest("an image not readable yet is deferred", AnImageNotReadableYetIsDeferredAndDoesNotBlockTheRest);
     RunTest("a list that cannot be read leaves the other set working", AListThatCannotBeReadLeavesTheOtherSetWorking);
+    RunTest("a file hit never calls the engine host", AFileHitNeverCallsTheEngineHost);
+    RunTest("an image with no file is read from the game", AnImageWithNoFileIsReadFromTheGame);
+    RunTest("a corrupt file falls back to the game and is saved again", ACorruptFileFallsBackToTheGameAndIsSavedAgain);
+    RunTest("a file that could not be uploaded falls back to the game", AFileThatCouldNotBeUploadedFallsBackToTheGame);
+    RunTest("a request the worker has no room for waits", ARequestTheWorkerHasNoRoomForWaits);
+    RunTest("nothing is served while the folder is being listed", NothingIsServedWhileTheFolderIsBeingListed);
+    RunTest("an off source leaves the game route", AnOffSourceLeavesTheGameRoute);
+    RunTest("saved names tie an item to its path", SavedNamesTieAnItemToItsPathWithTheIndexUntouched);
+    RunTest("a saved set list fills the set and loads no package", ASavedSetListFillsTheSetAndLoadsNoPackage);
+    RunTest("a set with no saved list is listed from the game", ASetWithNoSavedListIsListedFromTheGame);
+    RunTest("files are not held back when the game holds too much", FilesAreNotHeldBackWhenTheGameHoldsTooMuch);
+    RunTest("preload asks for several files on a tick", PreloadAsksForSeveralFilesOnATick);
+    RunTest("the summary line has the cache figures", TheSummaryLineHasTheCacheFigures);
+    RunTest("the GPU going away fails the files in flight", TheGpuGoingAwayFailsTheFilesInFlight);
+    RunTest("shutdown frees finished files nobody collected", ShutdownFreesFinishedFilesNobodyCollected);
 
     printf("\n%d checks, %d failed\n", g_checks, g_failed);
     return g_failed == 0 ? 0 : 1;

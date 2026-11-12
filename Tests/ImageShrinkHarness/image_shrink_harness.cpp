@@ -5,11 +5,13 @@
 // levels), picks the level the loader copies (IconCopy::PickCopyLevel), copies it to a
 // one-level temporary texture, shrinks that, then reads the result back and checks it. The
 // shrink is timed on the GPU with timestamp queries. The run ends with the debug layer's
-// error count, which must be 0.
+// error count, which must be 0. The upload of a saved file (UI/image_upload_gpu.cpp) is checked
+// too: pixels as a file holds them go in, and reading the texture back gives them on every level.
 //
 // With /sheet it draws real images at the sizes the UI uses instead; see the project file.
 #include "UI/image_readback_gpu.h"
 #include "UI/image_shrink_gpu.h"
+#include "UI/image_upload_gpu.h"
 #include "UI/icon_copy.h"
 
 #include <d3d12.h>
@@ -260,7 +262,8 @@ struct Pixels
 };
 
 // Reads every level of an R8G8B8A8 texture in the pixel-shader-resource state.
-static std::vector<Pixels> Readback(Context& c, ID3D12Resource* texture)
+static std::vector<Pixels> Readback(Context& c, ID3D12Resource* texture,
+    D3D12_RESOURCE_STATES state = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE)
 {
     const D3D12_RESOURCE_DESC desc = texture->GetDesc();
     const UINT count = desc.MipLevels;
@@ -273,7 +276,7 @@ static std::vector<Pixels> Readback(Context& c, ID3D12Resource* texture)
     ComPtr<ID3D12Resource> readback = MakeBuffer(c, total, D3D12_HEAP_TYPE_READBACK, D3D12_RESOURCE_STATE_COPY_DEST);
     c.Begin();
     Transition(c.list.Get(), texture, D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES,
-        D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COPY_SOURCE);
+        state, D3D12_RESOURCE_STATE_COPY_SOURCE);
     for (UINT i = 0; i < count; ++i)
     {
         D3D12_TEXTURE_COPY_LOCATION src = {};
@@ -287,7 +290,7 @@ static std::vector<Pixels> Readback(Context& c, ID3D12Resource* texture)
         c.list->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
     }
     Transition(c.list.Get(), texture, D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES,
-        D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+        D3D12_RESOURCE_STATE_COPY_SOURCE, state);
     c.Submit();
 
     const uint8_t* mapped = nullptr;
@@ -726,6 +729,83 @@ static void RunRingChecks(Context& c, ImageShrink::Gpu& gpu, ImageReadback::Ring
     OK(c.list->Close());
 }
 
+// The upload of a saved file: pixels as a file holds them (every level tightly packed) become a
+// texture on the upload's own copy queue, and reading it back gives the same bytes on every level.
+// Shapes the shrink makes, and one that is not square, with one level and with a full chain.
+static void RunUploadChecks(Context& c)
+{
+    ImageUpload::Gpu upload;
+    ImageShrink::Failure failure;
+    CHECK(upload.Create(c.device.Get(), failure));
+    if (!upload.Ready())
+        return;
+
+    struct Shape { uint32_t width, height, levels; };
+    const Shape shapes[] = {
+        { 256, 256, ImageShrink::LevelCount(256, 256) },
+        { 256, 128, ImageShrink::LevelCount(256, 128) },
+        { 200, 120, ImageShrink::LevelCount(200, 120) },
+        { 64,  64,  1 },
+        { 1,   1,   1 },
+    };
+
+    uint8_t seed = 11;
+    for (const Shape& shape : shapes)
+    {
+        const Size size = { shape.width, shape.height };
+        std::vector<uint8_t> file(static_cast<size_t>(ImageShrink::Bytes(size, shape.levels)));
+        for (size_t i = 0; i < file.size(); ++i)
+            file[i] = static_cast<uint8_t>(seed + i * 13 + (i >> 8));
+        ++seed;
+
+        ComPtr<ID3D12Resource> texture;
+        texture.Attach(upload.Upload(shape.width, shape.height, shape.levels, file.data(), file.size(), [] { return false; }, failure));
+        CHECK(texture != nullptr);
+        if (!texture)
+            continue;
+
+        const D3D12_RESOURCE_DESC desc = texture->GetDesc();
+        CHECK(desc.Width == shape.width && desc.Height == shape.height && desc.MipLevels == shape.levels);
+        CHECK(desc.Format == ImageShrink::kStoredFormat);
+        CHECK((desc.Flags & D3D12_RESOURCE_FLAG_ALLOW_SIMULTANEOUS_ACCESS) != 0);
+
+        // The upload left it in the common state; the harness queue reads it from there.
+        const std::vector<Pixels> levels = Readback(c, texture.Get(), D3D12_RESOURCE_STATE_COMMON);
+        CHECK(levels.size() == shape.levels);
+        size_t offset = 0;
+        bool same = levels.size() == shape.levels;
+        for (uint32_t i = 0; same && i < shape.levels; ++i)
+        {
+            const Size at = ImageShrink::LevelSize(size, i);
+            const size_t bytes = static_cast<size_t>(at.width) * at.height * ImageShrink::kBytesPerPixel;
+            same = levels[i].width == at.width && levels[i].height == at.height && levels[i].rgba.size() == bytes
+                && memcmp(levels[i].rgba.data(), file.data() + offset, bytes) == 0;
+            if (!same)
+                printf("    level %u of %ux%u differs\n", i, shape.width, shape.height);
+            offset += bytes;
+        }
+        CHECK(same);
+        CHECK(offset == file.size());
+    }
+
+    // A stop that is already asked for ends the wait and abandons the context.
+    std::vector<uint8_t> tiny(static_cast<size_t>(ImageShrink::Bytes({ 8, 8 }, 1)), 7);
+    ID3D12Resource* stopped = upload.Upload(8, 8, 1, tiny.data(), tiny.size(), [] { return true; }, failure);
+    if (stopped)
+        stopped->Release();   // the copy can win the race with the first poll
+    ID3D12Resource* after = upload.Upload(8, 8, 1, tiny.data(), tiny.size(), [] { return false; }, failure);
+    CHECK((stopped == nullptr) == (after == nullptr));   // abandoned only when the stop was seen
+    if (after)
+        after->Release();
+
+    // A size that does not match the bytes is refused.
+    ImageUpload::Gpu other;
+    CHECK(other.Create(c.device.Get(), failure));
+    CHECK(other.Upload(8, 8, 1, tiny.data(), tiny.size() - 1, [] { return false; }, failure) == nullptr);
+    other.Release();
+    upload.Release();
+}
+
 static int RunChecks(Context& c)
 {
     ImageShrink::Gpu gpu;
@@ -767,6 +847,7 @@ static int RunChecks(Context& c)
         RunCase(c, gpu, ring, queries.Get(), queryReadback.Get(), test);
 
     RunRingChecks(c, gpu, ring);
+    RunUploadChecks(c);
 
     ring.Release();
     gpu.Release();

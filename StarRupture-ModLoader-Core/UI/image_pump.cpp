@@ -43,12 +43,18 @@ namespace ImagePump
 
 		FreeDeferred();
 		if (!m_gone)
+		{
 			Collect();
+			CollectFiles();
+		}
 		if (m_saver)
 			m_saver->Poll(begin / 1000);
+		// The saved names and sets come in before anything is served, so no image is read from the
+		// game that a file would have answered.
+		const bool filesLoading = PollSource(begin / 1000);
 		if (m_off)
 			FailQueued();
-		else
+		else if (!filesLoading)
 		{
 			uint32_t loads = 0;
 			const bool idle = Serve(loads);
@@ -79,12 +85,17 @@ namespace ImagePump
 		m_off  = true;
 		if (m_saver)
 			m_saver->Abandon();
+		if (m_source)
+			m_source->Abandon();
 
-		size_t dropped = m_inFlight.size();
+		size_t dropped = m_inFlight.size() + m_onDisk.size();
 		for (const InFlight& read : m_inFlight)
 			m_library.Fail(read.id);
-		m_stats.failed += m_inFlight.size();
+		for (PluginImageId id : m_onDisk)
+			m_library.Fail(id);
+		m_stats.failed += m_inFlight.size() + m_onDisk.size();
 		m_inFlight.clear();
+		m_onDisk.clear();
 
 		m_scratch.clear();
 		m_library.ReleaseAll(m_scratch);
@@ -134,25 +145,97 @@ namespace ImagePump
 				continue;
 			}
 
-			m_scratch.clear();
-			const bool kept = m_library.Publish(read.id, stored.texture, stored.bytes, m_scratch);
-			if (kept)
-				++m_stats.published;
-			else
-			{
-				// Refused, or evicted again at once (then it is among the evicted).
-				const bool evictedAgain = std::any_of(m_scratch.begin(), m_scratch.end(),
-					[&](const ImageLibrary::Released& r) { return r.handle == stored.texture; });
-				if (!evictedAgain)
-				{
-					m_host.Free(stored.texture);
-					++m_stats.failed;
-				}
-			}
-			for (const ImageLibrary::Released& released : m_scratch)
-				m_toFree.push_back(released.handle);
-			m_stats.evicted += m_scratch.size();
+			if (PublishStored(read.id, stored.texture, stored.bytes))
+				++m_stats.fromGame;
 		}
+	}
+
+	// The stored copy goes into the library, whether it came from a shrink or from a file. True when
+	// it is kept.
+	bool Pump::PublishStored(PluginImageId id, PluginTextureHandle texture, uint64_t bytes)
+	{
+		m_scratch.clear();
+		const bool kept = m_library.Publish(id, texture, bytes, m_scratch);
+		if (kept)
+			++m_stats.published;
+		else
+		{
+			// Refused, or evicted again at once (then it is among the evicted).
+			const bool evictedAgain = std::any_of(m_scratch.begin(), m_scratch.end(),
+				[&](const ImageLibrary::Released& r) { return r.handle == texture; });
+			if (!evictedAgain)
+			{
+				m_host.Free(texture);
+				++m_stats.failed;
+			}
+		}
+		for (const ImageLibrary::Released& released : m_scratch)
+			m_toFree.push_back(released.handle);
+		m_stats.evicted += m_scratch.size();
+		return kept;
+	}
+
+	// The files the source has finished with. A good one is published; one that failed leaves the
+	// image queued, and the game is read for it (the source no longer lists its file).
+	void Pump::CollectFiles()
+	{
+		if (!m_source)
+			return;
+		m_files.clear();
+		m_source->Collect(m_files);
+		for (const ImageDisk::FileResult& result : m_files)
+		{
+			m_onDisk.erase(result.id);
+			if (result.outcome != ImageDisk::FileOutcome::Texture)
+			{
+				m_library.Requeue(result.id);
+				continue;
+			}
+			if (PublishStored(result.id, result.texture, result.bytes))
+				++m_stats.fromDisk;
+		}
+	}
+
+	// Gives the source its turn. True while the folder is being listed: nothing is served then.
+	// Once it is listed, its saved names and set lists are taken in.
+	bool Pump::PollSource(uint64_t nowMs)
+	{
+		if (!m_source || m_gone)
+			return false;
+		const ImageDisk::Source::State state = m_source->Poll(nowMs);
+		if (state == ImageDisk::Source::State::Loading)
+			return true;
+		m_sourceOff = state == ImageDisk::Source::State::Off;
+		if (state == ImageDisk::Source::State::Ready && !m_listsTaken)
+		{
+			ImageDisk::Lists lists;
+			if (m_source->TakeLists(lists))
+			{
+				m_listsTaken = true;
+				ApplyLists(std::move(lists));
+			}
+		}
+		return false;
+	}
+
+	// Ties each saved item name to its texture path. An item that is already being read is left to
+	// the index.
+	void Pump::ApplyLists(ImageDisk::Lists&& lists)
+	{
+		size_t tied = 0;
+		for (const ImageCache::NamePair& pair : lists.names)
+		{
+			const PluginImageId item  = m_library.Item(pair.name.c_str());
+			const PluginImageId image = m_library.Path(pair.path.c_str());
+			if (item == 0 || image == 0)
+				continue;
+			tied += m_library.Alias(item, image);
+			if (m_saver)
+				m_saver->Name(pair.name, pair.path);
+		}
+		m_fileSets = std::move(lists.sets);
+		if (tied != 0 || !m_fileSets.empty())
+			m_host.Log("[Images] Cache folder: " + std::to_string(tied) + " item names and " + std::to_string(m_fileSets.size()) + " set lists read");
 	}
 
 	// The hand-over from the read to the library. The read made one level of the
@@ -266,25 +349,43 @@ namespace ImagePump
 			m_pause = Pause::Screen;
 		else if (!m_library.PreloadHasRoom())
 			m_pause = Pause::Full;
-		else if (GameHoldsTooMuch())
-			m_pause = Pause::GameHolds;
 		else if (VideoFull())
 			m_pause = Pause::VideoMemory;
 		else
 		{
-			ImageLibrary::Request request;
-			if (!m_library.TakePreload(request))
+			// What the game holds loaded is the game's own memory: it limits the reads of the game, not
+			// the files, which load nothing.
+			const bool holds = GameHoldsTooMuch();
+			for (uint32_t taken = 0; taken < kDiskPreloadPerTick; ++taken)
 			{
-				const bool unlisted = ((used & PLUGIN_IMAGE_SET_ITEMS) && !m_itemsListed)
-					|| ((used & PLUGIN_IMAGE_SET_BUILDINGS) && !m_buildingsListed);
-				m_pause = unlisted ? Pause::Listing : Pause::Running;
-				return;
-			}
+				ImageLibrary::Request request;
+				if (taken != 0 && !m_library.PreloadHasRoom())
+					break;
+				if (!m_library.TakePreload(request))
+				{
+					if (taken != 0)
+						break;
+					const bool unlisted = ((used & PLUGIN_IMAGE_SET_ITEMS) && !m_itemsListed)
+						|| ((used & PLUGIN_IMAGE_SET_BUILDINGS) && !m_buildingsListed);
+					m_pause = unlisted ? Pause::Listing : Pause::Running;
+					return;
+				}
 
-			m_pause = Pause::Running;
-			const Outcome outcome = Attempt(request, loads);
-			if (outcome == Outcome::Later || outcome == Outcome::Busy)
-				m_library.Defer(request.id);
+				std::string key;
+				if (holds && !FileFor(request, key))
+				{
+					m_library.Defer(request.id);
+					m_pause = Pause::GameHolds;
+					return;
+				}
+
+				m_pause = Pause::Running;
+				const Outcome outcome = Attempt(request, loads);
+				if (outcome == Outcome::Later || outcome == Outcome::Busy)
+					m_library.Defer(request.id);
+				if (outcome != Outcome::Disk)
+					break;
+			}
 		}
 	}
 
@@ -306,6 +407,8 @@ namespace ImagePump
 	{
 		using State = ImageLookup::ItemIndex::State;
 		bool read = false;
+		if (ApplyFileSet(set, listed, what))
+			return false;
 		if (!stepped && (index.GetState() == State::Idle || index.GetState() == State::Scanning))
 		{
 			index.Step(ImageLookup::kItemBudgetUs, [this] { return m_host.NowUs(); });
@@ -326,6 +429,24 @@ namespace ImagePump
 			m_host.Log(std::string("[Images] The ") + what + " list cannot be read here: " + what + " images are not preloaded");
 		}
 		return read;
+	}
+
+	// Fills the set from the saved set list, when the folder had one for it: the game's list is not
+	// read, and no package is loaded to build it. True when it did.
+	bool Pump::ApplyFileSet(uint32_t set, bool& listed, const char* what)
+	{
+		const auto saved = std::find_if(m_fileSets.begin(), m_fileSets.end(),
+			[set](const ImageCache::SetEntry& entry) { return entry.set == set && !entry.paths.empty(); });
+		if (saved == m_fileSets.end())
+			return false;
+
+		size_t members = 0;
+		for (const std::string& path : saved->paths)
+			members += m_library.PathInSet(path.c_str(), set) != 0;
+		m_fileSets.erase(saved);
+		listed = true;
+		m_host.Log(std::string("[Images] Preload set: ") + std::to_string(members) + " " + what + " images (from the cache folder)");
+		return true;
 	}
 
 	// Whether the full-size images the library made the game load, and the game
@@ -400,7 +521,18 @@ namespace ImagePump
 		}
 		m_library.Requeue(item.id);
 		m_library.Alias(item.id, image);
+		if (m_saver)
+			m_saver->Name(item.key, path);
 		return true;
+	}
+
+	// The normalised path of the file this request would be read from, when the source has one.
+	bool Pump::FileFor(const ImageLibrary::Request& request, std::string& key)
+	{
+		if (!m_source || m_sourceOff)
+			return false;
+		key =ImageLibrary::NormalizeObjectPath(request.name.c_str());
+		return !key.empty() && m_source->Has(key);
 	}
 
 	Pump::Outcome Pump::Attempt(const ImageLibrary::Request& request, uint32_t& loads)
@@ -410,6 +542,16 @@ namespace ImagePump
 			m_library.PublishNoImage(request.id);
 			++m_stats.noImage;
 			return Outcome::Done;
+		}
+
+		// A file first: no game image is read and no package is loaded for it.
+		std::string key;
+		if (FileFor(request, key))
+		{
+			if (!m_source->Request(request.id, key))
+				return Outcome::Later;
+			m_onDisk.insert(request.id);
+			return Outcome::Disk;
 		}
 
 		Copy copy;
@@ -506,6 +648,20 @@ namespace ImagePump
 		m_stopped = true;
 		if (m_saver)
 			m_saver->Stop();
+		if (m_source)
+		{
+			// What the worker finished and nobody collected is freed, and what it never got to fails.
+			m_source->Stop();
+			m_files.clear();
+			m_source->Collect(m_files);
+			for (const ImageDisk::FileResult& result : m_files)
+				if (!m_gone && result.texture)
+					m_host.Free(result.texture);
+			m_files.clear();
+			for (PluginImageId id : m_onDisk)
+				m_library.Fail(id);
+			m_onDisk.clear();
+		}
 		LogSummary();
 		FailHeld();
 
@@ -530,7 +686,11 @@ namespace ImagePump
 	void Pump::LogSummary()
 	{
 		const ImageLibrary::Library::PreloadProgress preload = m_library.GetPreloadProgress();
+		m_stats.written  = m_saver ? m_saver->Written() : 0;
+		m_stats.rejected = m_source ? m_source->Rejected() : 0;
 		const bool changed = m_stats.published != m_lastLogged.published || m_stats.evicted != m_lastLogged.evicted
+			|| m_stats.fromDisk != m_lastLogged.fromDisk || m_stats.fromGame != m_lastLogged.fromGame
+			|| m_stats.written != m_lastLogged.written || m_stats.rejected != m_lastLogged.rejected
 			|| m_stats.failed != m_lastLogged.failed || m_stats.noImage != m_lastLogged.noImage
 			|| preload.queued != m_lastPreload.queued || preload.done != m_lastPreload.done || m_pause != m_lastPreload.pause;
 		if (!changed)
@@ -540,16 +700,19 @@ namespace ImagePump
 		m_lastLogged = m_stats;
 		m_lastPreload = { preload.queued, preload.done, m_pause };
 
-		char line[384];
+		char line[512];
 		snprintf(line, sizeof(line),
 			"[Images] requests=%u published=%llu evicted=%llu failed=%llu noimage=%llu kept=%u (%.1f MB) longest pump tick=%.3f ms"
-			" preload queued=%u done=%u paused=%s",
+			" preload queued=%u done=%u paused=%s"
+			" cache: from disk=%llu from game=%llu written=%llu rejected=%llu",
 			m_library.ImageCount(),
 			static_cast<unsigned long long>(m_stats.published), static_cast<unsigned long long>(m_stats.evicted),
 			static_cast<unsigned long long>(m_stats.failed), static_cast<unsigned long long>(m_stats.noImage),
 			m_library.CountKept(), static_cast<double>(m_library.BytesKept()) / (1024.0 * 1024.0),
 			static_cast<double>(longestUs) / 1000.0,
-			preload.queued, preload.done, PauseText(static_cast<int>(m_pause)));
+			preload.queued, preload.done, PauseText(static_cast<int>(m_pause)),
+			static_cast<unsigned long long>(m_stats.fromDisk), static_cast<unsigned long long>(m_stats.fromGame),
+			static_cast<unsigned long long>(m_stats.written), static_cast<unsigned long long>(m_stats.rejected));
 		m_host.Log(line);
 	}
 }

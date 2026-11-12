@@ -17,6 +17,12 @@
 // per tick, and registers its images with the library. Preload then reads them
 // in the background under the rules in the constants below.
 //
+// The disk cache (image_disk.h): the pump asks the source for every image first. An image with
+// a file is read, checked and uploaded on the source's worker, never on the game thread, and is
+// published like a shrunk copy. No game image is read and no package is loaded for it. Saved item
+// names are tied to their texture paths when the folder is opened, and a saved set list fills the
+// set without reading the game's list. While the folder is being listed the game side waits.
+//
 // Game thread only. The pump keeps no pointer into the engine: a texture is
 // found, read and forgotten inside one Host::Read call.
 
@@ -43,6 +49,10 @@ namespace ImagePump
 	inline constexpr uint32_t kAttemptsPerTick = 8;
 
 	inline constexpr uint64_t kSummaryIntervalMs = 60 * 1000;
+
+	// Preload asks for up to this many images that have files on a tick it runs: a file costs the
+	// game thread nothing but the request.
+	inline constexpr uint32_t kDiskPreloadPerTick = 8;
 
 	// ---- Preload -----------------------------------------------------------
 	// Preload reads the members of the sets in use in the background. It runs
@@ -162,6 +172,10 @@ namespace ImagePump
 		uint64_t evicted   = 0;
 		uint64_t failed    = 0;
 		uint64_t noImage   = 0;
+		uint64_t fromDisk  = 0;   // published from a file
+		uint64_t fromGame  = 0;   // published from a read of the game
+		uint64_t written   = 0;   // files the saver's worker wrote; filled in when logged
+		uint64_t rejected  = 0;   // files that failed a check; filled in when logged
 		uint64_t longestTickUs = 0;   // since the last summary line
 	};
 
@@ -172,6 +186,8 @@ namespace ImagePump
 
 		// Where the stored copies are saved. None by default; the pump does not own it.
 		void SetSaver(ImageDisk::Saver* saver) { m_saver = saver; }
+		// Where the saved files are read from. None by default; the pump does not own it.
+		void SetSource(ImageDisk::Source* source) { m_source = source; }
 
 		// Once per engine tick, after the plugin callbacks.
 		void Tick();
@@ -208,7 +224,7 @@ namespace ImagePump
 			std::string   key;
 		};
 
-		enum class Outcome { Started, Done, Later, Busy, Off };
+		enum class Outcome { Started, Disk, Done, Later, Busy, Off };
 
 		// Why preload did not read on the last tick it was tried.
 		enum class Pause { Running, Off, NoSets, Listing, Screen, GameHolds, VideoMemory, Full };
@@ -223,6 +239,12 @@ namespace ImagePump
 		void    Start();
 		void    GpuGone();
 		void    Collect();
+		void    CollectFiles();
+		bool    PollSource(uint64_t nowMs);
+		void    ApplyLists(ImageDisk::Lists&& lists);
+		bool    ApplyFileSet(uint32_t set, bool& listed, const char* what);
+		bool    FileFor(const ImageLibrary::Request& request, std::string& key);
+		bool    PublishStored(PluginImageId id, PluginTextureHandle texture, uint64_t bytes);
 		bool    Serve(uint32_t& loads);
 		bool    StepItems();
 		void    StepSets(uint32_t used, bool stepped);
@@ -244,6 +266,8 @@ namespace ImagePump
 		ImageLookup::ItemIndex m_items;
 		ImageLookup::ItemIndex m_buildings;
 		ImageDisk::Saver*      m_saver = nullptr;
+		ImageDisk::Source*     m_source = nullptr;
+		bool                   m_sourceOff = false;   // the source gave up: the game is read for everything
 
 		bool m_started = false;   // the GPU side was up at least once
 		bool m_off     = false;   // no read can run any more this session
@@ -254,6 +278,11 @@ namespace ImagePump
 		std::vector<ImageLibrary::Released>   m_scratch;
 		std::vector<PluginImageId>            m_later;
 		std::vector<HeldItem>                 m_held;
+		// Requests the source is reading from a file, by image id.
+		std::unordered_set<PluginImageId>     m_onDisk;
+		std::vector<ImageDisk::FileResult>    m_files;
+		bool                                  m_listsTaken = false;
+		ImageCache::SetList                   m_fileSets;   // saved set lists not used yet
 		// Preload.
 		bool                                  m_itemsListed     = false;
 		bool                                  m_buildingsListed = false;

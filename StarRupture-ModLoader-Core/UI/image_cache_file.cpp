@@ -251,6 +251,74 @@ namespace ImageCache
 		return Parsed::Ok;
 	}
 
+	std::vector<uint8_t> SerializeNames(const NameList& names)
+	{
+		std::vector<uint8_t> out;
+		Put32(out, kNameListMagic);
+		Put32(out, kRevision);
+		Put32(out, static_cast<uint32_t>(names.size()));
+		for (const NamePair& pair : names)
+		{
+			Put32(out, static_cast<uint32_t>(pair.name.size()));
+			out.insert(out.end(), pair.name.begin(), pair.name.end());
+			Put32(out, static_cast<uint32_t>(pair.path.size()));
+			out.insert(out.end(), pair.path.begin(), pair.path.end());
+		}
+		Put32(out, Crc32(out.data(), out.size()));
+		return out;
+	}
+
+	Parsed ParseNames(const uint8_t* data, size_t size, NameList& names)
+	{
+		if (!data || size < 16)
+			return Parsed::TooShort;
+		if (Get32(data) != kNameListMagic)
+			return Parsed::BadMagic;
+		if (Get32(data + 4) != kRevision)
+			return Parsed::WrongRevision;
+		if (Crc32(data, size - 4) != Get32(data + size - 4))
+			return Parsed::BadCrc;
+
+		const size_t end = size - 4;
+		size_t at = 8;
+		const auto take = [&](uint32_t& value)
+		{
+			if (end - at < 4)
+				return false;
+			value = Get32(data + at);
+			at += 4;
+			return true;
+		};
+		const auto takeText = [&](std::string& text)
+		{
+			uint32_t length = 0;
+			if (!take(length) || length == 0 || length > kMaxPathLength || end - at < length)
+				return false;
+			text.assign(reinterpret_cast<const char*>(data + at), length);
+			at += length;
+			return true;
+		};
+
+		uint32_t count = 0;
+		if (!take(count) || count > kMaxNames)
+			return Parsed::BadHeader;
+
+		NameList read;
+		read.reserve(count);
+		for (uint32_t i = 0; i < count; ++i)
+		{
+			NamePair pair;
+			if (!takeText(pair.name) || !takeText(pair.path))
+				return Parsed::Truncated;
+			read.push_back(std::move(pair));
+		}
+		if (at != end)
+			return Parsed::Truncated;
+
+		names = std::move(read);
+		return Parsed::Ok;
+	}
+
 	std::string FileName(const std::string& normalizedPath)
 	{
 		char name[32];

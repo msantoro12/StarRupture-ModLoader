@@ -9,6 +9,7 @@
 // written.
 //
 // A console program: no game, no GPU.
+#include "UI/image_cache_reader.h"
 #include "UI/image_disk.h"
 #include "UI/image_shrink.h"
 
@@ -910,6 +911,56 @@ static void TestSaverSetList()
     CHECK(sink.jobs.size() == 3);
 }
 
+static void TestSaverNames()
+{
+    ImageLibrary::Library library;
+    FakeReadbacks host;
+    FakeSink sink;
+    ImageDisk::DiskSaver saver(library, host, sink);
+
+    saver.Poll(0);
+    CHECK(sink.jobs.empty());
+
+    saver.Name("iron plate", "/game/ui/t_iron.t_iron");
+    saver.Name("copper", "/game/ui/t_copper.t_copper");
+    saver.Poll(ImageDisk::kSetListIntervalMs - 1);
+    CHECK(sink.jobs.empty());
+    saver.Poll(ImageDisk::kSetListIntervalMs);
+    CHECK(sink.jobs.size() == 1);
+    if (!sink.jobs.empty())
+    {
+        const Job& job = sink.jobs[0];
+        CHECK(job.name == NameListFileName());
+        CHECK(job.replace);
+        const std::vector<uint8_t> file = job.make();
+        NameList names;
+        CHECK(ParseNames(file.data(), file.size(), names) == Parsed::Ok);
+        CHECK(names.size() == 2);
+        if (names.size() == 2)
+        {
+            CHECK(names[0].name == "copper" && names[0].path == "/game/ui/t_copper.t_copper");   // sorted
+            CHECK(names[1].name == "iron plate");
+        }
+    }
+
+    // The same pair again changes nothing; a new path for a name does.
+    saver.Name("copper", "/game/ui/t_copper.t_copper");
+    saver.Poll(ImageDisk::kSetListIntervalMs * 2);
+    CHECK(sink.jobs.size() == 1);
+    saver.Name("copper", "/game/ui/t_other.t_other");
+    saver.Poll(ImageDisk::kSetListIntervalMs * 3);
+    CHECK(sink.jobs.size() == 2);
+
+    // A queue with no room: tried again at the next look.
+    saver.Name("steel", "/game/ui/t_steel.t_steel");
+    sink.accept = false;
+    saver.Poll(ImageDisk::kSetListIntervalMs * 4);
+    CHECK(sink.jobs.size() == 2);
+    sink.accept = true;
+    saver.Poll(ImageDisk::kSetListIntervalMs * 5);
+    CHECK(sink.jobs.size() == 3);
+}
+
 static void TestSaverStopAndAbandon()
 {
     ImageLibrary::Library library;
@@ -936,6 +987,373 @@ static void TestSaverStopAndAbandon()
     other.Begin(MakeStarted(4));
     other.Poll(0);
     CHECK(host.taken.empty() && sink.jobs.empty());
+}
+
+// ---------------------------------------------------------------------------
+// The name list
+
+static void TestNameListRoundTrip()
+{
+    NameList names;
+    names.push_back({ "copper", "/game/ui/t_copper.t_copper" });
+    names.push_back({ "iron plate", "/game/ui/t_iron.t_iron" });
+
+    const std::vector<uint8_t> file = SerializeNames(names);
+    NameList read;
+    CHECK(ParseNames(file.data(), file.size(), read) == Parsed::Ok);
+    CHECK(read == names);
+
+    const std::vector<uint8_t> none = SerializeNames({});
+    NameList empty = names;
+    CHECK(ParseNames(none.data(), none.size(), empty) == Parsed::Ok);
+    CHECK(empty.empty());
+}
+
+static void TestNameListBad()
+{
+    NameList names;
+    names.push_back({ "copper", "/game/ui/t_copper.t_copper" });
+    const std::vector<uint8_t> file = SerializeNames(names);
+    NameList read;
+
+    std::vector<uint8_t> magic = file;
+    magic[0] ^= 1;
+    CHECK(ParseNames(magic.data(), magic.size(), read) == Parsed::BadMagic);
+
+    std::vector<uint8_t> revision = file;
+    Put32At(revision, 4, kRevision + 1);
+    CHECK(ParseNames(revision.data(), revision.size(), read) == Parsed::WrongRevision);
+
+    CHECK(ParseNames(file.data(), 8, read) == Parsed::TooShort);
+    CHECK(ParseNames(file.data(), file.size() - 1, read) == Parsed::BadCrc);
+
+    std::vector<uint8_t> flipped = file;
+    flipped[flipped.size() - 8] ^= 1;
+    CHECK(ParseNames(flipped.data(), flipped.size(), read) == Parsed::BadCrc);
+
+    // A set list is not a name list.
+    const std::vector<uint8_t> sets = SerializeSets({ { 1, { "/Game/A.A" } } });
+    CHECK(ParseNames(sets.data(), sets.size(), read) == Parsed::BadMagic);
+}
+
+// ---------------------------------------------------------------------------
+// The reader, on a real folder and a fake uploader
+
+class FakeUploader : public Uploader
+{
+public:
+    bool fail = false;
+    int  calls = 0;
+    uint32_t width = 0, height = 0, levels = 0;
+    std::vector<uint8_t> pixels;
+
+    bool Upload(uint32_t w, uint32_t h, uint32_t l, const uint8_t* data, size_t bytes, PluginTextureHandle& texture) override
+    {
+        ++calls;
+        width = w; height = h; levels = l;
+        pixels.assign(data, data + bytes);
+        if (fail)
+            return false;
+        texture = reinterpret_cast<PluginTextureHandle>(static_cast<uintptr_t>(0x1000 + calls * 16));
+        return true;
+    }
+};
+
+static void WriteFileIn(const TempFolder& temp, const std::string& name, const std::vector<uint8_t>& bytes)
+{
+    CreateDirectoryW(temp.path.c_str(), nullptr);
+    const std::wstring path = temp.path + L"\\" + std::wstring(name.begin(), name.end());
+    HANDLE h = CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    DWORD written = 0;
+    if (h != INVALID_HANDLE_VALUE)
+    {
+        WriteFile(h, bytes.data(), static_cast<DWORD>(bytes.size()), &written, nullptr);
+        CloseHandle(h);
+    }
+}
+
+static std::string KeyOf(const Info& info)
+{
+    return ImageLibrary::NormalizeObjectPath(info.path.c_str());
+}
+
+// The reader on the folder, polled until it has listed it.
+static bool Open(Reader& reader)
+{
+    uint64_t now = 0;
+    return WaitFor([&] { return reader.Poll(now += 10) != ImageDisk::Source::State::Loading; });
+}
+
+static std::vector<ImageDisk::FileResult> Results(Reader& reader, size_t count)
+{
+    std::vector<ImageDisk::FileResult> got;
+    WaitFor([&] { reader.Collect(got); return got.size() >= count; });
+    return got;
+}
+
+static Reader::Session SessionOf(const TempFolder& temp)
+{
+    const std::wstring folder = temp.path;
+    return [folder] { return Reader::FolderFn([folder] { return folder; }); };
+}
+
+static void TestReaderListsTheFolder()
+{
+    TempFolder temp;
+    Info info;
+    std::vector<uint8_t> pixels;
+    WriteFileIn(temp, FileName(KeyOf(MakeInfo())), Valid(&info, &pixels));
+    WriteFileIn(temp, "notes.txt", { 1, 2, 3 });
+    WriteFileIn(temp, "0123.img", { 1, 2, 3 });   // not a name this part writes
+
+    NameList names;
+    names.push_back({ "iron plate", KeyOf(info) });
+    WriteFileIn(temp, NameListFileName(), SerializeNames(names));
+    SetList sets;
+    sets.push_back({ PLUGIN_IMAGE_SET_ITEMS, { KeyOf(info) } });
+    WriteFileIn(temp, SetListFileName(), SerializeSets(sets));
+
+    FakeUploader uploader;
+    Reader reader(SessionOf(temp), uploader, nullptr);
+    CHECK(reader.Poll(0) == ImageDisk::Source::State::Loading);
+    CHECK(!reader.Has(KeyOf(info)));   // not before the listing is in
+    CHECK(Open(reader));
+    CHECK(reader.Poll(1) == ImageDisk::Source::State::Ready);
+    CHECK(reader.Has(KeyOf(info)));
+    CHECK(!reader.Has("/game/ui/t_other.t_other"));
+
+    ImageDisk::Lists lists;
+    CHECK(reader.TakeLists(lists));
+    CHECK(lists.names == names);
+    CHECK(lists.sets == sets);
+    CHECK(!reader.TakeLists(lists));   // once
+    reader.Stop();
+}
+
+static void TestReaderBadListsAreEmpty()
+{
+    TempFolder temp;
+    WriteFileIn(temp, NameListFileName(), { 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9 });
+    WriteFileIn(temp, SetListFileName(), { 1 });
+
+    FakeUploader uploader;
+    Reader reader(SessionOf(temp), uploader, nullptr);
+    CHECK(Open(reader));
+    ImageDisk::Lists lists;
+    CHECK(reader.TakeLists(lists));
+    CHECK(lists.names.empty() && lists.sets.empty());
+    reader.Stop();
+}
+
+static void TestReaderMissingFolderIsEmpty()
+{
+    TempFolder temp;   // never made
+    FakeUploader uploader;
+    Reader reader(SessionOf(temp), uploader, nullptr);
+    CHECK(Open(reader));
+    CHECK(reader.Poll(1) == ImageDisk::Source::State::Ready);
+    CHECK(!reader.Has("/game/ui/t_icon.t_icon"));
+    reader.Stop();
+}
+
+static void TestReaderGoodFileBecomesATexture()
+{
+    TempFolder temp;
+    Info info;
+    std::vector<uint8_t> pixels;
+    const std::vector<uint8_t> file = Valid(&info, &pixels);
+    WriteFileIn(temp, FileName(KeyOf(info)), file);
+
+    FakeUploader uploader;
+    Reader reader(SessionOf(temp), uploader, nullptr);
+    CHECK(Open(reader));
+    CHECK(reader.Request(7, KeyOf(info)));
+    const std::vector<ImageDisk::FileResult> got = Results(reader, 1);
+    CHECK(got.size() == 1);
+    if (got.size() == 1)
+    {
+        CHECK(got[0].id == 7);
+        CHECK(got[0].outcome == ImageDisk::FileOutcome::Texture);
+        CHECK(got[0].texture != nullptr);
+        CHECK(got[0].bytes == pixels.size());
+    }
+    CHECK(uploader.calls == 1);
+    CHECK(uploader.width == info.storedWidth && uploader.height == info.storedHeight && uploader.levels == info.levels);
+    CHECK(uploader.pixels == pixels);   // the file's bytes, every level
+    CHECK(reader.Has(KeyOf(info)));     // still listed
+    CHECK(reader.Rejected() == 0);
+    CHECK(temp.Files().size() == 1);
+    reader.Stop();
+}
+
+static void TestReaderCorruptFileIsRejectedAndDeleted()
+{
+    TempFolder temp;
+    Info info;
+    std::vector<uint8_t> file = Valid(&info);
+    file[file.size() / 2] ^= 0x40;
+    const std::string name = FileName(KeyOf(info));
+    WriteFileIn(temp, name, file);
+
+    LogCollector log;
+    FakeUploader uploader;
+    Reader reader(SessionOf(temp), uploader, log.Sink());
+    CHECK(Open(reader));
+    CHECK(reader.Has(KeyOf(info)));
+    CHECK(reader.Request(3, KeyOf(info)));
+    const std::vector<ImageDisk::FileResult> got = Results(reader, 1);
+    CHECK(got.size() == 1);
+    if (got.size() == 1)
+    {
+        CHECK(got[0].id == 3);
+        CHECK(got[0].outcome == ImageDisk::FileOutcome::Rejected);
+        CHECK(got[0].texture == nullptr);
+    }
+    CHECK(uploader.calls == 0);
+    CHECK(reader.Rejected() == 1);
+    CHECK(!reader.Has(KeyOf(info)));    // the game is read for it now
+    CHECK(temp.Files().empty());        // and the file is gone, so it is saved again
+    CHECK(log.Count() == 1);
+    reader.Stop();
+}
+
+static void TestReaderRefusesAFileOfAnotherImage()
+{
+    TempFolder temp;
+    Info info;
+    const std::vector<uint8_t> file = Valid(&info);
+    // The file for one path sits under the name of another.
+    const std::string wanted = "/game/ui/t_wanted.t_wanted";
+    WriteFileIn(temp, FileName(wanted), file);
+
+    FakeUploader uploader;
+    Reader reader(SessionOf(temp), uploader, nullptr);
+    CHECK(Open(reader));
+    CHECK(reader.Request(4, wanted));
+    const std::vector<ImageDisk::FileResult> got = Results(reader, 1);
+    CHECK(got.size() == 1 && got[0].outcome == ImageDisk::FileOutcome::Rejected);
+    CHECK(uploader.calls == 0);
+    CHECK(temp.Files().empty());
+    reader.Stop();
+}
+
+static void TestReaderRefusesAFileOfTheWrongSize()
+{
+    TempFolder temp;
+    Info info = MakeInfo(ImageLibrary::kStoredSize * 2, 32);
+    const std::vector<uint8_t> pixels = MakePixels(info.storedWidth, info.storedHeight, 5);
+    const std::vector<uint8_t> file = Serialize(info, pixels.data(), pixels.size());
+    CHECK(!file.empty());
+    WriteFileIn(temp, FileName(KeyOf(info)), file);
+
+    FakeUploader uploader;
+    Reader reader(SessionOf(temp), uploader, nullptr);
+    CHECK(Open(reader));
+    CHECK(reader.Request(5, KeyOf(info)));
+    const std::vector<ImageDisk::FileResult> got = Results(reader, 1);
+    CHECK(got.size() == 1 && got[0].outcome == ImageDisk::FileOutcome::Rejected);
+    CHECK(uploader.calls == 0);
+    reader.Stop();
+}
+
+static void TestReaderUploadFailureKeepsTheFile()
+{
+    TempFolder temp;
+    Info info;
+    WriteFileIn(temp, FileName(KeyOf(MakeInfo())), Valid(&info));
+
+    FakeUploader uploader;
+    uploader.fail = true;
+    Reader reader(SessionOf(temp), uploader, nullptr);
+    CHECK(Open(reader));
+    CHECK(reader.Request(6, KeyOf(info)));
+    const std::vector<ImageDisk::FileResult> got = Results(reader, 1);
+    CHECK(got.size() == 1 && got[0].outcome == ImageDisk::FileOutcome::Failed);
+    CHECK(uploader.calls == 1);
+    CHECK(reader.Rejected() == 0);
+    CHECK(!reader.Has(KeyOf(info)));    // the game is read for it this session
+    CHECK(temp.Files().size() == 1);    // the file itself is fine
+    reader.Stop();
+}
+
+static void TestReaderFileGoneAfterTheListingFails()
+{
+    TempFolder temp;
+    Info info;
+    WriteFileIn(temp, FileName(KeyOf(MakeInfo())), Valid(&info));
+
+    FakeUploader uploader;
+    Reader reader(SessionOf(temp), uploader, nullptr);
+    CHECK(Open(reader));
+    DeleteFileW((temp.path + L"\\" + std::wstring(FileName(KeyOf(info)).begin(), FileName(KeyOf(info)).end())).c_str());
+    CHECK(reader.Request(8, KeyOf(info)));
+    const std::vector<ImageDisk::FileResult> got = Results(reader, 1);
+    CHECK(got.size() == 1 && got[0].outcome == ImageDisk::FileOutcome::Failed);
+    CHECK(reader.Rejected() == 0);
+    CHECK(!reader.Has(KeyOf(info)));
+    reader.Stop();
+}
+
+static void TestReaderOffSession()
+{
+    LogCollector log;
+    FakeUploader uploader;
+    Reader reader([] { return Reader::FolderFn(); }, uploader, log.Sink());
+    CHECK(reader.Poll(0) == ImageDisk::Source::State::Off);
+    CHECK(!reader.Has("/game/ui/t_a.t_a"));
+    CHECK(!reader.Request(1, "/game/ui/t_a.t_a"));
+    CHECK(reader.Poll(1) == ImageDisk::Source::State::Off);
+    CHECK(log.Count() == 1);   // said once
+    reader.Stop();
+}
+
+static void TestReaderSessionEndingTurnsItOff()
+{
+    TempFolder temp;
+    bool on = true;
+    FakeUploader uploader;
+    Reader reader([&] { return on ? SessionOf(temp)() : Reader::FolderFn(); }, uploader, nullptr);
+    CHECK(Open(reader));
+    CHECK(reader.Poll(1) == ImageDisk::Source::State::Ready);
+    on = false;
+    CHECK(reader.Poll(2) == ImageDisk::Source::State::Off);
+    CHECK(!reader.Request(1, "/game/ui/t_a.t_a"));
+    reader.Stop();
+}
+
+static void TestReaderAbandonDropsResults()
+{
+    TempFolder temp;
+    Info info;
+    WriteFileIn(temp, FileName(KeyOf(MakeInfo())), Valid(&info));
+
+    FakeUploader uploader;
+    Reader reader(SessionOf(temp), uploader, nullptr);
+    CHECK(Open(reader));
+    CHECK(reader.Request(9, KeyOf(info)));
+    reader.Stop();   // the job in hand finishes
+    reader.Abandon();
+    std::vector<ImageDisk::FileResult> got;
+    reader.Collect(got);
+    CHECK(got.empty());
+    CHECK(!reader.Request(10, KeyOf(info)));   // nothing is read after stop
+}
+
+static void TestReaderStopKeepsFinishedResults()
+{
+    TempFolder temp;
+    Info info;
+    WriteFileIn(temp, FileName(KeyOf(MakeInfo())), Valid(&info));
+
+    FakeUploader uploader;
+    Reader reader(SessionOf(temp), uploader, nullptr);
+    CHECK(Open(reader));
+    CHECK(reader.Request(11, KeyOf(info)));
+    WaitFor([&] { return uploader.calls == 1; });
+    reader.Stop();
+    std::vector<ImageDisk::FileResult> got;
+    reader.Collect(got);
+    CHECK(got.size() == 1 && got[0].outcome == ImageDisk::FileOutcome::Texture);   // left for the pump to free
 }
 
 // ---------------------------------------------------------------------------
@@ -971,6 +1389,22 @@ int main()
     RunTest("a full queue drops the image", TestSaverQueueFullDropsTheImage);
     RunTest("the set list is written when it changes", TestSaverSetList);
     RunTest("stop and a lost GPU end the saver", TestSaverStopAndAbandon);
+    RunTest("the name list is written when it changes", TestSaverNames);
+    RunTest("a name list reads back as it was written", TestNameListRoundTrip);
+    RunTest("a bad name list is refused", TestNameListBad);
+    RunTest("the reader lists the folder and its lists", TestReaderListsTheFolder);
+    RunTest("a bad list is left empty", TestReaderBadListsAreEmpty);
+    RunTest("a missing folder lists nothing", TestReaderMissingFolderIsEmpty);
+    RunTest("a good file becomes a texture of its bytes", TestReaderGoodFileBecomesATexture);
+    RunTest("a corrupt file is rejected and deleted", TestReaderCorruptFileIsRejectedAndDeleted);
+    RunTest("a file of another image is rejected", TestReaderRefusesAFileOfAnotherImage);
+    RunTest("a file of the wrong size is rejected", TestReaderRefusesAFileOfTheWrongSize);
+    RunTest("an upload that fails keeps the file", TestReaderUploadFailureKeepsTheFile);
+    RunTest("a file gone after the listing fails", TestReaderFileGoneAfterTheListingFails);
+    RunTest("an off session reads nothing", TestReaderOffSession);
+    RunTest("a session that ends turns the reader off", TestReaderSessionEndingTurnsItOff);
+    RunTest("abandon drops the results", TestReaderAbandonDropsResults);
+    RunTest("stop keeps what was finished", TestReaderStopKeepsFinishedResults);
 
     printf("\n%d checks, %d failed\n", g_checks, g_failed);
     return g_failed == 0 ? 0 : 1;

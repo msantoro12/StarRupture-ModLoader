@@ -497,6 +497,7 @@
     <ClInclude Include="UI\image_shrink.h" />
     <ClInclude Include="UI\image_cache_file.h" />
     <ClInclude Include="UI\image_cache_writer.h" />
+    <ClInclude Include="UI\image_cache_reader.h" />
     <ClInclude Include="UI\image_disk.h" />
     <ClInclude Include="UI\plugin_call_tracker.h" />
     <ClInclude Include="hooks\memory\engine_allocator.h" />
@@ -734,6 +735,9 @@
       <ExcludedFromBuild Condition="'$(Configuration)' != 'Client Debug' And '$(Configuration)' != 'Client Release' And '$(Configuration)' != 'Local SDK Client Debug' And '$(Configuration)' != 'Local SDK Client Release'">true</ExcludedFromBuild>
     </ClCompile>
     <ClCompile Include="UI\image_cache_writer.cpp">
+      <ExcludedFromBuild Condition="'$(Configuration)' != 'Client Debug' And '$(Configuration)' != 'Client Release' And '$(Configuration)' != 'Local SDK Client Debug' And '$(Configuration)' != 'Local SDK Client Release'">true</ExcludedFromBuild>
+    </ClCompile>
+    <ClCompile Include="UI\image_cache_reader.cpp">
       <ExcludedFromBuild Condition="'$(Configuration)' != 'Client Debug' And '$(Configuration)' != 'Client Release' And '$(Configuration)' != 'Local SDK Client Debug' And '$(Configuration)' != 'Local SDK Client Release'">true</ExcludedFromBuild>
     </ClCompile>
     <ClCompile Include="UI\image_disk.cpp">

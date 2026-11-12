@@ -102,9 +102,11 @@
   <ItemGroup Label="Loader sources under test">
     <ClCompile Include="$(CoreDir)UI\image_shrink_gpu.cpp" />
     <ClCompile Include="$(CoreDir)UI\image_readback_gpu.cpp" />
+    <ClCompile Include="$(CoreDir)UI\image_upload_gpu.cpp" />
     <ClInclude Include="$(CoreDir)UI\image_shrink.h" />
     <ClInclude Include="$(CoreDir)UI\image_shrink_gpu.h" />
     <ClInclude Include="$(CoreDir)UI\image_readback_gpu.h" />
+    <ClInclude Include="$(CoreDir)UI\image_upload_gpu.h" />
     <ClInclude Include="$(CoreDir)UI\icon_copy.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

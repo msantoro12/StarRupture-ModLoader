@@ -28,6 +28,8 @@ namespace
     std::atomic<int  (*)(void*, const char*, unsigned, ImGuiHostCopyOut*)> g_tryCopyTextureLevelFn{ nullptr };
     std::atomic<int  (*)(PluginTextureHandle, unsigned, ImGuiHostShrinkOut*)> g_shrinkTextureFn{ nullptr };
     std::atomic<int  (*)(unsigned, unsigned char*, unsigned long long)> g_takeReadbackFn{ nullptr };
+    // Called from the image cache's worker thread.
+    std::atomic<int  (*)(unsigned, unsigned, unsigned, const unsigned char*, unsigned long long, ImGuiHostUploadOut*)> g_uploadTextureFn{ nullptr };
     std::atomic<bool (*)()>                         g_gpuReadyFn{ nullptr };
     std::atomic<int  (*)(PluginTextureHandle)>      g_copyStateFn{ nullptr };
     std::atomic<unsigned long long (*)()>           g_localVideoBudgetFn{ nullptr };
@@ -66,6 +68,7 @@ namespace UI::ImGuiBackend
         g_tryCopyTextureLevelFn.store(reinterpret_cast<int (*)(void*, const char*, unsigned, ImGuiHostCopyOut*)>(GetProcAddress(g_hostDll, "ImGuiHost_TryCopyTextureLevel")));
         g_shrinkTextureFn.store(reinterpret_cast<int (*)(PluginTextureHandle, unsigned, ImGuiHostShrinkOut*)>(GetProcAddress(g_hostDll, "ImGuiHost_ShrinkTexture")));
         g_takeReadbackFn.store(reinterpret_cast<int (*)(unsigned, unsigned char*, unsigned long long)>(GetProcAddress(g_hostDll, "ImGuiHost_TakeReadback")));
+        g_uploadTextureFn.store(reinterpret_cast<int (*)(unsigned, unsigned, unsigned, const unsigned char*, unsigned long long, ImGuiHostUploadOut*)>(GetProcAddress(g_hostDll, "ImGuiHost_UploadTexture")));
         g_gpuReadyFn.store(reinterpret_cast<bool (*)()>(GetProcAddress(g_hostDll, "ImGuiHost_GpuReady")));
         g_copyStateFn.store(reinterpret_cast<int (*)(PluginTextureHandle)>(GetProcAddress(g_hostDll, "ImGuiHost_CopyState")));
         g_localVideoBudgetFn.store(reinterpret_cast<unsigned long long (*)()>(GetProcAddress(g_hostDll, "ImGuiHost_LocalVideoBudget")));
@@ -89,6 +92,7 @@ namespace UI::ImGuiBackend
         g_tryCopyTextureLevelFn.store(nullptr);
         g_shrinkTextureFn.store(nullptr);
         g_takeReadbackFn.store(nullptr);
+        g_uploadTextureFn.store(nullptr);
         g_gpuReadyFn.store(nullptr);
         g_copyStateFn.store(nullptr);
         g_localVideoBudgetFn.store(nullptr);
@@ -162,6 +166,13 @@ namespace UI::ImGuiBackend
     {
         const auto fn = g_shrinkTextureFn.load();
         return fn ? fn(source, maxSize, out) : ImGuiHostShrink_Failed;
+    }
+
+    int UploadTexture(unsigned width, unsigned height, unsigned levels, const unsigned char* pixels,
+                      unsigned long long bytes, ImGuiHostUploadOut* out)
+    {
+        const auto fn = g_uploadTextureFn.load();
+        return fn ? fn(width, height, levels, pixels, bytes, out) : ImGuiHostUpload_Failed;
     }
 
     int TakeReadback(unsigned ticket, unsigned char* dest, unsigned long long bytes)

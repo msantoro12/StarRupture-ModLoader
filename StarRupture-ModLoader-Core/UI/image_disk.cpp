@@ -49,6 +49,19 @@ namespace ImageDisk
 		{
 			m_nextSetCheckMs = nowMs + kSetListIntervalMs;
 			WriteSetList();
+			WriteNameList();
+		}
+	}
+
+	void DiskSaver::Name(const std::string& name, const std::string& path)
+	{
+		if (m_stopped || name.empty() || path.empty())
+			return;
+		std::string& kept = m_names[name];
+		if (kept != path)
+		{
+			kept = path;
+			m_namesChanged = true;
 		}
 	}
 
@@ -105,6 +118,26 @@ namespace ImageDisk
 		job.make    = [sets] { return ImageCache::SerializeSets(sets); };
 		if (m_sink.Submit(std::move(job)))
 			m_lastSets = std::move(sets);
+	}
+
+	// Writes the item names that resolved to a texture when there are new ones.
+	void DiskSaver::WriteNameList()
+	{
+		if (!m_namesChanged)
+			return;
+
+		ImageCache::NameList names;
+		names.reserve(m_names.size());
+		for (const auto& entry : m_names)
+			names.push_back({ entry.first, entry.second });
+
+		ImageCache::Job job;
+		job.folder  = m_host.CacheFolder();
+		job.name    = ImageCache::NameListFileName();
+		job.replace = true;
+		job.make    = [names] { return ImageCache::SerializeNames(names); };
+		if (m_sink.Submit(std::move(job)))
+			m_namesChanged = false;
 	}
 
 	void DiskSaver::Abandon()

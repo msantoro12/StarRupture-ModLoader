@@ -206,6 +206,7 @@ namespace ImagePump
 			{
 				Pump* const made = new Pump(ImageLibrary::Instance(), *host, ImageLookup::EngineItems(), ImageLookup::EngineBuildings());
 				made->SetSaver(ImageDisk::EngineSaver());
+				made->SetSource(ImageDisk::EngineSource());
 				return made;
 			}();
 			return *pump;

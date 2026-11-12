@@ -211,6 +211,33 @@ IMGUI_HOST_API int                    ImGuiHost_ShrinkTexture(PluginTextureHandl
 // (never given, already taken, wrong size, or the GPU side is gone; the ticket is spent).
 IMGUI_HOST_API int                    ImGuiHost_TakeReadback(unsigned ticket, unsigned char* dest, unsigned long long bytes);
 
+// The upload for the image library's saved files: makes a texture from the pixels of a stored copy
+// (8-bit RGBA, every level tightly packed, as ImGuiHost_TakeReadback gives them) on a copy queue of
+// its own, and waits for that copy. It shares no queue or fence with the game or the overlay and
+// must not be called from the game thread or the render thread: it waits for the GPU. One call at a
+// time; a second one waits for the first. The new texture is a slot of the texture API, drawable at
+// once, and counts as a stored copy (the caller frees it like a shrink's).
+//
+// Results:
+//   Started  *out is filled in.
+//   Busy     no texture slot is free, or the GPU side is not up yet. Ask again later.
+//   Failed   the upload cannot be made (wrong sizes, the GPU side is gone, or the copy did not finish).
+enum ImGuiHostUploadResult : int
+{
+    ImGuiHostUpload_Started = 0,
+    ImGuiHostUpload_Busy    = 1,
+    ImGuiHostUpload_Failed  = 2,
+};
+
+struct ImGuiHostUploadOut
+{
+    PluginTextureHandle texture;
+    int                 width;
+    int                 height;
+};
+
+IMGUI_HOST_API int                    ImGuiHost_UploadTexture(unsigned width, unsigned height, unsigned levels, const unsigned char* pixels, unsigned long long bytes, ImGuiHostUploadOut* out);
+
 // True once the overlay's GPU side is up (the first frame has set it up) and until it is shut
 // down or the device is lost. The image library does nothing before it. Any thread.
 IMGUI_HOST_API bool                   ImGuiHost_GpuReady();

@@ -8,6 +8,7 @@
 #include "icon_copy.h"
 #include "image_shrink_gpu.h"
 #include "image_readback_gpu.h"
+#include "image_upload_gpu.h"
 #include "imgui.h"
 #include "imgui_impl_dx12.h"
 #include "imgui_impl_win32.h"
@@ -152,6 +153,13 @@ namespace
 
 	PluginTextureRecord g_pluginTextures[MAX_PLUGIN_TEXTURES] = {};
 	std::mutex          g_textureMutex;
+
+	// The copy queue of the saved files' upload, made on the first upload. Not the icon copy
+	// queue: it is used from the image cache's worker thread, under g_uploadMutex, which is taken
+	// before g_textureMutex. g_uploadRetire asks the worker to release it when cleanup could not.
+	ImageUpload::Gpu    g_upload;
+	std::mutex          g_uploadMutex;
+	std::atomic<bool>   g_uploadRetire{ false };
 
 	// Number of records with retiring == true. Lets the render thread skip the
 	// slot sweep entirely on the (usual) frames where nothing is waiting.
@@ -1257,6 +1265,16 @@ static void CleanupD3D12Resources()
 	if (g_fence) { g_fence->Release();                g_fence = nullptr; }
 	if (g_fenceEvent) { CloseHandle(g_fenceEvent);         g_fenceEvent = nullptr; }
 	if (g_rtvHeap) { g_rtvHeap->Release();              g_rtvHeap = nullptr; }
+
+	// The upload queue goes first. An upload still running holds the mutex and is told to stop by
+	// g_shutdown; it releases the queue itself when it ends.
+	if (g_uploadMutex.try_lock())
+	{
+		g_upload.Release();
+		g_uploadMutex.unlock();
+	}
+	else
+		g_uploadRetire = true;
 
 	// Release all plugin texture resources before the SRV heap.
 	{
@@ -4617,6 +4635,91 @@ extern "C" __declspec(dllexport) int ImGuiHost_ShrinkTexture(PluginTextureHandle
 	out->levels  = levels;
 	out->readback = readback;
 	return ImGuiHostShrink_Started;
+}
+
+// The upload of the image library's saved files, on the cache's worker thread. The copy runs on a
+// queue of its own and is waited for here, outside g_textureMutex, so only the worker waits. The
+// finished texture is in the common state (simultaneous access): the overlay's queue promotes it.
+extern "C" __declspec(dllexport) int ImGuiHost_UploadTexture(unsigned width, unsigned height, unsigned levels,
+	const unsigned char* pixels, unsigned long long bytes, ImGuiHostUploadOut* out)
+{
+	static constexpr const char* kCaller = "UploadTexture";
+	if (!out || !pixels)
+		return ImGuiHostUpload_Failed;
+	*out = {};
+
+	std::lock_guard<std::mutex> uploadLock(g_uploadMutex);
+	ID3D12Device* device = nullptr;
+	{
+		std::lock_guard<std::mutex> lock(g_textureMutex);
+		if (!g_device || g_shutdown || !g_initialized || !g_cmdQueue || !g_srvHeap)
+			return ImGuiHostUpload_Busy;
+		device = g_device;
+		device->AddRef();
+	}
+	struct DeviceRef { ID3D12Device* device; ~DeviceRef() { device->Release(); } } deviceRef{ device };
+
+	if (g_uploadRetire.exchange(false))
+		g_upload.Release();
+
+	static bool s_unavailable = false;
+	if (s_unavailable)
+		return ImGuiHostUpload_Failed;
+	ImageShrink::Failure failure;
+	if (!g_upload.Ready() && !g_upload.Create(device, failure))
+	{
+		s_unavailable = true;
+		IMGUI_LOG_ERROR("[ImGuiBackend] %s: the upload queue could not be made, failed at %s: 0x%08X -- no images are read from disk this session",
+			kCaller, failure.step ? failure.step : "?", static_cast<unsigned>(failure.hr));
+		return ImGuiHostUpload_Failed;
+	}
+
+	ID3D12Resource* const texture = g_upload.Upload(width, height, levels, pixels, static_cast<size_t>(bytes),
+		[] { return g_shutdown.load() || !g_initialized.load(); }, failure);
+	if (g_uploadRetire.exchange(false))
+		g_upload.Release();
+	if (!texture)
+	{
+		IMGUI_LOG_WARN("[ImGuiBackend] %s: failed at %s: 0x%08X", kCaller, failure.step ? failure.step : "?", static_cast<unsigned>(failure.hr));
+		return ImGuiHostUpload_Failed;
+	}
+
+	std::lock_guard<std::mutex> lock(g_textureMutex);
+	int slot = -1;
+	if (g_device == device && !g_shutdown && g_initialized && g_srvHeap)
+		slot = AllocTextureSlot();
+	if (slot < 0)
+	{
+		texture->Release();
+		return g_device == device && !g_shutdown ? ImGuiHostUpload_Busy : ImGuiHostUpload_Failed;
+	}
+
+	D3D12_CPU_DESCRIPTOR_HANDLE cpuHandle = g_srvHeap->GetCPUDescriptorHandleForHeapStart();
+	cpuHandle.ptr += (UINT64)(slot + 1) * g_srvDescSize;
+	D3D12_GPU_DESCRIPTOR_HANDLE gpuHandle = g_srvHeap->GetGPUDescriptorHandleForHeapStart();
+	gpuHandle.ptr += (UINT64)(slot + 1) * g_srvDescSize;
+
+	D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+	srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+	srvDesc.Format                  = ImageShrink::kStoredFormat;
+	srvDesc.ViewDimension           = D3D12_SRV_DIMENSION_TEXTURE2D;
+	srvDesc.Texture2D.MipLevels     = levels;
+	g_device->CreateShaderResourceView(texture, &srvDesc, cpuHandle);
+
+	PluginTextureRecord& rec = g_pluginTextures[slot];
+	rec.resource  = texture;
+	rec.gpuHandle = gpuHandle;
+	rec.width     = static_cast<int>(width);
+	rec.height    = static_cast<int>(height);
+	rec.copyFence = 0;
+	rec.inUse     = true;
+	rec.owned     = true;
+	rec.refCount  = 1;
+
+	out->texture = &rec;
+	out->width   = rec.width;
+	out->height  = rec.height;
+	return ImGuiHostUpload_Started;
 }
 
 extern "C" __declspec(dllexport) int ImGuiHost_TakeReadback(unsigned ticket, unsigned char* dest, unsigned long long bytes)

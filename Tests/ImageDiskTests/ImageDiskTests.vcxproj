@@ -98,10 +98,12 @@
   </ItemGroup>
   <ItemGroup Label="Loader sources under test">
     <ClCompile Include="$(CoreDir)UI\image_cache_file.cpp" />
+    <ClCompile Include="$(CoreDir)UI\image_cache_reader.cpp" />
     <ClCompile Include="$(CoreDir)UI\image_cache_writer.cpp" />
     <ClCompile Include="$(CoreDir)UI\image_disk.cpp" />
     <ClCompile Include="$(CoreDir)UI\image_library.cpp" />
     <ClInclude Include="$(CoreDir)UI\image_cache_file.h" />
+    <ClInclude Include="$(CoreDir)UI\image_cache_reader.h" />
     <ClInclude Include="$(CoreDir)UI\image_cache_writer.h" />
     <ClInclude Include="$(CoreDir)UI\image_disk.h" />
     <ClInclude Include="$(CoreDir)UI\image_library.h" />

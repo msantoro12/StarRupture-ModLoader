@@ -30,6 +30,14 @@
 //   per set: u32 set (a PluginImageSet bit), u32 pathCount,
 //            per path: u32 length, then the UTF-8 bytes
 //   u32  crc32             of everything before it
+//
+// A name list (the item names that resolved to a texture path):
+//
+//   u32  magic             'SRNL'
+//   u32  revision          kRevision
+//   u32  pairCount
+//   per pair: u32 length, the UTF-8 name, u32 length, the UTF-8 texture path
+//   u32  crc32             of everything before it
 
 #include <cstddef>
 #include <cstdint>
@@ -40,6 +48,7 @@ namespace ImageCache
 {
 	inline constexpr uint32_t kImageMagic   = 0x43495253;   // "SRIC"
 	inline constexpr uint32_t kSetListMagic = 0x4C535253;   // "SRSL"
+	inline constexpr uint32_t kNameListMagic = 0x4C4E5253;  // "SRNL"
 
 	// Bumped whenever either file layout or the stored pixels change. It is part of the
 	// folder key, so a new revision starts a new folder.
@@ -51,6 +60,7 @@ namespace ImageCache
 	inline constexpr uint32_t kMaxSide       = 4096;
 	inline constexpr uint32_t kMaxSetPaths   = 65536;
 	inline constexpr uint32_t kMaxSets       = 32;
+	inline constexpr uint32_t kMaxNames      = 65536;
 
 	enum class Parsed
 	{
@@ -99,6 +109,20 @@ namespace ImageCache
 	std::vector<uint8_t> SerializeSets(const SetList& sets);
 	Parsed ParseSets(const uint8_t* data, size_t size, SetList& sets);
 
+	// ---- Name lists ---------------------------------------------------------
+
+	struct NamePair
+	{
+		std::string name;   // as a plugin asks for it
+		std::string path;   // the texture's object path, normalised
+
+		bool operator==(const NamePair& other) const { return name == other.name && path == other.path; }
+	};
+	using NameList = std::vector<NamePair>;
+
+	std::vector<uint8_t> SerializeNames(const NameList& names);
+	Parsed ParseNames(const uint8_t* data, size_t size, NameList& names);
+
 	// ---- Names --------------------------------------------------------------
 
 	// The file an image is kept in: 16 hex digits of a hash of its normalised object path,
@@ -107,6 +131,8 @@ namespace ImageCache
 
 	// The name of the set list.
 	inline const char* SetListFileName() { return "sets.lst"; }
+	// The name of the name list.
+	inline const char* NameListFileName() { return "names.lst"; }
 
 	// What decides whether a folder's files can be used. A change in any field makes a new
 	// folder: a game update (section), a pak change (pakHash), a format change (revision) or a

@@ -180,7 +180,10 @@ namespace ImageCache
 			error = GetLastError();
 		}
 		if (ok)
+		{
+			++m_written;
 			return true;
+		}
 
 		DeleteFileW(temp.c_str());
 		if (!FolderUnusable(error))

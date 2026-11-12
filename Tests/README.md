@@ -406,6 +406,10 @@ asked for, against a fake host and a fake item list, so no GPU and no engine are
 - Evicted copies are freed on the next tick, a lost GPU drops everything without freeing, and shutdown
   frees what the library keeps.
 - Nothing is logged per tick.
+- The disk cache, against a fake source: a file hit never calls the host's load or read, a file that is
+  rejected or cannot be uploaded falls back to the game and is saved again, nothing is served while the
+  folder is being listed, saved names tie an item to its texture without building the item index, a saved
+  set list fills the set without loading a package, and files are not held back by the game's own limit.
 
 ```
 msbuild Tests\ImagePumpTests\ImagePumpTests.vcxproj /p:Configuration="Client Release" /p:Platform=x64
@@ -447,7 +451,12 @@ and no game. It checks:
   same size is left alone, a folder that cannot be written switches the disk part off with one log line,
   the queue is bounded, and nothing is written after stop.
 - The saver, on a fake readback: a finished copy becomes a file, a copy with no readback or a lost one makes
-  none, a full queue drops the image, and the set list is written when it changes.
+  none, a full queue drops the image, and the set list and the name list are written when they change.
+- The name list reads back as it was written, and a bad one is refused.
+- The reader (`UI/image_cache_reader`), on a real temporary folder and a fake uploader: it lists the folder and
+  its two lists; a good file becomes a texture of the file's own bytes; a corrupt file, a file of another
+  image or one of the wrong size is rejected, deleted and counted; an upload that fails keeps the file; a
+  file gone after the listing fails; an off session reads nothing; and stop keeps what was finished.
 
 ```
 msbuild Tests\ImageDiskTests\ImageDiskTests.vcxproj /p:Configuration="Client Release" /p:Platform=x64
@@ -477,6 +486,9 @@ of levels and the colour on every level, and times the pass on the GPU.
 It also records the readback of the stored copy (`UI/image_readback_gpu.cpp`) in the same command list and
 checks that the bytes of every level equal the pixels the shrink produced, and that the readback ring gives
 no ticket when full and gives a slot back when it is fetched or cancelled.
+
+Last, it uploads pixels laid out as a saved file holds them (`UI/image_upload_gpu.cpp`), reads the texture
+back and checks that every level equals the bytes that went in.
 
 The run ends with the debug layer's error count. It needs the Windows Graphics Tools feature; without it
 the harness says the debug layer is not available and exits 1 even though its checks passed.

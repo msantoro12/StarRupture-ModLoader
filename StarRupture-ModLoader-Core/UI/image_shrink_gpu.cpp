@@ -154,6 +154,16 @@ float4 ps(VSOut i) : SV_Target
 		return true;
 	}
 
+	void Gpu::Abandon()
+	{
+		m_rtvHeap.Detach();
+		m_srvHeap.Detach();
+		m_pipeline.Detach();
+		m_rootSignature.Detach();
+		m_device.Detach();
+		Release();
+	}
+
 	void Gpu::Release()
 	{
 		m_rtvHeap.Reset();

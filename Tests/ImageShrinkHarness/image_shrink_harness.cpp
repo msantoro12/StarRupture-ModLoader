@@ -316,6 +316,7 @@ enum class Pattern
 {
     Split,      // left half red, right half blue, opaque
     Premul,     // left half opaque red, right half white at alpha 0: colour that must not leak
+    Grey,       // opaque mid grey (128), a value an sRGB decode would change
 };
 
 static std::vector<uint8_t> MakePattern(uint32_t width, uint32_t height, Pattern pattern)
@@ -329,6 +330,10 @@ static std::vector<uint8_t> MakePattern(uint32_t width, uint32_t height, Pattern
             if (pattern == Pattern::Split)
             {
                 p[0] = left ? 255 : 0; p[1] = 0; p[2] = left ? 0 : 255; p[3] = 255;
+            }
+            else if (pattern == Pattern::Grey)
+            {
+                p[0] = p[1] = p[2] = 128; p[3] = 255;
             }
             else
             {
@@ -462,6 +467,7 @@ static std::vector<uint8_t> Encode(const std::vector<uint8_t>& rgba, uint32_t wi
     switch (format)
     {
     case DXGI_FORMAT_B8G8R8A8_UNORM:
+    case DXGI_FORMAT_B8G8R8A8_UNORM_SRGB:
         out = rgba;
         for (size_t i = 0; i < out.size(); i += 4)
             std::swap(out[i], out[i + 2]);
@@ -718,6 +724,29 @@ static void RunRingChecks(Context& c, ImageShrink::Gpu& gpu, ImageReadback::Ring
     for (uint32_t i = 2; i < ImageReadback::kSlots; ++i)
         CHECK(ring.Fetch(tickets[i], c.fence->GetCompletedValue(), dest.data(), dest.size()) == ImageReadback::Fetched::Done);
 
+    // A slot whose list has run is given back too (a signal that failed after the submit): all
+    // slots can be taken again.
+    c.Begin();
+    uint32_t again[ImageReadback::kSlots] = {};
+    for (uint32_t i = 0; i < ImageReadback::kSlots; ++i)
+    {
+        again[i] = ring.Record(c.list.Get(), stored.Get(), c.value + 1);
+        CHECK(again[i] != 0);
+    }
+    CHECK(ring.Record(c.list.Get(), stored.Get(), c.value + 1) == 0);
+    c.Submit();
+    for (uint32_t i = 0; i < ImageReadback::kSlots; ++i)
+        ring.Cancel(again[i]);
+    c.Begin();
+    for (uint32_t i = 0; i < ImageReadback::kSlots; ++i)
+    {
+        again[i] = ring.Record(c.list.Get(), stored.Get(), c.value + 1);
+        CHECK(again[i] != 0);
+    }
+    for (uint32_t i = 0; i < ImageReadback::kSlots; ++i)
+        ring.Cancel(again[i]);
+    OK(c.list->Close());
+
     // A slot whose list was never run is given back.
     c.Begin();
     const uint32_t first = ring.Record(c.list.Get(), stored.Get(), c.value + 1);
@@ -727,6 +756,44 @@ static void RunRingChecks(Context& c, ImageShrink::Gpu& gpu, ImageReadback::Ring
     CHECK(second != 0);
     ring.Cancel(second);
     OK(c.list->Close());
+}
+
+// A source created as sRGB is stored with its raw values, like a typeless one: a mid grey of 128 stays
+// 128. Viewed as sRGB the shrink would decode it first and store about 55.
+static void RunSrgbChecks(Context& c, ImageShrink::Gpu& gpu)
+{
+    const DXGI_FORMAT srgb = DXGI_FORMAT_B8G8R8A8_UNORM_SRGB;
+    CHECK(ImageShrink::RawViewFormat(srgb) == DXGI_FORMAT_B8G8R8A8_UNORM);
+    CHECK(ImageShrink::RawViewFormat(DXGI_FORMAT_BC3_UNORM_SRGB) == DXGI_FORMAT_BC3_UNORM);
+    CHECK(ImageShrink::RawViewFormat(DXGI_FORMAT_R8G8B8A8_UNORM_SRGB) == DXGI_FORMAT_R8G8B8A8_UNORM);
+    CHECK(ImageShrink::RawViewFormat(DXGI_FORMAT_BC3_UNORM) == DXGI_FORMAT_BC3_UNORM);
+    CHECK(ImageShrink::RawViewFormat(DXGI_FORMAT_R8G8B8A8_TYPELESS) == DXGI_FORMAT_R8G8B8A8_TYPELESS);
+
+    const Image image = MakeImage(c, srgb, 64, 64, false, Pattern::Grey);
+    const Picked picked = CopyPickedLevel(c, image, kStoredSize);
+    const Size target = ImageShrink::StoredSize(picked.size.width, picked.size.height, kStoredSize);
+
+    const DXGI_FORMAT views[2] = { ImageShrink::RawViewFormat(srgb), srgb };
+    int grey[2] = {};
+    for (int i = 0; i < 2; ++i)
+    {
+        ImageShrink::Failure failure;
+        c.Begin();
+        ID3D12Resource* made = gpu.Record(c.list.Get(), 0, picked.texture.Get(), views[i], target, failure);
+        if (!made)
+            throw std::runtime_error(std::string("Record failed at ") + failure.step);
+        c.Submit();
+        ComPtr<ID3D12Resource> stored;
+        stored.Attach(made);
+        const std::vector<Pixels> read = Readback(c, stored.Get());
+        CHECK(!read.empty());
+        if (!read.empty())
+            grey[i] = read[0].At(read[0].width / 2, read[0].height / 2)[0];
+    }
+    CHECK(abs(grey[0] - 128) <= 2);
+    // The sRGB view: darker, which is what the raw view is there to avoid.
+    CHECK(grey[1] < 100);
+    printf("sRGB source, mid grey 128: stored %d with the raw view (sRGB view: %d)\n", grey[0], grey[1]);
 }
 
 // The upload of a saved file: pixels as a file holds them (every level tightly packed) become a
@@ -847,6 +914,7 @@ static int RunChecks(Context& c)
         RunCase(c, gpu, ring, queries.Get(), queryReadback.Get(), test);
 
     RunRingChecks(c, gpu, ring);
+    RunSrgbChecks(c, gpu);
     RunUploadChecks(c);
 
     ring.Release();

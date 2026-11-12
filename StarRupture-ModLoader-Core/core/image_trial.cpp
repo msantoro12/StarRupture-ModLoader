@@ -406,16 +406,30 @@ namespace
         return o;
     }
 
-    // A script function called the way the SDK's own wrappers do, on a default object found by name.
-    bool CallStatic(const wchar_t* cdoPath, SDK::UFunction* func, void* parms)
+    // ProcessEvent on a native function, the way the SDK's own wrappers call it (FUNC_Native set around the call). On a
+    // build the SDK was not made for, UFunction::FunctionFlags is a compiled offset nothing there confirms, so it is
+    // only read: the call is made when the function already has FUNC_Native, which every function used here has, and
+    // nothing is written.
+    bool Invoke(SDK::UObject* obj, SDK::UFunction* func, void* parms)
     {
-        SDK::UObject* cdo = DefaultObjectByName(cdoPath);
-        if (!cdo || !func) return false;
+        if (!obj || !func) return false;
+        if (g_byName)
+        {
+            if (!(static_cast<uint32_t>(func->FunctionFlags) & 0x400u)) return false;
+            obj->ProcessEvent(func, parms);
+            return true;
+        }
         const auto flags = func->FunctionFlags;
         func->FunctionFlags |= 0x400;
-        cdo->ProcessEvent(func, parms);
+        obj->ProcessEvent(func, parms);
         func->FunctionFlags = flags;
         return true;
+    }
+
+    // A script function called on a default object found by name.
+    bool CallStatic(const wchar_t* cdoPath, SDK::UFunction* func, void* parms)
+    {
+        return Invoke(DefaultObjectByName(cdoPath), func, parms);
     }
 
     // The engine's own path ("/Game/.../T_X.T_X"). The SDK's GetFullName builds it from GetName, which drops everything
@@ -456,10 +470,7 @@ namespace
             func = SDK::UAssetRegistryHelpers::StaticClass()->GetFunction("AssetRegistryHelpers", "GetAssetRegistry");
         if (!func) return nullptr;
         SDK::Params::AssetRegistryHelpers_GetAssetRegistry parms{};
-        const auto flags = func->FunctionFlags;
-        func->FunctionFlags |= 0x400;
-        cdo->ProcessEvent(func, &parms);
-        func->FunctionFlags = flags;
+        Invoke(cdo, func, &parms);
         SDK::UObject* registryObject = parms.ReturnValue.GetObjectRef();
         return registryObject ? reinterpret_cast<SDK::IAssetRegistry*>(registryObject) : nullptr;
     }
@@ -490,10 +501,7 @@ namespace
         else
             parms.ClassPathName = SDK::UKismetSystemLibrary::MakeTopLevelAssetPath(packagePath, cls);
         parms.bSearchSubClasses = true;
-        const auto flags = func->FunctionFlags;
-        func->FunctionFlags |= 0x400;
-        registryObject->ProcessEvent(func, &parms);
-        func->FunctionFlags = flags;
+        Invoke(registryObject, func, &parms);
         out = std::move(parms.OutAssetData);
         return parms.ReturnValue;
     }
@@ -511,10 +519,7 @@ namespace
         SDK::Params::AssetRegistry_K2_GetDependencies parms{};
         parms.PackageName = packageName;
         parms.DependencyOptions.bIncludeHardPackageReferences = true;
-        const auto flags = func->FunctionFlags;
-        func->FunctionFlags |= 0x400;
-        registryObject->ProcessEvent(func, &parms);
-        func->FunctionFlags = flags;
+        Invoke(registryObject, func, &parms);
         for (int i = 0; i < parms.OutDependencies.Num(); ++i)
             out->push_back(parms.OutDependencies[i].GetRawString());
         return parms.ReturnValue;

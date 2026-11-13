@@ -333,6 +333,8 @@ void InitClientUI()
         if (Hooks::GameMenu::IsPauseMenuOpen())    uiState |= PLUGIN_UI_PAUSE_MENU;
         if (Hooks::GameMenu::IsGameCursorShown())  uiState |= PLUGIN_UI_CURSOR_UP;
         UIState::Publish(uiState);
+        if (pc && !UIState::MenuReadDisabled())
+            Hooks::GameMenu::LogLayerChanges(pc, uiState, cursorFlag, UIState::MenuReadWanted());
 
         // Whether a game menu widget is under the cursor, for the widgets that
         // take the mouse only where none is. Read only while one is on screen;

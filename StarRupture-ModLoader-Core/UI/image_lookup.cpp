@@ -21,6 +21,23 @@ namespace ImageLookup
 
 	// ---- Items -----------------------------------------------------------------
 
+	namespace
+	{
+		// The asset name inside the name of the item's class ("i_x_c") or of its default
+		// object ("default__i_x_c"). A key in lower case, as NormalizeItemName gives it.
+		std::string AssetNameOf(std::string key)
+		{
+			static const std::string kDefaultPrefix = "default__";
+			static const std::string kClassSuffix = "_c";
+
+			if (key.compare(0, kDefaultPrefix.size(), kDefaultPrefix) == 0)
+				key.erase(0, kDefaultPrefix.size());
+			if (key.size() > kClassSuffix.size() && key.compare(key.size() - kClassSuffix.size(), kClassSuffix.size(), kClassSuffix) == 0)
+				key.erase(key.size() - kClassSuffix.size());
+			return key;
+		}
+	}
+
 	ItemIndex::ItemIndex(ItemSource& source)
 		: m_source(source)
 	{
@@ -60,10 +77,18 @@ namespace ImageLookup
 			if (read == ItemRead::Skipped)
 				continue;
 
-			// An item with no icon is known all the same: it has no image to show.
+			// An item with no icon is known all the same: it has no image to show. An item
+			// with no unique name is known by its asset name only.
+			std::string path = read == ItemRead::Icon ? std::move(record.texturePath) : std::string();
 			const std::string key = ImageLibrary::NormalizeItemName(record.name.c_str());
-			if (!key.empty())
-				m_items.emplace(key, read == ItemRead::Icon ? std::move(record.texturePath) : std::string());
+			if (ImageLibrary::IsUnsetItemKey(key))
+				++m_unnamed;
+			else if (!m_items.emplace(key, path).second)
+				m_repeated.insert(key);
+
+			const std::string asset = ImageLibrary::NormalizeItemName(record.asset.c_str());
+			if (!ImageLibrary::IsUnsetItemKey(asset))
+				m_assets.emplace(asset, std::move(path));
 		}
 		while (nowUs() - begin < budgetUs);
 
@@ -73,9 +98,19 @@ namespace ImageLookup
 
 	bool ItemIndex::Find(const std::string& key, std::string& texturePath) const
 	{
-		const auto it = m_items.find(key);
-		if (it == m_items.end())
+		if (ImageLibrary::IsUnsetItemKey(key))
 			return false;
+
+		// A unique name first, so it wins over the asset name of another item.
+		auto it = m_items.find(key);
+		if (it == m_items.end())
+		{
+			it = m_assets.find(key);
+			if (it == m_assets.end())
+				it = m_assets.find(AssetNameOf(key));
+			if (it == m_assets.end())
+				return false;
+		}
 		texturePath = it->second;
 		return true;
 	}
@@ -83,9 +118,10 @@ namespace ImageLookup
 	std::vector<std::string> ItemIndex::TexturePaths() const
 	{
 		std::set<std::string> paths;
-		for (const auto& item : m_items)
-			if (!item.second.empty() && !IsPlaceholderImage(item.second.c_str()))
-				paths.insert(item.second);
+		for (const auto* known : { &m_items, &m_assets })
+			for (const auto& item : *known)
+				if (!item.second.empty() && !IsPlaceholderImage(item.second.c_str()))
+					paths.insert(item.second);
 		return std::vector<std::string>(paths.begin(), paths.end());
 	}
 

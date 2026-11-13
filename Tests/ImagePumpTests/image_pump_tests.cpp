@@ -180,6 +180,7 @@ public:
         std::string            name;
         std::string            path;
         ImageLookup::ItemRead  read = ImageLookup::ItemRead::Icon;
+        std::string            asset;
     };
 
     std::vector<Item>   items;
@@ -201,13 +202,14 @@ public:
         if (clockUs)
             *clockUs += readCostUs;
         out.name = items[index].name;
+        out.asset = items[index].asset;
         out.texturePath = items[index].path;
         return items[index].read;
     }
 
-    void Add(const std::string& name, const char* path)
+    void Add(const std::string& name, const char* path, const std::string& asset = std::string())
     {
-        items.push_back({ name, path, ImageLookup::ItemRead::Icon });
+        items.push_back({ name, path, ImageLookup::ItemRead::Icon, asset });
     }
 };
 
@@ -1828,6 +1830,93 @@ static void SavedNamesTieAnItemToItsPathWithTheIndexUntouched()
     CHECK(saver.names["copper"] == kB);
 }
 
+static void AnUnsetItemNameIsNoImageAndStartsNoRead()
+{
+    Rig rig;
+    FakeSaver saver;
+    rig.pump.SetSaver(&saver);
+    // The game prints an item name that was never set as "None".
+    rig.items.Add("None", kA, "I_AmmoItem");
+    rig.host.loaded.insert(kA);
+
+    const PluginImageId none = rig.Want(rig.library.Item("None"));
+    CHECK(rig.Want(rig.library.Item("NONE")) == none && rig.Want(rig.library.Item("  none ")) == none);
+    CHECK(rig.library.Item("") == 0);
+    rig.Tick(5);
+
+    CHECK(rig.library.State(none) == PLUGIN_IMAGE_NO_IMAGE);
+    CHECK(rig.items.lists == 0 && rig.items.reads.empty());   // not even the index is made for it
+    CHECK(rig.host.reads.empty() && rig.host.loads.empty());
+    CHECK(saver.names.empty());
+}
+
+static void ANoneLineInASavedListIsIgnored()
+{
+    Rig rig;
+    FakeSource source;
+    FakeSaver saver;
+    rig.pump.SetSource(&source);
+    rig.pump.SetSaver(&saver);
+    rig.items.Add("None", kA, "I_AmmoItem");
+    source.files.insert(Key(kA));
+    source.haveLists = true;
+    source.lists.names.push_back({ "none", kA });
+    source.lists.names.push_back({ "iron plate", kA });
+
+    rig.Tick(2);
+    const PluginImageId none = rig.library.Item("None");
+    CHECK(rig.library.Canonical(none) == none);   // not tied to the texture
+    CHECK(saver.names.count("none") == 0);
+    CHECK(saver.names["iron plate"] == kA);       // the rest of the list is taken
+
+    rig.Want(none);
+    RunWithFiles(rig, source, 4);
+    CHECK(rig.library.State(none) == PLUGIN_IMAGE_NO_IMAGE);
+    CHECK(source.requests.empty());
+}
+
+static void AnItemAskedForByAssetNameIsSavedAndServedFromTheList()
+{
+    // Two items with no unique name, each asked for by a form of its asset name.
+    FakeSaver saver;
+    {
+        Rig rig;
+        rig.pump.SetSaver(&saver);
+        rig.items.Add("None", kA, "I_AmmoItem");
+        rig.items.Add("None", kB, "I_BuildingBlueprint_Furnace");
+        rig.host.loaded.insert(kA);
+        rig.host.loaded.insert(kB);
+
+        const PluginImageId ammo = rig.Want(rig.library.Item("Default__I_AmmoItem_C"));
+        const PluginImageId furnace = rig.Want(rig.library.Item("I_BuildingBlueprint_Furnace_C"));
+        rig.Tick(6);
+
+        CHECK(rig.library.State(ammo) == PLUGIN_IMAGE_READY && rig.library.State(furnace) == PLUGIN_IMAGE_READY);
+        CHECK(rig.library.Canonical(ammo) == rig.library.Path(kA));
+        CHECK(rig.library.Canonical(furnace) == rig.library.Path(kB));
+        CHECK(rig.library.Canonical(ammo) != rig.library.Canonical(furnace));
+        CHECK(saver.names["default__i_ammoitem_c"] == kA);
+        CHECK(saver.names["i_buildingblueprint_furnace_c"] == kB);
+    }
+
+    // The next launch: the saved names come from the list, with no game read.
+    Rig later;
+    FakeSource source;
+    later.pump.SetSource(&source);
+    later.items.Add("None", kA, "I_AmmoItem");
+    source.files.insert(Key(kA));
+    source.haveLists = true;
+    for (const auto& name : saver.names)
+        source.lists.names.push_back({ name.first, name.second });
+
+    later.Tick(2);
+    const PluginImageId ammo = later.Want(later.library.Item("Default__I_AmmoItem_C"));
+    RunWithFiles(later, source, 4);
+    CHECK(later.library.State(ammo) == PLUGIN_IMAGE_READY);
+    CHECK(later.items.lists == 0 && later.items.reads.empty());
+    CHECK(later.host.reads.empty() && later.host.loads.empty());
+}
+
 static void ASavedSetListFillsTheSetAndLoadsNoPackage()
 {
     Rig rig;
@@ -2324,7 +2413,10 @@ int main()
     RunTest("nothing is served while the folder is being listed", NothingIsServedWhileTheFolderIsBeingListed);
     RunTest("an off source leaves the game route", AnOffSourceLeavesTheGameRoute);
     RunTest("saved names tie an item to its path", SavedNamesTieAnItemToItsPathWithTheIndexUntouched);
-    RunTest("a saved set list fills the set and loads no package", ASavedSetListFillsTheSetAndLoadsNoPackage);
+    RunTest("an unset item name is no image and starts no read", AnUnsetItemNameIsNoImageAndStartsNoRead);
+    RunTest("a none line in a saved list is ignored", ANoneLineInASavedListIsIgnored);
+    RunTest("an item asked for by asset name is saved and served from the list", AnItemAskedForByAssetNameIsSavedAndServedFromTheList);
+    RunTest("a saved set list fills the set and loads no package",ASavedSetListFillsTheSetAndLoadsNoPackage);
     RunTest("a set with no saved list is listed from the game", ASetWithNoSavedListIsListedFromTheGame);
     RunTest("files are not held back when the game holds too much", FilesAreNotHeldBackWhenTheGameHoldsTooMuch);
     RunTest("preload asks for several files on a tick", PreloadAsksForSeveralFilesOnATick);

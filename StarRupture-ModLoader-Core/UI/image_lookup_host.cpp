@@ -393,10 +393,11 @@ namespace ImageLookup
 					LogToFile::Warn("[Images] Exception reading the %s %s", Label(), ref.asset.c_str());
 					return ItemRead::Unavailable;
 				}
-				if ((brush != Brush::Texture && brush != Brush::Empty) || !name[0])
+				if (brush != Brush::Texture && brush != Brush::Empty)
 					return s_faulted.load(std::memory_order_relaxed) ? ItemRead::Unavailable : ItemRead::Skipped;
 
 				out.name = name;
+				out.asset = ref.asset;
 				if (brush == Brush::Empty)
 					return ItemRead::NoIcon;
 				if (PathNameSEH(icon, &out.texturePath))
@@ -414,8 +415,8 @@ namespace ImageLookup
 			virtual const char* Label() const = 0;
 			// The name of the object in the asset's package that holds the fields.
 			virtual std::string ObjectName(const std::string& asset) const = 0;
-			// The name (the building's asset name, the item's unique name) and the icon texture of
-			// the object. The texture is good for this call only.
+			// The name (the building's asset name, the item's unique name, empty or "None" when it
+			// was never set) and the icon texture of the object. The texture is good for this call only.
 			virtual Brush ReadSEH(SDK::UPackage* package, const wchar_t* objectName, char* name, int nameSize,
 				SDK::UObject** texture) const = 0;
 

@@ -269,6 +269,7 @@ namespace ImagePump
 		bool    PublishStored(PluginImageId id, PluginTextureHandle texture, uint64_t bytes);
 		bool    Serve(uint32_t& loads);
 		void    StepItems(uint32_t& loads);
+		void    StepIndex(ImageLookup::ItemIndex& index, const char* what);
 		void    StepSets(uint32_t used, uint32_t& loads);
 		void    StepSet(ImageLookup::ItemIndex& index, uint32_t set, bool& listed, uint32_t& loads, const char* what);
 		void    Preload(bool idle, uint32_t& loads);

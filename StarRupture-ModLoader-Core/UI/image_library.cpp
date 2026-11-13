@@ -106,6 +106,11 @@ namespace ImageLibrary
 		return s;
 	}
 
+	bool IsUnsetItemKey(const std::string& key)
+	{
+		return key.empty() || key == "none";
+	}
+
 	std::string NormalizeObjectPath(const char* path)
 	{
 		std::string s = CanonicalPath(path);

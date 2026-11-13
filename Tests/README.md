@@ -448,8 +448,10 @@ It checks:
 
 - Which textures are placeholders (the engine's white stand-ins), in every form a path comes in, and
   that a texture with the word only in its name is not.
-- The item index: it is built in steps within a time budget, finds an item by name, and reports when
-  it is done or could not be built.
+- The item index: it is built in steps within a time budget, finds an item by its unique name or by the
+  name of its data asset (also as the class name or the default object's name; a unique name wins), never
+  finds an unset name ("None"), counts the items with no unique name, and reports when it is done or could
+  not be built.
 - `FromTexture`: it works on the game thread only, answers from a bounded memory of textures it has seen,
   and checks a texture's slot before it trusts it.
 

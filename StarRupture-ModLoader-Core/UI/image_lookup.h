@@ -1,7 +1,7 @@
 #pragma once
 
-// The image library's lookups: an item's unique name to the object path of its
-// icon, a building's asset name to the object path of its icon, and a live
+// The image library's lookups: an item's unique name (or the name of its data
+// asset) to the object path of its icon, a building's asset name to the object path of its icon, and a live
 // texture to the object path the pump reads it under.
 //
 // Everything that touches the engine is behind ItemSource and TextureEngine, so
@@ -18,6 +18,7 @@
 #include <functional>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace ImageLookup
@@ -54,7 +55,8 @@ namespace ImageLookup
 
 	struct ItemRecord
 	{
-		std::string name;          // the item's unique name
+		std::string name;          // the item's unique name; "None" or empty when it was never set
+		std::string asset;         // the name of its data asset ("I_IronPlate")
 		std::string texturePath;   // the object path of its icon texture
 	};
 
@@ -75,8 +77,9 @@ namespace ImageLookup
 		virtual ItemRead Read(size_t index, ItemRecord& out) = 0;
 	};
 
-	// The items (or buildings) read so far, by the key NormalizeItemName gives.
-	// Filled a slice at a time.
+	// The items (or buildings) read so far, by the key NormalizeItemName gives:
+	// under the unique name when the item has one, and under the name of its data
+	// asset. Filled a slice at a time.
 	class ItemIndex
 	{
 	public:
@@ -91,18 +94,29 @@ namespace ImageLookup
 		void Step(uint64_t budgetUs, const std::function<uint64_t()>& nowUs);
 
 		// Whether the item is known. The path is empty when it has no image to
-		// show. The first item read under a name is the one that is kept.
+		// show. The key is a unique name, or an asset name: "I_X", the class name
+		// "I_X_C" or the default object's name "Default__I_X_C". A unique name wins
+		// over an asset name, and the first item read under a unique name is the
+		// one that is kept. An unset name ("None", empty) is never found.
 		bool Find(const std::string& key, std::string& texturePath) const;
 
 		// The icon textures known, each once and sorted. What has no image to show,
 		// or only a stand-in, is left out.
 		std::vector<std::string> TexturePaths() const;
 
+		// How many items read so far have no unique name, and how many unique names
+		// were met on more than one item.
+		size_t UnnamedCount() const { return m_unnamed; }
+		size_t RepeatedNameCount() const { return m_repeated.size(); }
+
 	private:
 		ItemSource&                                  m_source;
 		State                                        m_state = State::Idle;
 		size_t                                       m_next  = 0;
-		std::unordered_map<std::string, std::string> m_items;
+		size_t                                       m_unnamed = 0;
+		std::unordered_map<std::string, std::string> m_items;    // by unique name
+		std::unordered_map<std::string, std::string> m_assets;   // by asset name
+		std::unordered_set<std::string>              m_repeated;
 	};
 
 	// ---- Textures ------------------------------------------------------------

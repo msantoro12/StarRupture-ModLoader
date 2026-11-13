@@ -269,6 +269,9 @@ namespace ImagePump
 		size_t tied = 0;
 		for (const ImageCache::NamePair& pair : lists.names)
 		{
+			// A list saved before unset names were refused can hold one: it is dropped here.
+			if (ImageLibrary::IsUnsetItemKey(ImageLibrary::NormalizeItemName(pair.name.c_str())))
+				continue;
 			const PluginImageId item  = m_library.Item(pair.name.c_str());
 			const PluginImageId image = m_library.Path(pair.path.c_str());
 			if (item == 0 || image == 0)
@@ -340,12 +343,20 @@ namespace ImagePump
 			// An item waits for the index; it costs no read, so it is no attempt.
 			if (request.kind == ImageLibrary::Kind::Item)
 			{
+				// An unset name ("None") names no item: nothing is looked up for it.
+				std::string key = ImageLibrary::NormalizeItemName(request.name.c_str());
+				if (ImageLibrary::IsUnsetItemKey(key))
+				{
+					m_library.PublishNoImage(request.id);
+					++m_stats.noImage;
+					continue;
+				}
 				if (++items > kItemsPerTick)
 				{
 					m_later.push_back(request.id);
 					break;
 				}
-				m_held.push_back({ request.id, ImageLibrary::NormalizeItemName(request.name.c_str()) });
+				m_held.push_back({ request.id, std::move(key) });
 				continue;
 			}
 
@@ -388,7 +399,7 @@ namespace ImagePump
 			return;
 
 		const ImageLookup::ItemIndex::State before = m_items.GetState();
-		m_items.Step(ImageLookup::kItemBudgetUs, [this] { return m_host.NowUs(); });
+		StepIndex(m_items, "item");
 		++loads;
 		if (before != ImageLookup::ItemIndex::State::Failed && m_items.GetState() == ImageLookup::ItemIndex::State::Failed)
 			m_host.Log("[Images] No item can be read on this build or in this session: item images stay unavailable");
@@ -480,6 +491,17 @@ namespace ImagePump
 			StepSet(m_buildings, PLUGIN_IMAGE_SET_BUILDINGS, m_buildingsListed, loads, "building");
 	}
 
+	// Reads the next slice of an index. The tick it is whole, one line says how many items have no
+	// unique name and how many unique names were met on more than one item (the first one is kept).
+	void Pump::StepIndex(ImageLookup::ItemIndex& index, const char* what)
+	{
+		const bool wasDone = index.GetState() == ImageLookup::ItemIndex::State::Done;
+		index.Step(ImageLookup::kItemBudgetUs, [this] { return m_host.NowUs(); });
+		if (!wasDone && index.GetState() == ImageLookup::ItemIndex::State::Done)
+			m_host.Log(std::string("[Images] The ") + what + " list is read: " + std::to_string(index.UnnamedCount())
+				+ " without a unique name, " + std::to_string(index.RepeatedNameCount()) + " unique names on more than one " + what);
+	}
+
 	// When the list is whole its images are added to the library as members of the set; when it
 	// cannot be made the set is left empty for the session.
 	void Pump::StepSet(ImageLookup::ItemIndex& index, uint32_t set, bool& listed, uint32_t& loads, const char* what)
@@ -489,7 +511,7 @@ namespace ImagePump
 			return;
 		if (!m_off && loads < kLoadsPerTick && (index.GetState() == State::Idle || index.GetState() == State::Scanning))
 		{
-			index.Step(ImageLookup::kItemBudgetUs, [this] { return m_host.NowUs(); });
+			StepIndex(index, what);
 			++loads;
 		}
 

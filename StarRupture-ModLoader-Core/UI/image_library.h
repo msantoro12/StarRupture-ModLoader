@@ -60,6 +60,10 @@ namespace ImageLibrary
 	// Empty when there is nothing to look up.
 	std::string NormalizeItemName(const char* name);
 
+	// Whether a key from NormalizeItemName is no item name: empty, or "none", which is
+	// what the game prints for a name that was never set. Such a key names no item.
+	bool IsUnsetItemKey(const std::string& key);
+
 	// The key a texture object path is looked up under. Accepts the object path
 	// ("/Game/UI/T_X.T_X"), the package path alone ("/Game/UI/T_X"), and the
 	// reference form ("Texture2D'/Game/UI/T_X.T_X'"); the package path is

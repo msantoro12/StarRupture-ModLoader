@@ -77,6 +77,7 @@ public:
         std::string name;
         std::string path;
         ItemRead    read = ItemRead::Icon;
+        std::string asset;
     };
 
     std::vector<Item>   items;
@@ -97,13 +98,20 @@ public:
         reads.push_back(index);
         clockUs += readCostUs;
         out.name = items[index].name;
+        out.asset = items[index].asset;
         out.texturePath = items[index].path;
         return items[index].read;
     }
 
-    void Add(const std::string& name, const std::string& path, ItemRead read = ItemRead::Icon)
+    void Add(const std::string& name, const std::string& path, ItemRead read = ItemRead::Icon, const std::string& asset = std::string())
     {
-        items.push_back({ name, path, read });
+        items.push_back({ name, path, read, asset });
+    }
+
+    // An item the way the game reports one that was never given a unique name.
+    void AddUnnamed(const std::string& asset, const std::string& path)
+    {
+        Add("None", path, ItemRead::Icon, asset);
     }
 };
 
@@ -176,6 +184,137 @@ static void AnItemWithoutAUsableNameIsNotKept()
     std::string path;
     CHECK(!rig.index.Find("", path));
     CHECK(rig.index.GetState() == ItemIndex::State::Done);
+}
+
+static void AnUnsetNameIsNeverFound()
+{
+    IndexRig rig;
+    rig.items.AddUnnamed("I_AmmoItem", "/Game/UI/T_Bullets.T_Bullets");
+    rig.items.Add("", "/Game/UI/T_B.T_B", ItemRead::Icon, "I_Other");
+    rig.Step();
+
+    std::string path;
+    CHECK(!rig.index.Find("none", path));
+    CHECK(!rig.index.Find("", path));
+    // Unset in any case is "none" once it is a key.
+    CHECK(!rig.index.Find(ImageLibrary::NormalizeItemName("None"), path));
+    CHECK(!rig.index.Find(ImageLibrary::NormalizeItemName("NONE"), path));
+    CHECK(!rig.index.Find(ImageLibrary::NormalizeItemName("  nOnE "), path));
+    CHECK(ImageLibrary::IsUnsetItemKey(ImageLibrary::NormalizeItemName("None")));
+    CHECK(ImageLibrary::IsUnsetItemKey(ImageLibrary::NormalizeItemName("")));
+    CHECK(!ImageLibrary::IsUnsetItemKey(ImageLibrary::NormalizeItemName("None_Of_Them")));
+    CHECK(rig.index.UnnamedCount() == 2);
+}
+
+static void AnUnsetNameIsNotAnAssetNameEither()
+{
+    IndexRig rig;
+    rig.items.Add("Item_A", "/Game/UI/T_A.T_A", ItemRead::Icon, "None");
+    rig.Step();
+
+    std::string path;
+    CHECK(!rig.index.Find("none", path));
+    CHECK(rig.index.Find("item_a", path));
+}
+
+static void AnItemIsFoundByItsAssetNameClassNameAndDefaultObjectName()
+{
+    IndexRig rig;
+    rig.items.AddUnnamed("I_AmmoItem", "/Game/UI/T_Bullets.T_Bullets");
+    rig.items.AddUnnamed("I_BuildingBlueprint_Furnace", "/Game/UI/T_Blueprint.T_Blueprint");
+    rig.Step();
+
+    const char* const forms[] = { "I_AmmoItem", "i_ammoitem", "I_AmmoItem_C", "I_AMMOITEM_c", "Default__I_AmmoItem_C", "default__i_ammoitem_c", "  I_AmmoItem  " };
+    for (const char* form : forms)
+    {
+        std::string path;
+        CHECK(rig.index.Find(ImageLibrary::NormalizeItemName(form), path) && path == "/Game/UI/T_Bullets.T_Bullets");
+    }
+
+    std::string path;
+    CHECK(rig.index.Find(ImageLibrary::NormalizeItemName("Default__I_BuildingBlueprint_Furnace_C"), path) && path == "/Game/UI/T_Blueprint.T_Blueprint");
+    CHECK(!rig.index.Find(ImageLibrary::NormalizeItemName("I_AmmoItem_X"), path));
+    CHECK(!rig.index.Find(ImageLibrary::NormalizeItemName("Default__I_Nobody_C"), path));
+}
+
+static void AnItemWithAUniqueNameIsAlsoFoundByItsAssetName()
+{
+    IndexRig rig;
+    rig.items.Add("Item_IronPlate", "/Game/UI/T_Iron.T_Iron", ItemRead::Icon, "I_IronPlate");
+    rig.Step();
+
+    std::string path;
+    CHECK(rig.index.Find("item_ironplate", path) && path == "/Game/UI/T_Iron.T_Iron");
+    CHECK(rig.index.Find("i_ironplate", path) && path == "/Game/UI/T_Iron.T_Iron");
+    CHECK(rig.index.Find("default__i_ironplate_c", path) && path == "/Game/UI/T_Iron.T_Iron");
+}
+
+static void AUniqueNameBeatsAnAssetNameInEitherOrder()
+{
+    // One item's unique name is another item's asset name.
+    for (int unnamedFirst = 0; unnamedFirst < 2; ++unnamedFirst)
+    {
+        IndexRig rig;
+        if (unnamedFirst)
+            rig.items.AddUnnamed("I_Gold", "/Game/UI/T_AssetOwner.T_AssetOwner");
+        rig.items.Add("I_Gold", "/Game/UI/T_NameOwner.T_NameOwner", ItemRead::Icon, "I_Other");
+        if (!unnamedFirst)
+            rig.items.AddUnnamed("I_Gold", "/Game/UI/T_AssetOwner.T_AssetOwner");
+        rig.Step();
+
+        std::string path;
+        CHECK(rig.index.Find("i_gold", path) && path == "/Game/UI/T_NameOwner.T_NameOwner");
+        // Only the plain text is a unique name: the asset's class name still finds the asset.
+        CHECK(rig.index.Find("i_gold_c", path) && path == "/Game/UI/T_AssetOwner.T_AssetOwner");
+    }
+}
+
+static void TwoUnnamedItemsHaveTheirOwnPictures()
+{
+    IndexRig rig;
+    rig.items.AddUnnamed("I_AmmoItem", "/Game/UI/T_Bullets.T_Bullets");
+    rig.items.AddUnnamed("I_BuildingBlueprint_Furnace", "/Game/UI/T_Blueprint.T_Blueprint");
+    rig.items.AddUnnamed("I_BuildingBlueprint_Smelter", "/Game/UI/T_Blueprint.T_Blueprint");
+    rig.Step();
+
+    std::string ammo, furnace, smelter;
+    CHECK(rig.index.Find("i_ammoitem", ammo));
+    CHECK(rig.index.Find("i_buildingblueprint_furnace", furnace));
+    CHECK(rig.index.Find("i_buildingblueprint_smelter", smelter));
+    CHECK(ammo == "/Game/UI/T_Bullets.T_Bullets");
+    CHECK(furnace == "/Game/UI/T_Blueprint.T_Blueprint");
+    CHECK(smelter == furnace);   // the blueprints share one texture in the game's data
+    CHECK(rig.index.UnnamedCount() == 3);
+}
+
+static void TheTexturePathsCoverTheUnnamedItems()
+{
+    IndexRig rig;
+    rig.items.AddUnnamed("I_AmmoItem", "/Game/UI/T_Bullets.T_Bullets");
+    rig.items.AddUnnamed("I_BuildingBlueprint_Furnace", "/Game/UI/T_Blueprint.T_Blueprint");
+    rig.items.Add("Item_A", "/Game/UI/T_A.T_A", ItemRead::Icon, "I_A");
+    rig.Step();
+
+    const std::vector<std::string> paths = rig.index.TexturePaths();
+    CHECK(paths.size() == 3);
+    CHECK(paths.size() == 3 && paths[0] == "/Game/UI/T_A.T_A" && paths[1] == "/Game/UI/T_Blueprint.T_Blueprint" && paths[2] == "/Game/UI/T_Bullets.T_Bullets");
+}
+
+static void TheIndexCountsUnnamedItemsAndRepeatedNames()
+{
+    IndexRig rig;
+    rig.items.AddUnnamed("I_A", "/Game/UI/T_A.T_A");
+    rig.items.AddUnnamed("I_B", "/Game/UI/T_B.T_B");
+    rig.items.Add("Item_X", "/Game/UI/T_X.T_X");
+    rig.items.Add("item_x", "/Game/UI/T_Y.T_Y");
+    rig.items.Add("ITEM_X", "/Game/UI/T_Z.T_Z");
+    rig.items.Add("Item_W", "/Game/UI/T_W.T_W");
+    rig.items.Add("Item_W", "/Game/UI/T_W2.T_W2");
+    rig.items.Add("Item_Once", "/Game/UI/T_O.T_O");
+    rig.Step();
+
+    CHECK(rig.index.UnnamedCount() == 2);
+    CHECK(rig.index.RepeatedNameCount() == 2);   // item_x and item_w, each once however many times it came again
 }
 
 static void TheListIsMadeOnTheFirstStepOnly()
@@ -485,6 +624,14 @@ int main()
     RunTest("skipped items are not in the index", SkippedItemsAreNotInTheIndex);
     RunTest("the first item under a name is kept", TheFirstItemUnderANameIsKept);
     RunTest("an item without a usable name is not kept", AnItemWithoutAUsableNameIsNotKept);
+    RunTest("an unset name is never found", AnUnsetNameIsNeverFound);
+    RunTest("an unset name is not an asset name either", AnUnsetNameIsNotAnAssetNameEither);
+    RunTest("an item is found by its asset name, class name and default object name", AnItemIsFoundByItsAssetNameClassNameAndDefaultObjectName);
+    RunTest("an item with a unique name is also found by its asset name", AnItemWithAUniqueNameIsAlsoFoundByItsAssetName);
+    RunTest("a unique name beats an asset name in either order", AUniqueNameBeatsAnAssetNameInEitherOrder);
+    RunTest("two unnamed items have their own pictures", TwoUnnamedItemsHaveTheirOwnPictures);
+    RunTest("the texture paths cover the unnamed items", TheTexturePathsCoverTheUnnamedItems);
+    RunTest("the index counts unnamed items and repeated names", TheIndexCountsUnnamedItemsAndRepeatedNames);
     RunTest("the list is made on the first step only", TheListIsMadeOnTheFirstStepOnly);
     RunTest("an index whose list cannot be made fails once", AnIndexWhoseListCannotBeMadeFailsOnce);
     RunTest("an unavailable read fails the index", AnUnavailableReadFailsTheIndex);

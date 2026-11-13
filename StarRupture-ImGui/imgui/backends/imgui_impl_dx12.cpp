@@ -614,9 +614,7 @@ bool    ImGui_ImplDX12_CreateDeviceObjects()
         staticSampler[0].AddressU = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
         staticSampler[0].AddressV = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
         staticSampler[0].AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
-        // Icons stored with smaller levels are drawn between two levels and look soft. The sampler is shared,
-        // so every texture with smaller levels drawn through the overlay is sampled half a level sharper.
-        staticSampler[0].MipLODBias = -0.5f;
+        staticSampler[0].MipLODBias = 0.f;
         staticSampler[0].MaxAnisotropy = 0;
         staticSampler[0].ComparisonFunc = D3D12_COMPARISON_FUNC_ALWAYS;
         staticSampler[0].BorderColor = D3D12_STATIC_BORDER_COLOR_TRANSPARENT_BLACK;

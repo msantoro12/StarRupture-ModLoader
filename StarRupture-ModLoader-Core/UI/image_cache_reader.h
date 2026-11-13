@@ -65,6 +65,7 @@ namespace ImageCache
 		State Poll(uint64_t nowMs) override;
 		bool  Has(const std::string& key) override;
 		bool  Request(PluginImageId id, const std::string& key) override;
+		bool  RequestExact(PluginImageId id, const std::string& key, uint32_t size) override;
 		void  Collect(std::vector<ImageDisk::FileResult>& out) override;
 		bool  TakeLists(ImageDisk::Lists& out) override;
 		uint64_t Rejected() const override { return m_rejected; }
@@ -77,6 +78,7 @@ namespace ImageCache
 			bool          open = false;
 			FolderFn      folder;    // open only
 			PluginImageId id = 0;    // otherwise
+			uint32_t      exactSize = 0;   // a copy for this size is wanted, not the stored one
 			std::string   key;
 		};
 
@@ -84,7 +86,10 @@ namespace ImageCache
 		void Run();
 		void Open(const Job& job);
 		void Load(const Job& job);
+		void LoadExact(const Job& job);
+		const char* Check(const std::vector<uint8_t>& bytes, const std::string& key, Info& info, const uint8_t*& pixels) const;
 		void Finish(PluginImageId id, const std::string& key, ImageDisk::FileOutcome outcome, PluginTextureHandle texture, uint64_t bytes);
+		void FinishExact(PluginImageId id, uint32_t size, ImageDisk::FileOutcome outcome, PluginTextureHandle texture, uint64_t bytes, uint32_t width, uint32_t height);
 		void Reject(const std::wstring& path, const std::string& key, const char* why);
 
 		Session   m_session;

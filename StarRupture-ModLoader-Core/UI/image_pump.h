@@ -60,6 +60,9 @@ namespace ImagePump
 	// game thread nothing but the request.
 	inline constexpr uint32_t kDiskPreloadPerTick = 8;
 
+	// Size-exact copies handed to the cache folder's worker on a tick: each is a queue push and no more.
+	inline constexpr uint32_t kExactPerTick = 4;
+
 	// ---- Preload -----------------------------------------------------------
 	// Preload reads the members of the sets in use in the background. It runs
 	// only while every rule below holds, and only on a tick that has no
@@ -191,6 +194,7 @@ namespace ImagePump
 		uint64_t noImage   = 0;
 		uint64_t fromDisk  = 0;   // published from a file
 		uint64_t fromGame  = 0;   // published from a read of the game
+		uint64_t exactMade = 0;   // size-exact copies made from stored files
 		uint64_t written   = 0;   // files the saver's worker wrote; filled in when logged
 		uint64_t rejected  = 0;   // files that failed a check; filled in when logged
 		uint64_t longestTickUs = 0;   // since the last summary line
@@ -262,6 +266,8 @@ namespace ImagePump
 		void    LogSlowTick(uint64_t tickUs, const uint64_t (&phaseUs)[kPhases]);
 		void    Collect();
 		void    CollectFiles();
+		void    CollectExact(const ImageDisk::FileResult& result);
+		void    TendExact();
 		bool    PollSource(uint64_t nowMs);
 		void    ApplyLists(ImageDisk::Lists&& lists);
 		bool    ApplyFileSet(uint32_t set, bool& listed, const char* what);
@@ -312,6 +318,7 @@ namespace ImagePump
 		bool                                  m_fullLogged = false;
 		std::vector<ImageDisk::FileResult>    m_files;
 		bool                                  m_listsTaken = false;
+		uint32_t                              m_clearSeen = 0;   // the saver's clear count when the copies were last released
 		ImageCache::SetList                   m_fileSets;   // saved set lists not used yet
 		// Preload.
 		bool                                  m_itemsListed     = false;

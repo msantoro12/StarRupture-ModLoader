@@ -1172,6 +1172,518 @@ static void AnAliasCarriesItsSetsToTheImage()
     CHECK(lib.GetPreloadProgress().queued == 1);
 }
 
+// ---------------------------------------------------------------------------
+// Size-exact copies
+
+// The texture handle the pump would have made for the copy of an image at a size.
+static PluginTextureHandle ExactTexture(PluginImageId id, uint32_t size)
+{
+    return reinterpret_cast<PluginTextureHandle>((static_cast<uintptr_t>(id) * 4096 + size) * 16 + 8);
+}
+
+// A path image that is read and kept, asked for at `now`.
+static PluginImageId KeptImage(Library& lib, const char* path, uint64_t now, uint64_t bytes = 100)
+{
+    lib.SetNow(now);
+    const PluginImageId id = Wanted(lib, lib.Path(path));
+    std::vector<Released> evicted;
+    ReadNext(lib, bytes, evicted);
+    return id;
+}
+
+// The plugin draws the image at the size once per 10 ms frame, from `from` to `to`.
+static void DrawAt(Library& lib, PluginImageId id, int size, uint64_t from, uint64_t to)
+{
+    for (uint64_t t = from; t <= to; t += 10)
+    {
+        lib.SetNow(t);
+        lib.GetSized(id, size, nullptr, nullptr);
+    }
+}
+
+static void ExactAnswersTheStoredPictureFirst()
+{
+    Library lib;
+    lib.SetNow(1000);
+    const PluginImageId id = Wanted(lib, lib.Path("/Game/UI/T_A.T_A"));
+    int w = 7, h = 7;
+    CHECK(lib.GetSized(id, 32, &w, &h) == nullptr);   // not kept yet: what Get gives
+    CHECK(w == 0 && h == 0);
+
+    std::vector<Released> evicted;
+    ReadNext(lib, 100, evicted);
+    CHECK(lib.GetSized(id, 32, &w, &h) == Texture(id));
+    CHECK(w == 0 && h == 0);
+    CHECK(lib.GetSized(id, 32, nullptr, nullptr) == Texture(id));
+
+    // A size that is 0, negative or not under the stored size is the stored picture and asks for nothing.
+    CHECK(lib.GetSized(id, 0, &w, &h) == Texture(id));
+    CHECK(lib.GetSized(id, -5, &w, &h) == Texture(id));
+    CHECK(lib.GetSized(id, static_cast<int>(kStoredSize), &w, &h) == Texture(id));
+    CHECK(lib.GetSized(id, 4000, &w, &h) == Texture(id));
+    DrawAt(lib, id, 256, 1000, 3000);
+    DrawAt(lib, id, 0, 1000, 3000);
+    ExactRequest request;
+    CHECK(!lib.TakeExact(request));
+    CHECK(lib.GetSized(0, 32, &w, &h) == nullptr);
+    CHECK(lib.GetSized(9999, 32, &w, &h) == nullptr);
+}
+
+static void ExactIsMadeForASizeAskedForSteadily()
+{
+    Library lib;
+    const PluginImageId id = KeptImage(lib, "/Game/UI/T_A.T_A", 1000);
+    ExactRequest request;
+
+    DrawAt(lib, id, 36, 1000, 1000 + kExactSteadyMs - 10);
+    CHECK(!lib.TakeExact(request));   // not long enough yet
+
+    DrawAt(lib, id, 36, 1000 + kExactSteadyMs, 1000 + kExactSteadyMs + 20);
+    CHECK(lib.TakeExact(request));
+    CHECK(request.id == id && request.size == 36);
+    CHECK(request.name == "/Game/UI/T_A.T_A");
+    CHECK(!lib.TakeExact(request));   // handed out once
+
+    // Under way: the stored picture is still what is drawn, and nothing is asked twice.
+    int w = 0, h = 0;
+    DrawAt(lib, id, 36, 1500, 1800);
+    CHECK(lib.GetSized(id, 36, &w, &h) == Texture(id));
+    CHECK(!lib.TakeExact(request));
+    CHECK(lib.ExactCount() == 1);
+
+    std::vector<Released> dropped;
+    CHECK(lib.PublishExact(id, 36, ExactTexture(id, 36), 36, 30, 36 * 30 * 4, dropped));
+    CHECK(dropped.empty());
+    CHECK(lib.BytesKept() == 100 + 36 * 30 * 4);   // the copy counts against the cap
+    CHECK(lib.CountKept() == 1);                   // and is not an image
+
+    CHECK(lib.GetSized(id, 36, &w, &h) == ExactTexture(id, 36));
+    CHECK(w == 36 && h == 30);
+    CHECK(lib.GetSized(id, 36, nullptr, nullptr) == ExactTexture(id, 36));
+    CHECK(lib.Get(id) == Texture(id));             // Get is unchanged
+    CHECK(lib.State(id) == PLUGIN_IMAGE_READY);
+
+    // Another size is still the stored picture.
+    CHECK(lib.GetSized(id, 48, &w, &h) == Texture(id));
+    CHECK(w == 0 && h == 0);
+}
+
+static void ASizeThatKeepsChangingIsNeverMade()
+{
+    Library lib;
+    const PluginImageId id = KeptImage(lib, "/Game/UI/T_A.T_A", 1000);
+    // A window dragged: a new size every frame for ten seconds.
+    int size = 20;
+    for (uint64_t t = 1000; t < 11000; t += 10)
+    {
+        lib.SetNow(t);
+        lib.GetSized(id, size, nullptr, nullptr);
+        size = size >= 60 ? 20 : size + 1;
+    }
+    ExactRequest request;
+    CHECK(!lib.TakeExact(request));
+    CHECK(lib.ExactCount() == 0);
+}
+
+static void TwoSizesDrawnTogetherAreBothMade()
+{
+    Library lib;
+    const PluginImageId id = KeptImage(lib, "/Game/UI/T_A.T_A", 1000);
+    for (uint64_t t = 1000; t <= 1500; t += 10)
+    {
+        lib.SetNow(t);
+        lib.GetSized(id, 20, nullptr, nullptr);
+        lib.GetSized(id, 48, nullptr, nullptr);
+    }
+    ExactRequest a, b, c;
+    CHECK(lib.TakeExact(a));
+    CHECK(lib.TakeExact(b));
+    CHECK(!lib.TakeExact(c));
+    CHECK((a.size == 20 && b.size == 48) || (a.size == 48 && b.size == 20));
+}
+
+static void AGapRestartsTheSteadyCount()
+{
+    Library lib;
+    const PluginImageId id = KeptImage(lib, "/Game/UI/T_A.T_A", 1000);
+    DrawAt(lib, id, 36, 1000, 1300);
+    const uint64_t resume = 1300 + kExactGapMs + 50;
+    DrawAt(lib, id, 36, resume, resume + 300);   // 300 ms, a gap, 300 ms: never 400 steady
+    ExactRequest request;
+    CHECK(!lib.TakeExact(request));
+    DrawAt(lib, id, 36, resume + 310, resume + 500);
+    CHECK(lib.TakeExact(request));
+}
+
+static void AFailedCopyIsNotAskedForAgainAtOnce()
+{
+    Library lib;
+    const PluginImageId id = KeptImage(lib, "/Game/UI/T_A.T_A", 1000);
+    DrawAt(lib, id, 36, 1000, 1500);
+    ExactRequest request;
+    CHECK(lib.TakeExact(request));
+    lib.SetNow(1500);
+    lib.ExactEnded(id, 36, ExactEnd::Failed);
+    CHECK(lib.ExactCount() == 0);
+
+    // Drawn every frame for a while: the stored picture, and no new request.
+    int w = 3, h = 3;
+    DrawAt(lib, id, 36, 1510, 1500 + kExactRetryMs - 100);
+    CHECK(lib.GetSized(id, 36, &w, &h) == Texture(id));
+    CHECK(w == 0 && h == 0);
+    CHECK(!lib.TakeExact(request));
+
+    // Later it is tried again.
+    DrawAt(lib, id, 36, 1500 + kExactRetryMs, 1500 + kExactRetryMs + 500);
+    CHECK(lib.TakeExact(request) && request.size == 36);
+    std::vector<Released> dropped;
+    CHECK(lib.PublishExact(id, 36, ExactTexture(id, 36), 36, 36, 36 * 36 * 4, dropped));
+}
+
+static void ACopyThatIsNotNeededIsNeverAskedForAgain()
+{
+    Library lib;
+    const PluginImageId id = KeptImage(lib, "/Game/UI/T_A.T_A", 1000);
+    DrawAt(lib, id, 200, 1000, 1500);
+    ExactRequest request;
+    CHECK(lib.TakeExact(request));
+    lib.ExactEnded(id, 200, ExactEnd::NotNeeded);
+    DrawAt(lib, id, 200, 1510, 1510 + 3 * kExactRetryMs);
+    CHECK(!lib.TakeExact(request));
+    CHECK(lib.GetSized(id, 200, nullptr, nullptr) == Texture(id));
+}
+
+static void ARequestThatCouldNotStartIsOfferedAgain()
+{
+    Library lib;
+    const PluginImageId id = KeptImage(lib, "/Game/UI/T_A.T_A", 1000);
+    DrawAt(lib, id, 36, 1000, 1500);
+    ExactRequest request;
+    CHECK(lib.TakeExact(request));
+    lib.ExactEnded(id, 36, ExactEnd::Retry);
+    CHECK(lib.ExactCount() == 1);
+    ExactRequest again;
+    CHECK(lib.TakeExact(again) && again.id == id && again.size == 36);
+    CHECK(!lib.TakeExact(again));
+}
+
+static void ACopyCountPerImageIsLimited()
+{
+    Library lib;
+    const PluginImageId id = KeptImage(lib, "/Game/UI/T_A.T_A", 1000);
+    std::vector<Released> dropped;
+    const int sizes[] = { 20, 28, 36, 48 };
+    uint64_t t = 1000;
+    for (int i = 0; i < 3; ++i)
+    {
+        DrawAt(lib, id, sizes[i], t, t + 450);
+        t += 500;
+        ExactRequest request;
+        CHECK(lib.TakeExact(request) && request.size == static_cast<uint32_t>(sizes[i]));
+        CHECK(lib.PublishExact(id, request.size, ExactTexture(id, request.size), request.size, request.size, 400, dropped));
+    }
+    CHECK(lib.ExactCount() == kExactPerImage);
+
+    // All three are drawn lately: a fourth size is refused.
+    for (uint64_t u = t; u <= t + 450; u += 10)
+    {
+        lib.SetNow(u);
+        for (int i = 0; i < 4; ++i)
+            lib.GetSized(id, sizes[i], nullptr, nullptr);
+    }
+    ExactRequest request;
+    CHECK(!lib.TakeExact(request));
+    CHECK(lib.ExactCount() == kExactPerImage);
+}
+
+static void ACopyCountAcrossImagesIsLimited()
+{
+    Library lib;
+    lib.SetCaps(1ull << 40, 4096);
+    std::vector<PluginImageId> ids;
+    for (uint32_t i = 0; i < kExactCountCap + 10; ++i)
+        ids.push_back(KeptImage(lib, ("/Game/UI/T_" + std::to_string(i) + ".T_" + std::to_string(i)).c_str(), 1000, 10));
+    for (uint64_t t = 1000; t <= 1450; t += 10)
+    {
+        lib.SetNow(t);
+        for (PluginImageId id : ids)
+            lib.GetSized(id, 32, nullptr, nullptr);
+    }
+    uint32_t taken = 0;
+    ExactRequest request;
+    while (lib.TakeExact(request))
+        ++taken;
+    CHECK(taken == kExactCountCap);
+    CHECK(lib.ExactCount() == kExactCountCap);
+}
+
+static void CopiesCountAgainstTheByteCap()
+{
+    Library lib;
+    lib.SetCaps(1100, 100);
+    const PluginImageId a = KeptImage(lib, "/Game/UI/T_A.T_A", 1000, 400);
+    KeptImage(lib, "/Game/UI/T_B.T_B", 1000, 400);
+    DrawAt(lib, a, 8, 1000, 1450);
+    ExactRequest request;
+    CHECK(lib.TakeExact(request) && request.id == a);
+
+    std::vector<Released> dropped;
+    CHECK(lib.PublishExact(a, 8, ExactTexture(a, 8), 8, 8, 256, dropped));
+    CHECK(lib.BytesKept() == 400 + 400 + 256);
+
+    // A second copy would leave the total over the cap with every stored image drawn lately: it is not made.
+    lib.SetNow(1500);
+    lib.Get(a);
+    lib.Get(a + 1);
+    DrawAt(lib, a, 9, 1500, 1950);
+    CHECK(!lib.TakeExact(request));
+    CHECK(lib.BytesKept() == 400 + 400 + 256);
+    CHECK(lib.GetSized(a, 9, nullptr, nullptr) == Texture(a));
+
+    // A copy that comes out over the cap when it is finished is refused: the pump frees it.
+    lib.SetCaps(1100, 100);
+    CHECK(!lib.PublishExact(a, 9, ExactTexture(a, 9), 9, 9, 324, dropped));
+    CHECK(lib.BytesKept() == 400 + 400 + 256);
+}
+
+static void CopiesNotDrawnLatelyGoBeforeStoredImages()
+{
+    Library lib;
+    lib.SetCaps(1000, 100);
+    const PluginImageId a = KeptImage(lib, "/Game/UI/T_A.T_A", 1000, 400);
+    DrawAt(lib, a, 8, 1000, 1450);
+    ExactRequest request;
+    CHECK(lib.TakeExact(request));
+    std::vector<Released> dropped;
+    CHECK(lib.PublishExact(a, 8, ExactTexture(a, 8), 8, 8, 256, dropped));
+
+    // Much later a newcomer needs room; the stored image was drawn since, the copy was not.
+    lib.SetNow(5000);
+    lib.Get(a);
+    Wanted(lib, lib.Path("/Game/UI/T_B.T_B"));
+    std::vector<Released> evicted;
+    ReadNext(lib, 700, evicted);
+    CHECK(evicted.size() == 1 && evicted[0].exact && evicted[0].handle == ExactTexture(a, 8));
+    CHECK(lib.State(a) == PLUGIN_IMAGE_READY);
+    CHECK(lib.BytesKept() == 400 + 700);
+    CHECK(lib.GetSized(a, 8, nullptr, nullptr) == Texture(a));
+}
+
+static void EvictingTheStoredPictureTakesItsCopies()
+{
+    Library lib;
+    lib.SetCaps(1000, 100);
+    const PluginImageId a = KeptImage(lib, "/Game/UI/T_A.T_A", 1000, 500);
+    DrawAt(lib, a, 8, 1000, 1450);
+    ExactRequest request;
+    CHECK(lib.TakeExact(request));
+    std::vector<Released> dropped;
+    CHECK(lib.PublishExact(a, 8, ExactTexture(a, 8), 8, 8, 100, dropped));
+
+    // a is not drawn again; the newcomer needs its room.
+    lib.SetNow(9000);
+    Wanted(lib, lib.Path("/Game/UI/T_B.T_B"));
+    std::vector<Released> evicted;
+    ReadNext(lib, 900, evicted);
+    CHECK(lib.State(a) != PLUGIN_IMAGE_READY);
+    bool storedGone = false, copyGone = false;
+    for (const Released& r : evicted)
+    {
+        storedGone |= r.handle == Texture(a) && !r.exact;
+        copyGone   |= r.handle == ExactTexture(a, 8) && r.exact;
+    }
+    CHECK(storedGone && copyGone);
+    CHECK(lib.ExactCount() == 0);
+    CHECK(lib.BytesKept() == 900);
+    int w = 1, h = 1;
+    CHECK(lib.GetSized(a, 8, &w, &h) == nullptr);
+    CHECK(w == 0 && h == 0);
+}
+
+static void ACopyFinishedForAnEvictedImageIsRefused()
+{
+    Library lib;
+    lib.SetCaps(1000, 100);
+    const PluginImageId a = KeptImage(lib, "/Game/UI/T_A.T_A", 1000, 500);
+    DrawAt(lib, a, 8, 1000, 1450);
+    ExactRequest request;
+    CHECK(lib.TakeExact(request));
+
+    lib.SetNow(9000);
+    Wanted(lib, lib.Path("/Game/UI/T_B.T_B"));
+    std::vector<Released> evicted;
+    ReadNext(lib, 900, evicted);
+    CHECK(lib.State(a) != PLUGIN_IMAGE_READY);
+
+    // The worker finishes after that: the pump is told to free the texture itself.
+    std::vector<Released> dropped;
+    CHECK(!lib.PublishExact(a, 8, ExactTexture(a, 8), 8, 8, 256, dropped));
+    CHECK(dropped.empty());
+    CHECK(lib.BytesKept() == 900);
+    lib.ExactEnded(a, 8, ExactEnd::Failed);
+    CHECK(lib.ExactCount() == 0);
+}
+
+static void ClearingTheCacheTakesEveryCopy()
+{
+    Library lib;
+    const PluginImageId a = KeptImage(lib, "/Game/UI/T_A.T_A", 1000);
+    const PluginImageId b = KeptImage(lib, "/Game/UI/T_B.T_B", 1000);
+    for (uint64_t t = 1000; t <= 1450; t += 10)
+    {
+        lib.SetNow(t);
+        lib.GetSized(a, 20, nullptr, nullptr);
+        lib.GetSized(b, 20, nullptr, nullptr);
+    }
+    ExactRequest ra, rb;
+    CHECK(lib.TakeExact(ra) && lib.TakeExact(rb));
+    std::vector<Released> dropped;
+    CHECK(lib.PublishExact(ra.id, 20, ExactTexture(ra.id, 20), 20, 20, 1600, dropped));
+    // rb is still being made when the cache is cleared.
+
+    lib.ReleaseExact(dropped);
+    CHECK(dropped.size() == 1 && dropped[0].exact && dropped[0].handle == ExactTexture(ra.id, 20));
+    CHECK(lib.ExactCount() == 0);
+    CHECK(lib.BytesKept() == 200);
+    CHECK(lib.State(a) == PLUGIN_IMAGE_READY && lib.State(b) == PLUGIN_IMAGE_READY);
+    CHECK(lib.GetSized(a, 20, nullptr, nullptr) == Texture(a));
+
+    // The unfinished one arrives afterwards and is refused.
+    dropped.clear();
+    CHECK(!lib.PublishExact(rb.id, 20, ExactTexture(rb.id, 20), 20, 20, 1600, dropped));
+    CHECK(dropped.empty());
+
+    // And a copy can be asked for again.
+    DrawAt(lib, a, 20, 2000, 2500);
+    ExactRequest again;
+    CHECK(lib.TakeExact(again) && again.size == 20);
+}
+
+static void ACopyNotDrawnForAWhileIsDropped()
+{
+    Library lib;
+    const PluginImageId a = KeptImage(lib, "/Game/UI/T_A.T_A", 1000);
+    DrawAt(lib, a, 20, 1000, 1450);
+    ExactRequest request;
+    CHECK(lib.TakeExact(request));
+    std::vector<Released> dropped;
+    CHECK(lib.PublishExact(a, 20, ExactTexture(a, 20), 20, 20, 1600, dropped));
+
+    // Drawn every second, so it stays.
+    const uint64_t last = 2000 + 2 * kExactIdleMs;
+    for (uint64_t t = 2000; t <= last; t += 1000)
+    {
+        lib.SetNow(t);
+        lib.GetSized(a, 20, nullptr, nullptr);
+        lib.ReapExact(dropped);
+    }
+    CHECK(dropped.empty() && lib.ExactCount() == 1);
+
+    // Not drawn for kExactIdleMs: the next sweep drops it.
+    lib.SetNow(last + kExactIdleMs - 1000);
+    lib.ReapExact(dropped);
+    CHECK(dropped.empty());
+    lib.SetNow(last + kExactIdleMs + 2000);
+    lib.ReapExact(dropped);
+    CHECK(dropped.size() == 1 && dropped[0].exact && dropped[0].handle == ExactTexture(a, 20));
+    CHECK(lib.ExactCount() == 0);
+    CHECK(lib.BytesKept() == 100);
+}
+
+static void ReleaseAllHandsBackTheCopiesToo()
+{
+    Library lib;
+    const PluginImageId a = KeptImage(lib, "/Game/UI/T_A.T_A", 1000);
+    DrawAt(lib, a, 20, 1000, 1450);
+    ExactRequest request;
+    CHECK(lib.TakeExact(request));
+    std::vector<Released> dropped;
+    CHECK(lib.PublishExact(a, 20, ExactTexture(a, 20), 20, 20, 1600, dropped));
+
+    std::vector<Released> all;
+    lib.ReleaseAll(all);
+    CHECK(all.size() == 2);
+    bool copy = false;
+    for (const Released& r : all)
+        copy |= r.exact && r.handle == ExactTexture(a, 20);
+    CHECK(copy);
+    CHECK(lib.ExactCount() == 0 && lib.BytesKept() == 0);
+    CHECK(lib.GetSized(a, 20, nullptr, nullptr) == nullptr);
+}
+
+static void ACopyWithNoTextureEndsTheRequest()
+{
+    Library lib;
+    const PluginImageId a = KeptImage(lib, "/Game/UI/T_A.T_A", 1000);
+    DrawAt(lib, a, 20, 1000, 1450);
+    ExactRequest request;
+    CHECK(lib.TakeExact(request));
+    std::vector<Released> dropped;
+    lib.ExactEnded(a, 20, ExactEnd::Failed);
+    CHECK(lib.ExactCount() == 0);
+    CHECK(lib.GetSized(a, 20, nullptr, nullptr) == Texture(a));
+}
+
+static void TheInterfaceEntryReachesGetSized()
+{
+    const IPluginImages* table = GetInterface();
+    CHECK(table->GetSized != nullptr);
+    int w = 5, h = 5;
+    CHECK(table->GetSized(0, 32, &w, &h) == nullptr);
+    CHECK(w == 0 && h == 0);
+    CHECK(table->GetSized(0, 32, nullptr, nullptr) == nullptr);
+}
+
+// A reader draws at sizes while the table makes and drops copies under it. Every handle it gets is
+// the stored picture or a copy of that very image at that very size.
+static void ReadersSeeOnlyTheirOwnCopiesWhileCopiesChange()
+{
+    Library lib;
+    lib.SetCaps(1ull << 30, 1000);
+    constexpr uint32_t kImages = 20;
+    std::vector<PluginImageId> ids;
+    for (uint32_t i = 0; i < kImages; ++i)
+        ids.push_back(KeptImage(lib, ("/Game/UI/T_R" + std::to_string(i) + ".T_R" + std::to_string(i)).c_str(), 1000));
+
+    std::atomic<bool> stop{ false };
+    std::atomic<int> bad{ 0 };
+    std::thread reader([&]
+    {
+        while (!stop.load())
+            for (PluginImageId id : ids)
+                for (int size = 16; size <= 48; size += 16)
+                {
+                    int w = 0, h = 0;
+                    const PluginTextureHandle t = lib.GetSized(id, size, &w, &h);
+                    if (t == Texture(id))
+                    {
+                        if (w != 0 || h != 0)
+                            ++bad;
+                    }
+                    else if (t != nullptr && !(t == ExactTexture(id, static_cast<uint32_t>(size)) && w == size && h == size))
+                        ++bad;
+                }
+    });
+
+    std::vector<Released> dropped;
+    uint64_t now = 1000;
+    for (int round = 0; round < 400; ++round)
+    {
+        now += 60;
+        lib.SetNow(now);
+        ExactRequest request;
+        while (lib.TakeExact(request))
+            lib.PublishExact(request.id, request.size, ExactTexture(request.id, request.size), request.size, request.size, 100, dropped);
+        if (round % 50 == 49)
+            lib.ReleaseExact(dropped);
+        lib.ReapExact(dropped);
+        dropped.clear();
+    }
+    stop.store(true);
+    reader.join();
+    CHECK(bad.load() == 0);
+}
+
 int main()
 {
     RunTest("normalises item names", NormalisesItemNames);
@@ -1216,6 +1728,26 @@ int main()
     RunTest("preload progress counts the members of sets in use", PreloadProgressCountsTheMembersOfSetsInUse);
     RunTest("a member that fails is not taken again", AMemberThatFailsIsNotTakenAgain);
     RunTest("an alias carries its sets to the image", AnAliasCarriesItsSetsToTheImage);
+    RunTest("exact: the stored picture answers first", ExactAnswersTheStoredPictureFirst);
+    RunTest("exact: made for a size asked for steadily", ExactIsMadeForASizeAskedForSteadily);
+    RunTest("exact: a changing size is never made", ASizeThatKeepsChangingIsNeverMade);
+    RunTest("exact: two sizes drawn together are both made", TwoSizesDrawnTogetherAreBothMade);
+    RunTest("exact: a gap restarts the steady count", AGapRestartsTheSteadyCount);
+    RunTest("exact: a failed copy is not asked again at once", AFailedCopyIsNotAskedForAgainAtOnce);
+    RunTest("exact: a copy not needed is never asked again", ACopyThatIsNotNeededIsNeverAskedForAgain);
+    RunTest("exact: a request that could not start is offered again", ARequestThatCouldNotStartIsOfferedAgain);
+    RunTest("exact: copies per image are limited", ACopyCountPerImageIsLimited);
+    RunTest("exact: copies across images are limited", ACopyCountAcrossImagesIsLimited);
+    RunTest("exact: copies count against the byte cap", CopiesCountAgainstTheByteCap);
+    RunTest("exact: copies not drawn lately go first", CopiesNotDrawnLatelyGoBeforeStoredImages);
+    RunTest("exact: evicting the stored picture takes its copies", EvictingTheStoredPictureTakesItsCopies);
+    RunTest("exact: a copy for an evicted image is refused", ACopyFinishedForAnEvictedImageIsRefused);
+    RunTest("exact: clearing takes every copy", ClearingTheCacheTakesEveryCopy);
+    RunTest("exact: an idle copy is dropped", ACopyNotDrawnForAWhileIsDropped);
+    RunTest("exact: ReleaseAll hands back copies", ReleaseAllHandsBackTheCopiesToo);
+    RunTest("exact: a failed request leaves the stored picture", ACopyWithNoTextureEndsTheRequest);
+    RunTest("exact: the interface entry reaches GetSized", TheInterfaceEntryReachesGetSized);
+    RunTest("exact: readers see only their own copies", ReadersSeeOnlyTheirOwnCopiesWhileCopiesChange);
 
     printf("\n%d checks, %d failed\n", g_checks, g_failed);
     return g_failed == 0 ? 0 : 1;

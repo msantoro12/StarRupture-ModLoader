@@ -1,5 +1,6 @@
 #include "UI/image_cache_reader.h"
 #include "UI/image_cache_care.h"
+#include "UI/image_resample.h"
 #include "UI/image_shrink.h"
 
 #ifndef WIN32_LEAN_AND_MEAN
@@ -146,6 +147,17 @@ namespace ImageCache
 		return Enqueue(std::move(job));
 	}
 
+	bool Reader::RequestExact(PluginImageId id, const std::string& key, uint32_t size)
+	{
+		if (m_state != State::Ready || size == 0 || IsTransientPath(key))
+			return false;
+		Job job;
+		job.id        = id;
+		job.key       = key;
+		job.exactSize = size;
+		return Enqueue(std::move(job));
+	}
+
 	void Reader::Collect(std::vector<ImageDisk::FileResult>& out)
 	{
 		std::lock_guard<std::mutex> lock(m_lock);
@@ -210,6 +222,8 @@ namespace ImageCache
 			}
 			if (job.open)
 				Open(job);
+			else if (job.exactSize != 0)
+				LoadExact(job);
 			else
 				Load(job);
 		}
@@ -310,15 +324,7 @@ namespace ImageCache
 
 		Info info;
 		const uint8_t* pixels = nullptr;
-		const Parsed parsed = Parse(bytes.data(), bytes.size(), info, pixels);
-		const char* why = nullptr;
-		if (parsed != Parsed::Ok)
-			why = Describe(parsed);
-		else if (ImageLibrary::NormalizeObjectPath(info.path.c_str()) != job.key)
-			why = "holds another image";
-		else if (info.storedWidth > ImageLibrary::kStoredSize || info.storedHeight > ImageLibrary::kStoredSize)
-			why = "wrong size";
-		if (why)
+		if (const char* why = Check(bytes, job.key, info, pixels))
 		{
 			Reject(path, job.key, why);
 			Finish(job.id, job.key, ImageDisk::FileOutcome::Rejected, nullptr, 0);
@@ -334,6 +340,77 @@ namespace ImageCache
 		}
 		Care::Touch(path);   // in use again: the size cap deletes the least recently used first
 		Finish(job.id, job.key, ImageDisk::FileOutcome::Texture, texture, pixelBytes);
+	}
+
+	// Why the bytes are not the file of the image the key names, or null when they are.
+	const char* Reader::Check(const std::vector<uint8_t>& bytes, const std::string& key, Info& info, const uint8_t*& pixels) const
+	{
+		const Parsed parsed = Parse(bytes.data(), bytes.size(), info, pixels);
+		if (parsed != Parsed::Ok)
+			return Describe(parsed);
+		if (ImageLibrary::NormalizeObjectPath(info.path.c_str()) != key)
+			return "holds another image";
+		if (info.storedWidth > ImageLibrary::kStoredSize || info.storedHeight > ImageLibrary::kStoredSize)
+			return "wrong size";
+		return nullptr;
+	}
+
+	// Makes the copy of one file's picture for one size. The file and the listing are left alone
+	// whatever happens: the stored picture's own load is what rejects a file that is no good.
+	void Reader::LoadExact(const Job& job)
+	{
+		const std::wstring path = Join(m_folder, FileName(job.key));
+		const auto end = [&](ImageDisk::FileOutcome outcome, PluginTextureHandle texture, uint64_t bytes, uint32_t width, uint32_t height)
+		{
+			FinishExact(job.id, job.exactSize, outcome, texture, bytes, width, height);
+		};
+
+		std::vector<uint8_t> bytes;
+		if (ReadAll(path, kMaxFileBytes, bytes) != ReadState::Ok)
+		{
+			end(ImageDisk::FileOutcome::Failed, nullptr, 0, 0, 0);
+			return;
+		}
+		Info info;
+		const uint8_t* pixels = nullptr;
+		if (Check(bytes, job.key, info, pixels))
+		{
+			end(ImageDisk::FileOutcome::Failed, nullptr, 0, 0, 0);
+			return;
+		}
+
+		// A size the stored picture does not exceed is drawn from the stored picture.
+		const ImageShrink::Size size = ImageShrink::StoredSize(info.storedWidth, info.storedHeight, job.exactSize);
+		if (size.width == info.storedWidth && size.height == info.storedHeight)
+		{
+			end(ImageDisk::FileOutcome::Same, nullptr, 0, 0, 0);
+			return;
+		}
+
+		std::vector<uint8_t> copy;
+		ImageResample::Resample(pixels, info.storedWidth, info.storedHeight, size.width, size.height, copy);
+		PluginTextureHandle texture = nullptr;
+		if (copy.empty() || !m_uploader.Upload(size.width, size.height, 1, copy.data(), copy.size(), texture) || !texture)
+		{
+			end(ImageDisk::FileOutcome::Failed, nullptr, 0, 0, 0);
+			return;
+		}
+		end(ImageDisk::FileOutcome::Texture, texture, copy.size(), size.width, size.height);
+	}
+
+	void Reader::FinishExact(PluginImageId id, uint32_t size, ImageDisk::FileOutcome outcome, PluginTextureHandle texture,
+		uint64_t bytes, uint32_t width, uint32_t height)
+	{
+		std::lock_guard<std::mutex> lock(m_lock);
+		ImageDisk::FileResult result;
+		result.id        = id;
+		result.outcome   = outcome;
+		result.texture   = texture;
+		result.bytes     = bytes;
+		result.exactSize = size;
+		result.width     = width;
+		result.height    = height;
+		m_results.push_back(result);
 	}
 
 	void Reader::Finish(PluginImageId id, const std::string& key, ImageDisk::FileOutcome outcome, PluginTextureHandle texture, uint64_t bytes)

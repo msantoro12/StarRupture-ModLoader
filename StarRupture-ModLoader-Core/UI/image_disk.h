@@ -54,6 +54,8 @@ namespace ImageDisk
 		virtual void Name(const std::string& name, const std::string& path) { (void)name; (void)path; }
 		// Files the worker has written so far.
 		virtual uint64_t Written() const { return 0; }
+		// How many times the cache folder was cleared so far.
+		virtual uint32_t Cleared() const { return 0; }
 		// Once per tick after the pump has collected its reads.
 		virtual void Poll(uint64_t nowMs) = 0;
 		// The GPU side is gone: the readbacks will never finish.
@@ -133,6 +135,7 @@ namespace ImageDisk
 		Texture,    // the file was good and its pixels are a texture now
 		Rejected,   // the file failed a check and was deleted; the game is read instead
 		Failed,     // the file could not be used now (read or upload failed); the game is read instead
+		Same,       // an exact-size request only: the stored picture is no larger than the size asked for
 	};
 
 	struct FileResult
@@ -141,6 +144,11 @@ namespace ImageDisk
 		FileOutcome         outcome = FileOutcome::Failed;
 		PluginTextureHandle texture = nullptr;
 		uint64_t            bytes   = 0;   // what the levels of the texture take
+
+		// Set for the answer to RequestExact: the size asked for, and the texture's own size.
+		uint32_t            exactSize = 0;
+		uint32_t            width     = 0;
+		uint32_t            height    = 0;
 	};
 
 	// What a session's worker finds in the folder when it opens it.
@@ -171,6 +179,12 @@ namespace ImageDisk
 		// Reads, checks and uploads the file for the path; the answer comes through Collect.
 		// False when the worker has no room: ask again later.
 		virtual bool Request(PluginImageId id, const std::string& key) = 0;
+		// Makes a copy of the stored picture in the file for the path at the size (the longer side, in
+		// pixels): the worker reads and checks the file, resamples level 0 and uploads the result as a
+		// texture of one level. The answer comes through Collect with exactSize set. The file stays
+		// as it is and the listing is not changed, whatever comes of it. False when the worker has no
+		// room or no file is read now: ask again later.
+		virtual bool RequestExact(PluginImageId id, const std::string& key, uint32_t size) { (void)id; (void)key; (void)size; return false; }
 		// Appends the requests that have ended since the last call.
 		virtual void Collect(std::vector<FileResult>& out) = 0;
 		// Once after the folder was opened: the saved names and set lists. False before, and after.
@@ -193,6 +207,7 @@ namespace ImageDisk
 		void Begin(const Started& started) override;
 		void Name(const std::string& name, const std::string& path) override;
 		uint64_t Written() const override { return m_sink.Written(); }
+		uint32_t Cleared() const override { return m_host.ClearCount(); }
 		void Poll(uint64_t nowMs) override;
 		void Abandon() override;
 		void Stop() override;

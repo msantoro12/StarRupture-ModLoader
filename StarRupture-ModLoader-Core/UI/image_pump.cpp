@@ -56,6 +56,7 @@ namespace ImagePump
 		{
 			Collect();
 			CollectFiles();
+			TendExact();
 		}
 		endPhase(Phase::Collect);
 		if (m_saver)
@@ -210,8 +211,68 @@ namespace ImagePump
 		}
 		for (const ImageLibrary::Released& released : m_scratch)
 			m_toFree.push_back(released.handle);
-		m_stats.evicted += m_scratch.size();
+		m_stats.evicted += std::count_if(m_scratch.begin(), m_scratch.end(), [](const ImageLibrary::Released& r) { return !r.exact; });
 		return kept;
+	}
+
+	// A size-exact copy a worker finished: published, or its texture freed when the library does not
+	// keep it. A copy that was not made leaves the stored picture as what is drawn.
+	void Pump::CollectExact(const ImageDisk::FileResult& result)
+	{
+		if (result.outcome != ImageDisk::FileOutcome::Texture)
+		{
+			m_library.ExactEnded(result.id, result.exactSize,
+				result.outcome == ImageDisk::FileOutcome::Same ? ImageLibrary::ExactEnd::NotNeeded : ImageLibrary::ExactEnd::Failed);
+			return;
+		}
+
+		m_scratch.clear();
+		const bool kept = m_library.PublishExact(result.id, result.exactSize, result.texture, result.width, result.height,
+			result.bytes, m_scratch);
+		if (kept)
+			++m_stats.exactMade;
+		else
+		{
+			// Refused, or dropped again at once (then it is among the dropped).
+			const bool droppedAgain = std::any_of(m_scratch.begin(), m_scratch.end(),
+				[&](const ImageLibrary::Released& r) { return r.handle == result.texture; });
+			if (!droppedAgain)
+				m_host.Free(result.texture);
+		}
+		for (const ImageLibrary::Released& released : m_scratch)
+			m_toFree.push_back(released.handle);
+	}
+
+	// Once per tick: the copies the table wants made go to the worker, and the ones it let go are freed
+	// on the next tick. A cleared cache folder takes the copies with it.
+	void Pump::TendExact()
+	{
+		m_scratch.clear();
+		if (m_saver && m_saver->Cleared() != m_clearSeen)
+		{
+			m_clearSeen = m_saver->Cleared();
+			m_library.ReleaseExact(m_scratch);
+		}
+		m_library.ReapExact(m_scratch);
+		for (const ImageLibrary::Released& released : m_scratch)
+			m_toFree.push_back(released.handle);
+		m_scratch.clear();
+
+		ImageLibrary::ExactRequest request;
+		for (uint32_t taken = 0; taken < kExactPerTick && m_library.TakeExact(request); ++taken)
+		{
+			// Without a folder to read the stored picture from there is nothing to make a copy of.
+			if (!m_source || m_sourceOff)
+			{
+				m_library.ExactEnded(request.id, request.size, ImageLibrary::ExactEnd::Failed);
+				continue;
+			}
+			if (!m_source->RequestExact(request.id, ImageLibrary::NormalizeObjectPath(request.name.c_str()), request.size))
+			{
+				m_library.ExactEnded(request.id, request.size, ImageLibrary::ExactEnd::Retry);
+				break;
+			}
+		}
 	}
 
 	// The files the source has finished with. A good one is published; one that failed leaves the
@@ -224,6 +285,11 @@ namespace ImagePump
 		m_source->Collect(m_files);
 		for (const ImageDisk::FileResult& result : m_files)
 		{
+			if (result.exactSize != 0)
+			{
+				CollectExact(result);
+				continue;
+			}
 			m_onDisk.erase(result.id);
 			const bool fromPreload = m_preloadOnDisk.erase(result.id) != 0;
 			if (result.outcome != ImageDisk::FileOutcome::Texture)
@@ -849,7 +915,7 @@ namespace ImagePump
 		m_stats.written  = m_saver ? m_saver->Written() : 0;
 		m_stats.rejected = m_source ? m_source->Rejected() : 0;
 		const bool changed = m_stats.published != m_lastLogged.published || m_stats.evicted != m_lastLogged.evicted
-			|| m_stats.fromDisk != m_lastLogged.fromDisk || m_stats.fromGame != m_lastLogged.fromGame
+			|| m_stats.fromDisk != m_lastLogged.fromDisk || m_stats.fromGame != m_lastLogged.fromGame || m_stats.exactMade != m_lastLogged.exactMade
 			|| m_stats.written != m_lastLogged.written || m_stats.rejected != m_lastLogged.rejected
 			|| m_stats.failed != m_lastLogged.failed || m_stats.noImage != m_lastLogged.noImage
 			|| preload.queued != m_lastPreload.queued || preload.done != m_lastPreload.done || m_pause != m_lastPreload.pause;
@@ -864,7 +930,7 @@ namespace ImagePump
 		snprintf(line, sizeof(line),
 			"[Images] requests=%u published=%llu evicted=%llu failed=%llu noimage=%llu kept=%u (%.1f MB) longest pump tick=%.3f ms"
 			" preload queued=%u done=%u paused=%s"
-			" cache: from disk=%llu from game=%llu written=%llu rejected=%llu",
+			" cache: from disk=%llu from game=%llu written=%llu rejected=%llu exact=%llu",
 			m_library.ImageCount(),
 			static_cast<unsigned long long>(m_stats.published), static_cast<unsigned long long>(m_stats.evicted),
 			static_cast<unsigned long long>(m_stats.failed), static_cast<unsigned long long>(m_stats.noImage),
@@ -872,7 +938,8 @@ namespace ImagePump
 			static_cast<double>(longestUs) / 1000.0,
 			preload.queued, preload.done, PauseText(static_cast<int>(m_pause)),
 			static_cast<unsigned long long>(m_stats.fromDisk), static_cast<unsigned long long>(m_stats.fromGame),
-			static_cast<unsigned long long>(m_stats.written), static_cast<unsigned long long>(m_stats.rejected));
+			static_cast<unsigned long long>(m_stats.written), static_cast<unsigned long long>(m_stats.rejected),
+			static_cast<unsigned long long>(m_stats.exactMade));
 		m_host.Log(line);
 	}
 }

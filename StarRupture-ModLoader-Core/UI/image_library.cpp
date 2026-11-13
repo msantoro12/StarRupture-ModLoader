@@ -227,6 +227,85 @@ namespace ImageLibrary
 		return nullptr;
 	}
 
+	PluginTextureHandle Library::GetSized(PluginImageId id, int pixelSize, int* width, int* height)
+	{
+		if (width)
+			*width = 0;
+		if (height)
+			*height = 0;
+
+		const PluginTextureHandle stored = Get(id);
+		if (!stored || pixelSize <= 0 || pixelSize >= static_cast<int>(kStoredSize))
+			return stored;
+
+		const PluginImageId imageId = Canonical(id);
+		Entry* e = Find(imageId);
+		if (!e)
+			return stored;
+
+		const uint32_t size = static_cast<uint32_t>(pixelSize);
+		const uint64_t now = m_now.load(std::memory_order_relaxed);
+		for (ExactSlot& slot : e->exact)
+		{
+			if (slot.size.load(std::memory_order_acquire) != size)
+				continue;
+			const int32_t state = slot.state.load(std::memory_order_acquire);
+			if (state == kExactReady)
+			{
+				const PluginTextureHandle copy = slot.handle.load(std::memory_order_acquire);
+				if (!copy)
+					return stored;
+				slot.lastDrawn.store(now, std::memory_order_relaxed);
+				if (width)
+					*width = static_cast<int>(slot.width.load(std::memory_order_relaxed));
+				if (height)
+					*height = static_cast<int>(slot.height.load(std::memory_order_relaxed));
+				return copy;
+			}
+			if (state == kExactPending || (state == kExactClosed && now < slot.closedUntil.load(std::memory_order_relaxed)))
+				return stored;
+		}
+
+		AskExact(*e, imageId, size);
+		return stored;
+	}
+
+	// Notes that the size was asked for. Once it has been asked for steadily, queues its copy.
+	void Library::AskExact(Entry& e, PluginImageId id, uint32_t size)
+	{
+		const uint64_t now = m_now.load(std::memory_order_relaxed);
+		ExactTrial* trial = nullptr;
+		for (ExactTrial& t : e.trial)
+			if (t.size.load(std::memory_order_relaxed) == size)
+				trial = &t;
+
+		if (!trial)
+		{
+			// Takes the cell asked for least recently.
+			trial = &e.trial[e.trial[0].last.load(std::memory_order_relaxed) <= e.trial[1].last.load(std::memory_order_relaxed) ? 0 : 1];
+			trial->size.store(size, std::memory_order_relaxed);
+			trial->first.store(now, std::memory_order_relaxed);
+			trial->last.store(now, std::memory_order_relaxed);
+			return;
+		}
+
+		const uint64_t last = trial->last.load(std::memory_order_relaxed);
+		if (now > last && now - last > kExactGapMs)
+			trial->first.store(now, std::memory_order_relaxed);
+		trial->last.store(now, std::memory_order_relaxed);
+
+		const uint64_t first = trial->first.load(std::memory_order_relaxed);
+		if (now <= first || now - first < kExactSteadyMs)
+			return;
+
+		{
+			std::lock_guard<std::mutex> lock(m_lock);
+			OfferExact(e, id, size);
+		}
+		// If it was refused for room it is asked again after another steady stretch, not on every frame.
+		trial->first.store(now, std::memory_order_relaxed);
+	}
+
 	int Library::State(PluginImageId id) const
 	{
 		const Entry* e = Find(id);
@@ -411,6 +490,19 @@ namespace ImageLibrary
 		if (m_bytes <= m_byteCap && m_kept <= m_countCap)
 			return;
 
+		// The size-exact copies not drawn lately go first: they are made again from the stored picture.
+		if (m_bytes > m_byteCap && m_exactCount != 0)
+		{
+			for (const ExactRef& ref : IdleExact(kSeenLatelyMs))
+			{
+				if (m_bytes <= m_byteCap)
+					break;
+				DropSlot(Find(ref.id)->exact[ref.slot], evicted, ref.id);
+			}
+			if (m_bytes <= m_byteCap && m_kept <= m_countCap)
+				return;
+		}
+
 		struct Kept { uint64_t seen; PluginImageId id; };
 		std::vector<Kept> kept;
 		const uint64_t now = m_now.load(std::memory_order_relaxed);
@@ -432,6 +524,7 @@ namespace ImageLibrary
 				break;
 			Entry* e = Find(k.id);
 			m_capped = true;
+			DropExact(*e, k.id, evicted);
 			evicted.push_back({ k.id, e->handle.load(std::memory_order_relaxed), e->bytes });
 			m_bytes -= e->bytes;
 			--m_kept;
@@ -653,6 +746,7 @@ namespace ImageLibrary
 		for (PluginImageId id = 1; id <= count; ++id)
 		{
 			Entry* e = Find(id);
+			DropExact(*e, id, released);
 			if (e->state.load(std::memory_order_relaxed) != kReady)
 				continue;
 			released.push_back({ id, e->handle.load(std::memory_order_relaxed), e->bytes });
@@ -660,8 +754,258 @@ namespace ImageLibrary
 			e->handle.store(nullptr, std::memory_order_relaxed);
 			e->state.store(kFailed, std::memory_order_release);
 		}
+		released.insert(released.end(), m_exactDropped.begin(), m_exactDropped.end());
+		m_exactDropped.clear();
+		m_exactQueue.clear();
 		m_bytes = 0;
 		m_kept = 0;
+	}
+
+	// ---- Size-exact copies -------------------------------------------------
+
+	// Empties a slot. A copy that was ready is appended to dropped, and its bytes leave the total.
+	void Library::DropSlot(ExactSlot& slot, std::vector<Released>& dropped, PluginImageId id)
+	{
+		const int32_t state = slot.state.load(std::memory_order_relaxed);
+		if (state == kExactFree)
+			return;
+		slot.state.store(kExactFree, std::memory_order_release);
+		if (state == kExactReady)
+		{
+			dropped.push_back({ id, slot.handle.load(std::memory_order_relaxed), slot.bytes, true });
+			m_bytes -= slot.bytes;
+		}
+		if (state == kExactReady || state == kExactPending)
+			--m_exactCount;
+		slot.handle.store(nullptr, std::memory_order_relaxed);
+		slot.size.store(0, std::memory_order_relaxed);
+		slot.bytes = 0;
+		slot.taken = false;
+	}
+
+	void Library::DropExact(Entry& e, PluginImageId id, std::vector<Released>& dropped)
+	{
+		for (ExactSlot& slot : e.exact)
+			DropSlot(slot, dropped, id);
+	}
+
+	// The ready copies not drawn for idleMs, the least recently drawn first.
+	std::vector<Library::ExactRef> Library::IdleExact(uint64_t idleMs) const
+	{
+		std::vector<ExactRef> idle;
+		const uint64_t now = m_now.load(std::memory_order_relaxed);
+		const uint32_t count = m_count.load(std::memory_order_relaxed);
+		for (PluginImageId id = 1; id <= count; ++id)
+		{
+			const Entry* e = Find(id);
+			for (uint32_t i = 0; i < kExactPerImage; ++i)
+			{
+				const ExactSlot& slot = e->exact[i];
+				const uint64_t drawn = slot.lastDrawn.load(std::memory_order_relaxed);
+				if (slot.state.load(std::memory_order_relaxed) == kExactReady && now > drawn && now - drawn >= idleMs)
+					idle.push_back({ id, i, drawn });
+			}
+		}
+		std::sort(idle.begin(), idle.end(), [](const ExactRef& a, const ExactRef& b)
+		{
+			return a.lastDrawn != b.lastDrawn ? a.lastDrawn < b.lastDrawn : a.id < b.id;
+		});
+		return idle;
+	}
+
+	// Takes a slot for a copy of the image at the size and queues it, when the image is kept, the
+	// limits allow it and a copy is not made or under way already. Where there is no free slot the
+	// copy drawn least recently and not drawn lately is replaced.
+	void Library::OfferExact(Entry& e, PluginImageId id, uint32_t size)
+	{
+		if (e.state.load(std::memory_order_relaxed) != kReady)
+			return;
+		const uint64_t now = m_now.load(std::memory_order_relaxed);
+
+		// The most a copy can take. Refused when even that does not fit under the byte cap.
+		if (m_bytes + static_cast<uint64_t>(size) * size * ImageShrink::kBytesPerPixel > m_byteCap)
+			return;
+
+		ExactSlot* use = nullptr;
+		ExactSlot* closed = nullptr;
+		ExactSlot* oldest = nullptr;
+		ExactSlot* empty = nullptr;
+		for (ExactSlot& slot : e.exact)
+		{
+			const int32_t state = slot.state.load(std::memory_order_relaxed);
+			if (state == kExactFree)
+				empty = empty ? empty : &slot;
+			else if (slot.size.load(std::memory_order_relaxed) == size)
+			{
+				if (state != kExactClosed || now < slot.closedUntil.load(std::memory_order_relaxed))
+					return;   // made, under way, or lately failed
+				use = &slot;
+			}
+			else if (state == kExactClosed)
+				closed = closed ? closed : &slot;
+			else if (state == kExactReady)
+			{
+				const uint64_t drawn = slot.lastDrawn.load(std::memory_order_relaxed);
+				if ((now > drawn && now - drawn > kSeenLatelyMs)
+					&& (!oldest || drawn < oldest->lastDrawn.load(std::memory_order_relaxed)))
+					oldest = &slot;
+			}
+		}
+		if (!use)
+			use = empty ? empty : closed ? closed : oldest;
+		if (!use)
+			return;
+
+		// A slot taken from a ready copy makes room for the new one; any other adds to the count.
+		const bool replacing = use->state.load(std::memory_order_relaxed) == kExactReady;
+		if (!replacing && m_exactCount >= kExactCountCap)
+		{
+			const std::vector<ExactRef> idle = IdleExact(kSeenLatelyMs);
+			if (idle.empty())
+				return;
+			DropSlot(Find(idle.front().id)->exact[idle.front().slot], m_exactDropped, idle.front().id);
+		}
+		DropSlot(*use, m_exactDropped, id);
+
+		use->width.store(0, std::memory_order_relaxed);
+		use->height.store(0, std::memory_order_relaxed);
+		use->lastDrawn.store(now, std::memory_order_relaxed);
+		use->size.store(size, std::memory_order_relaxed);
+		use->state.store(kExactPending, std::memory_order_release);
+		++m_exactCount;
+		m_exactQueue.push_back({ id, size });
+	}
+
+	bool Library::TakeExact(ExactRequest& out)
+	{
+		std::lock_guard<std::mutex> lock(m_lock);
+		while (!m_exactQueue.empty())
+		{
+			const std::pair<PluginImageId, uint32_t> next = m_exactQueue.front();
+			m_exactQueue.pop_front();
+			Entry* e = Find(next.first);
+			if (!e || e->state.load(std::memory_order_relaxed) != kReady)
+				continue;
+			for (ExactSlot& slot : e->exact)
+			{
+				if (slot.state.load(std::memory_order_relaxed) != kExactPending || slot.taken
+					|| slot.size.load(std::memory_order_relaxed) != next.second)
+					continue;
+				slot.taken = true;
+				out.id   = next.first;
+				out.size = next.second;
+				out.name = e->name;
+				return true;
+			}
+		}
+		return false;
+	}
+
+	bool Library::PublishExact(PluginImageId id, uint32_t size, PluginTextureHandle handle, uint32_t width, uint32_t height,
+		uint64_t bytes, std::vector<Released>& dropped)
+	{
+		std::lock_guard<std::mutex> lock(m_lock);
+		Entry* e = Find(id);
+		if (!e)
+			return false;
+		ExactSlot* slot = nullptr;
+		for (ExactSlot& s : e->exact)
+			if (s.state.load(std::memory_order_relaxed) == kExactPending && s.taken && s.size.load(std::memory_order_relaxed) == size)
+				slot = &s;
+		if (!slot)
+			return false;   // the image left, or the copies were cleared, while it was made
+		slot->taken = false;
+
+		const uint64_t now = m_now.load(std::memory_order_relaxed);
+		const auto close = [&]
+		{
+			slot->closedUntil.store(now + kExactRetryMs, std::memory_order_relaxed);
+			slot->state.store(kExactClosed, std::memory_order_release);
+			--m_exactCount;
+		};
+		if (!handle || width == 0 || height == 0)
+		{
+			close();
+			return false;
+		}
+
+		slot->bytes = bytes;
+		slot->handle.store(handle, std::memory_order_relaxed);
+		slot->width.store(width, std::memory_order_relaxed);
+		slot->height.store(height, std::memory_order_relaxed);
+		slot->lastDrawn.store(now, std::memory_order_relaxed);
+		m_bytes += bytes;
+		slot->state.store(kExactReady, std::memory_order_release);
+
+		Trim(dropped);
+		if (slot->state.load(std::memory_order_relaxed) != kExactReady)
+			return false;   // the image it belongs to was evicted: the copy is among dropped
+		if (m_bytes > m_byteCap)
+		{
+			// Over the cap with everything else in use: the copy is refused.
+			m_bytes -= bytes;
+			slot->handle.store(nullptr, std::memory_order_relaxed);
+			slot->bytes = 0;
+			close();
+			return false;
+		}
+		return true;
+	}
+
+	void Library::ExactEnded(PluginImageId id, uint32_t size, ExactEnd how)
+	{
+		std::lock_guard<std::mutex> lock(m_lock);
+		Entry* e = Find(id);
+		if (!e)
+			return;
+		for (ExactSlot& slot : e->exact)
+		{
+			if (slot.state.load(std::memory_order_relaxed) != kExactPending || !slot.taken
+				|| slot.size.load(std::memory_order_relaxed) != size)
+				continue;
+			slot.taken = false;
+			if (how == ExactEnd::Retry)
+			{
+				m_exactQueue.push_back({ id, size });
+				return;
+			}
+			const uint64_t now = m_now.load(std::memory_order_relaxed);
+			slot.closedUntil.store(how == ExactEnd::NotNeeded ? UINT64_MAX : now + kExactRetryMs, std::memory_order_relaxed);
+			slot.state.store(kExactClosed, std::memory_order_release);
+			--m_exactCount;
+			return;
+		}
+	}
+
+	void Library::ReapExact(std::vector<Released>& dropped)
+	{
+		std::lock_guard<std::mutex> lock(m_lock);
+		dropped.insert(dropped.end(), m_exactDropped.begin(), m_exactDropped.end());
+		m_exactDropped.clear();
+
+		const uint64_t now = m_now.load(std::memory_order_relaxed);
+		if (now < m_nextSweepMs || m_exactCount == 0)
+			return;
+		m_nextSweepMs = now + kExactSweepMs;
+		for (const ExactRef& ref : IdleExact(kExactIdleMs))
+			DropSlot(Find(ref.id)->exact[ref.slot], dropped, ref.id);
+	}
+
+	void Library::ReleaseExact(std::vector<Released>& dropped)
+	{
+		std::lock_guard<std::mutex> lock(m_lock);
+		const uint32_t count = m_count.load(std::memory_order_relaxed);
+		for (PluginImageId id = 1; id <= count; ++id)
+			DropExact(*Find(id), id, dropped);
+		dropped.insert(dropped.end(), m_exactDropped.begin(), m_exactDropped.end());
+		m_exactDropped.clear();
+		m_exactQueue.clear();
+	}
+
+	uint32_t Library::ExactCount() const
+	{
+		std::lock_guard<std::mutex> lock(m_lock);
+		return m_exactCount;
 	}
 
 	void Library::CollectSets(std::vector<SetMember>& out) const
@@ -715,6 +1059,7 @@ namespace ImageLibrary
 		PluginImageId ItemThunk(const IPluginSelf*, const char* name)  { return Instance().Item(name); }
 		PluginImageId PathThunk(const IPluginSelf*, const char* path)  { return Instance().Path(path); }
 		PluginTextureHandle GetThunk(PluginImageId id)                 { return Instance().Get(id); }
+		PluginTextureHandle GetSizedThunk(PluginImageId id, int pixelSize, int* width, int* height) { return Instance().GetSized(id, pixelSize, width, height); }
 		int StateThunk(PluginImageId id)                               { return Instance().State(id); }
 		void UseSetsThunk(const IPluginSelf* self, uint32_t sets)      { Instance().UseSets(self, sets); }
 		PluginImageId CanonicalThunk(PluginImageId id)                 { return Instance().Canonical(id); }
@@ -744,6 +1089,7 @@ namespace ImageLibrary
 			StateThunk,
 			UseSetsThunk,
 			CanonicalThunk,
+			GetSizedThunk,
 		};
 		return &table;
 	}

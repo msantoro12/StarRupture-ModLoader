@@ -103,6 +103,7 @@
     <ClCompile Include="$(CoreDir)UI\image_cache_writer.cpp" />
     <ClCompile Include="$(CoreDir)UI\image_disk.cpp" />
     <ClCompile Include="$(CoreDir)UI\image_library.cpp" />
+    <ClCompile Include="$(CoreDir)UI\image_resample.cpp" />
     <ClInclude Include="$(CoreDir)UI\image_cache_care.h" />
     <ClInclude Include="$(CoreDir)UI\image_cache_file.h" />
     <ClInclude Include="$(CoreDir)UI\image_cache_reader.h" />

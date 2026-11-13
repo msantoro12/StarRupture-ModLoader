@@ -2023,6 +2023,111 @@ static void TestReaderWithNoFolderListsNothing()
     reader.Stop();
 }
 
+static void TestReaderExactCopyIsUploadedAtTheAskedSize()
+{
+    TempFolder temp;
+    Info info;
+    std::vector<uint8_t> pixels;
+    const std::vector<uint8_t> file = Valid(&info, &pixels);   // stored 64 x 32
+    WriteFileIn(temp, FileName(KeyOf(info)), file);
+
+    FakeUploader uploader;
+    Reader reader(SessionOf(temp), uploader, nullptr);
+    CHECK(Open(reader));
+    CHECK(reader.RequestExact(8, KeyOf(info), 32));
+    const std::vector<ImageDisk::FileResult> got = Results(reader, 1);
+    CHECK(got.size() == 1);
+    if (got.size() == 1)
+    {
+        CHECK(got[0].id == 8 && got[0].exactSize == 32);
+        CHECK(got[0].outcome == ImageDisk::FileOutcome::Texture);
+        CHECK(got[0].texture != nullptr);
+        CHECK(got[0].width == 32 && got[0].height == 16);
+        CHECK(got[0].bytes == 32u * 16u * 4u);
+    }
+    CHECK(uploader.calls == 1);
+    CHECK(uploader.width == 32 && uploader.height == 16 && uploader.levels == 1);
+    CHECK(uploader.pixels.size() == 32u * 16u * 4u);
+    CHECK(reader.Rejected() == 0);
+    CHECK(temp.Files().size() == 1);   // the file is left as it was
+    reader.Stop();
+}
+
+static void TestReaderExactCopyNoSmallerThanTheStoredPictureIsSame()
+{
+    TempFolder temp;
+    Info info;
+    WriteFileIn(temp, FileName(KeyOf(MakeInfo())), Valid(&info));
+
+    FakeUploader uploader;
+    Reader reader(SessionOf(temp), uploader, nullptr);
+    CHECK(Open(reader));
+    CHECK(reader.RequestExact(8, KeyOf(info), 64));
+    const std::vector<ImageDisk::FileResult> got = Results(reader, 1);
+    CHECK(got.size() == 1 && got[0].exactSize == 64 && got[0].outcome == ImageDisk::FileOutcome::Same);
+    CHECK(uploader.calls == 0);
+    reader.Stop();
+}
+
+static void TestReaderExactCopyWithNoFileFailsAndDeletesNothing()
+{
+    TempFolder temp;
+    Info info;
+    WriteFileIn(temp, FileName(KeyOf(MakeInfo())), Valid(&info));
+
+    FakeUploader uploader;
+    Reader reader(SessionOf(temp), uploader, nullptr);
+    CHECK(Open(reader));
+    CHECK(reader.RequestExact(8, "/game/ui/t_other.t_other", 32));
+    const std::vector<ImageDisk::FileResult> got = Results(reader, 1);
+    CHECK(got.size() == 1 && got[0].exactSize == 32 && got[0].outcome == ImageDisk::FileOutcome::Failed);
+    CHECK(uploader.calls == 0);
+    CHECK(reader.Rejected() == 0);
+    CHECK(temp.Files().size() == 1);
+    reader.Stop();
+}
+
+static void TestReaderExactCopyOfABadFileFailsAndKeepsTheFile()
+{
+    TempFolder temp;
+    Info info;
+    std::vector<uint8_t> file = Valid(&info);
+    file[file.size() - 1] ^= 0xFF;   // damaged pixels
+    file.resize(file.size() - 7);    // and cut short
+    WriteFileIn(temp, FileName(KeyOf(info)), file);
+
+    FakeUploader uploader;
+    Reader reader(SessionOf(temp), uploader, nullptr);
+    CHECK(Open(reader));
+    CHECK(reader.RequestExact(8, KeyOf(info), 32));
+    const std::vector<ImageDisk::FileResult> got = Results(reader, 1);
+    CHECK(got.size() == 1 && got[0].exactSize == 32 && got[0].outcome == ImageDisk::FileOutcome::Failed);
+    CHECK(uploader.calls == 0);
+    CHECK(reader.Rejected() == 0);      // the stored copy's own read decides about the file
+    CHECK(temp.Files().size() == 1);
+    reader.Stop();
+}
+
+static void TestReaderExactCopyUploadFailure()
+{
+    TempFolder temp;
+    Info info;
+    WriteFileIn(temp, FileName(KeyOf(MakeInfo())), Valid(&info));
+
+    FakeUploader uploader;
+    uploader.fail = true;
+    Reader reader(SessionOf(temp), uploader, nullptr);
+    CHECK(Open(reader));
+    CHECK(reader.RequestExact(8, KeyOf(info), 32));
+    const std::vector<ImageDisk::FileResult> got = Results(reader, 1);
+    CHECK(got.size() == 1 && got[0].exactSize == 32 && got[0].outcome == ImageDisk::FileOutcome::Failed);
+    CHECK(got[0].texture == nullptr);
+    CHECK(uploader.calls == 1);
+    CHECK(reader.Rejected() == 0);
+    CHECK(temp.Files().size() == 1);
+    reader.Stop();
+}
+
 int main()
 {
     RunTest("crc32", TestCrc);
@@ -2092,6 +2197,12 @@ int main()
     RunTest("a request for a run-time object is not served", TestReaderRequestForARunTimeObjectIsNotServed);
     RunTest("a file held by something else is not deleted", TestReaderBusyFileIsNotDeleted);
     RunTest("a session with no folder lists nothing", TestReaderWithNoFolderListsNothing);
+
+    RunTest("an exact copy is uploaded at the asked size", TestReaderExactCopyIsUploadedAtTheAskedSize);
+    RunTest("an exact copy no smaller than the stored picture is the same", TestReaderExactCopyNoSmallerThanTheStoredPictureIsSame);
+    RunTest("an exact copy with no file fails and deletes nothing", TestReaderExactCopyWithNoFileFailsAndDeletesNothing);
+    RunTest("an exact copy of a bad file fails and keeps the file", TestReaderExactCopyOfABadFileFailsAndKeepsTheFile);
+    RunTest("an exact copy whose upload fails ends as failed", TestReaderExactCopyUploadFailure);
 
     printf("\n%d checks, %d failed\n", g_checks, g_failed);
     return g_failed == 0 ? 0 : 1;

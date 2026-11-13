@@ -17,10 +17,12 @@
 
 #include <atomic>
 #include <cstdint>
+#include <deque>
 #include <memory>
 #include <mutex>
 #include <string>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace ImageLibrary
@@ -43,6 +45,26 @@ namespace ImageLibrary
 	// milliseconds. A request that has not been seen lately is dropped, unless
 	// the image belongs to a set a plugin uses.
 	inline constexpr uint64_t kSeenLatelyMs = 500;
+
+	// ---- Size-exact copies ---------------------------------------------------
+	// A copy of the stored picture made for one pixel size (the longer side), drawn 1:1. It is
+	// made only for a size asked for steadily: asked again and again over kExactSteadyMs, with no
+	// gap over kExactGapMs between two asks. A window being dragged or a scale slider being
+	// moved keeps changing the size and never qualifies.
+	inline constexpr uint64_t kExactSteadyMs = 400;
+	inline constexpr uint64_t kExactGapMs    = 200;
+
+	// A copy not drawn for this long is dropped. The sweep that does it runs once in kExactSweepMs.
+	inline constexpr uint64_t kExactIdleMs  = 30 * 1000;
+	inline constexpr uint64_t kExactSweepMs = 1000;
+
+	// A size whose copy could not be made is not asked for again for this long.
+	inline constexpr uint64_t kExactRetryMs = 30 * 1000;
+
+	// The most copies one image keeps, and the most kept or being made for all images together.
+	// Their bytes count against the byte cap with the stored copies.
+	inline constexpr uint32_t kExactPerImage = 3;
+	inline constexpr uint32_t kExactCountCap = 256;
 
 	// ---- Table geometry ---------------------------------------------------
 	// Ids index chunks of images that are allocated once and never move, so a
@@ -87,6 +109,23 @@ namespace ImageLibrary
 		PluginImageId       id     = 0;
 		PluginTextureHandle handle = nullptr;
 		uint64_t            bytes  = 0;
+		bool                exact  = false;   // a size-exact copy; id is the image it was made from
+	};
+
+	// A size-exact copy the pump is to have made.
+	struct ExactRequest
+	{
+		PluginImageId id   = 0;
+		uint32_t      size = 0;   // the longer side, in pixels
+		std::string   name;       // the image's texture path, as first asked for
+	};
+
+	// How a request for a copy ended without one.
+	enum class ExactEnd
+	{
+		Retry,       // could not be started now: it is offered again
+		Failed,      // the copy could not be made: the size is not asked for again for kExactRetryMs
+		NotNeeded,   // the stored picture is no larger than the size: the stored picture is what is drawn
 	};
 
 	// An image that belongs to sets, by the object path it is read from.
@@ -121,6 +160,14 @@ namespace ImageLibrary
 		// Any thread, no lock. Marks the image as seen, and asks for it again
 		// if it is not kept (evicted, or its request was dropped).
 		PluginTextureHandle Get(PluginImageId id);
+
+		// Any thread, no lock. Get for an image drawn at pixelSize pixels on its longer side. Once a
+		// copy made for exactly that size is ready (see the constants above) it is returned, and
+		// *width and *height (either may be null) are the copy's size: draw it 1:1. Until then, and
+		// for a size that is 0, negative or not under kStoredSize, the answer is what Get gives and
+		// *width and *height are 0. Asking marks the image seen, and asks for the copy once the size
+		// has been asked for steadily.
+		PluginTextureHandle GetSized(PluginImageId id, int pixelSize, int* width, int* height);
 
 		// Any thread, no lock. A PluginImageState; does not mark the image seen.
 		int State(PluginImageId id) const;
@@ -182,6 +229,32 @@ namespace ImageLibrary
 		// image in a set some plugin uses are not dropped for being unseen.
 		void AddToSets(PluginImageId id, uint32_t sets);
 
+		// ---- Size-exact copies (pump) ---------------------------------------------
+
+		// The next copy to make, or false. It stays pending until PublishExact or ExactEnded.
+		bool TakeExact(ExactRequest& out);
+
+		// The copy for (id, size) was made and uploaded: width x height pixels, bytes of them. It
+		// counts against the byte cap, and older copies and stored images leave as Trim says; those
+		// are appended to dropped for the pump to free. Returns whether the copy is kept. False
+		// means the pump frees handle itself, unless it is among dropped (the image it belongs to
+		// was evicted in the same call).
+		bool PublishExact(PluginImageId id, uint32_t size, PluginTextureHandle handle, uint32_t width, uint32_t height,
+			uint64_t bytes, std::vector<Released>& dropped);
+
+		// The request for (id, size) ended without a copy.
+		void ExactEnded(PluginImageId id, uint32_t size, ExactEnd how);
+
+		// Copies not drawn for kExactIdleMs leave the table, at most once in kExactSweepMs.
+		void ReapExact(std::vector<Released>& dropped);
+
+		// Every copy and every pending request leaves the table (the cache was cleared). The stored
+		// pictures stay.
+		void ReleaseExact(std::vector<Released>& dropped);
+
+		// Copies kept or being made.
+		uint32_t ExactCount() const;
+
 		// ---- Sets and preload (pump) -----------------------------------------
 
 		// The union of the sets the plugins use now.
@@ -242,6 +315,36 @@ namespace ImageLibrary
 			kFailed  = 4,   // reads as NONE, and Get does not ask again
 		};
 
+		enum : int32_t
+		{
+			kExactFree    = 0,
+			kExactPending = 1,   // asked for, being made
+			kExactReady   = 2,
+			kExactClosed  = 3,   // could not be made: asked for again after closedUntil
+		};
+
+		// One size-exact copy of an image. Read without the lock, except for the last two.
+		struct ExactSlot
+		{
+			std::atomic<uint32_t>            size{ 0 };
+			std::atomic<int32_t>             state{ kExactFree };
+			std::atomic<PluginTextureHandle> handle{ nullptr };
+			std::atomic<uint32_t>            width{ 0 };
+			std::atomic<uint32_t>            height{ 0 };
+			std::atomic<uint64_t>            lastDrawn{ 0 };
+			std::atomic<uint64_t>            closedUntil{ 0 };
+			uint64_t                         bytes = 0;      // under the lock
+			bool                             taken = false;  // handed to the pump, not answered yet
+		};
+
+		// A size lately asked for that has no copy: since when, and last asked.
+		struct ExactTrial
+		{
+			std::atomic<uint32_t> size{ 0 };
+			std::atomic<uint64_t> first{ 0 };
+			std::atomic<uint64_t> last{ 0 };
+		};
+
 		struct Entry
 		{
 			// Read without the lock.
@@ -249,6 +352,8 @@ namespace ImageLibrary
 			std::atomic<PluginTextureHandle> handle{ nullptr };
 			std::atomic<uint64_t>            lastSeen{ 0 };
 			std::atomic<PluginImageId>       target{ 0 };   // the image this id is an alias of
+			ExactSlot                        exact[kExactPerImage];
+			ExactTrial                       trial[2];
 
 			// Under the lock.
 			Kind        kind = Kind::Item;
@@ -276,6 +381,12 @@ namespace ImageLibrary
 		uint32_t UsedSetsLocked() const;         // lock held
 		void  TagSets(Entry& e, PluginImageId id, uint32_t sets);   // lock held
 		static bool SeenLately(const Entry& e, uint64_t now);
+		void  AskExact(Entry& e, PluginImageId id, uint32_t size);         // not under the lock
+		void  OfferExact(Entry& e, PluginImageId id, uint32_t size);       // lock held
+		void  DropExact(Entry& e, PluginImageId id, std::vector<Released>& dropped);   // lock held
+		struct ExactRef { PluginImageId id; uint32_t slot; uint64_t lastDrawn; };
+		std::vector<ExactRef> IdleExact(uint64_t idleMs) const;            // lock held; least recently drawn first
+		void  DropSlot(ExactSlot& slot, std::vector<Released>& dropped, PluginImageId id);   // lock held
 
 		std::atomic<Chunk*>               m_chunks[kMaxChunks];
 		std::atomic<uint32_t>             m_count{ 0 };
@@ -293,6 +404,10 @@ namespace ImageLibrary
 		uint32_t                          m_countCap = kCountCap;
 		uint64_t                          m_bytes    = 0;
 		uint32_t                          m_kept     = 0;
+		std::deque<std::pair<PluginImageId, uint32_t>> m_exactQueue;   // image and size, oldest first
+		uint32_t                          m_exactCount = 0;   // slots pending or ready
+		uint64_t                          m_nextSweepMs = 0;
+		std::vector<Released>             m_exactDropped;   // copies that left for room, until the pump takes them
 	};
 
 	// The loader's table. Handed to plugins as hooks->Images.

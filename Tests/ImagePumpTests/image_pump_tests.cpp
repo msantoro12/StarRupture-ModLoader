@@ -2359,6 +2359,241 @@ static void SlowTickLinesAreCapped()
     CHECK(SlowTickLines(rig) == kSlowTickLogs);
 }
 
+// ---------------------------------------------------------------------------
+// Size-exact copies
+
+class FakeExactSource : public FakeSource
+{
+public:
+    struct Asked { PluginImageId id; std::string key; uint32_t size; };
+    std::vector<Asked> exactAsked;
+    bool exactFull = false;
+    PluginTextureHandle lastTexture = nullptr;
+
+    bool RequestExact(PluginImageId id, const std::string& key, uint32_t size) override
+    {
+        if (exactFull)
+            return false;
+        exactAsked.push_back({ id, key, size });
+        return true;
+    }
+
+    // The worker ends the request with the outcome.
+    void EndExact(size_t index, ImageDisk::FileOutcome outcome, uint32_t width = 0, uint32_t height = 0)
+    {
+        ImageDisk::FileResult result;
+        result.id        = exactAsked[index].id;
+        result.exactSize = exactAsked[index].size;
+        result.outcome   = outcome;
+        result.width     = width;
+        result.height    = height;
+        if (outcome == ImageDisk::FileOutcome::Texture)
+        {
+            result.texture = reinterpret_cast<PluginTextureHandle>(nextTexture += 16);
+            result.bytes   = uint64_t(width) * height * 4;
+            lastTexture    = result.texture;
+        }
+        done.push_back(result);
+    }
+};
+
+class FakeClearSaver : public FakeSaver
+{
+public:
+    uint32_t cleared = 0;
+    uint32_t Cleared() const override { return cleared; }
+};
+
+// The plugin draws the image at the size every 10 ms frame for ms milliseconds, and the pump ticks.
+static void DrawFrames(Rig& rig, PluginImageId id, int size, uint32_t ms)
+{
+    for (uint32_t t = 0; t < ms; t += 10)
+    {
+        rig.Advance(10);
+        rig.library.GetSized(id, size, nullptr, nullptr);
+        rig.Tick();
+    }
+}
+
+static void AnExactCopyIsAskedOfTheSourceAndShownOnceReady()
+{
+    Rig rig;
+    FakeExactSource source;
+    rig.pump.SetSource(&source);
+    const PluginImageId a = rig.Loaded(kA);
+    rig.Tick(2);
+    CHECK(rig.library.State(a) == PLUGIN_IMAGE_READY);
+    const PluginTextureHandle stored = rig.library.Get(a);
+
+    DrawFrames(rig, a, 36, 700);
+    CHECK(source.exactAsked.size() == 1);
+    CHECK(source.exactAsked[0].id == a && source.exactAsked[0].size == 36);
+    CHECK(source.exactAsked[0].key == Key(kA));
+
+    // While the worker makes it, the stored texture is what is drawn.
+    int w = 9, h = 9;
+    CHECK(rig.library.GetSized(a, 36, &w, &h) == stored);
+    CHECK(w == 0 && h == 0);
+
+    source.EndExact(0, ImageDisk::FileOutcome::Texture, 36, 27);
+    rig.Tick();
+    CHECK(rig.library.GetSized(a, 36, &w, &h) == source.lastTexture);
+    CHECK(w == 36 && h == 27);
+    CHECK(rig.library.Get(a) == stored);
+    CHECK(rig.pump.GetStats().exactMade == 1);
+    CHECK(rig.host.reads.size() == 1);   // nothing more was read from the game
+    CHECK(rig.pump.GetStats().fromGame == 1);
+}
+
+static void AnExactCopyIsNotAskedForWithoutASource()
+{
+    Rig rig;
+    const PluginImageId a = rig.Loaded(kA);
+    rig.Tick(2);
+    DrawFrames(rig, a, 36, 700);
+    int w = 9, h = 9;
+    CHECK(rig.library.GetSized(a, 36, &w, &h) == rig.library.Get(a));
+    CHECK(w == 0 && h == 0);
+    CHECK(rig.library.ExactCount() == 0);
+}
+
+static void AFailedExactCopyLeavesTheStoredDrawAndIsNotRetriedPerFrame()
+{
+    Rig rig;
+    FakeExactSource source;
+    rig.pump.SetSource(&source);
+    const PluginImageId a = rig.Loaded(kA);
+    rig.Tick(2);
+    const PluginTextureHandle stored = rig.library.Get(a);
+
+    DrawFrames(rig, a, 36, 700);
+    CHECK(source.exactAsked.size() == 1);
+    source.EndExact(0, ImageDisk::FileOutcome::Failed);   // the upload failed or the file was lost
+    rig.Tick();
+    CHECK(rig.library.GetSized(a, 36, nullptr, nullptr) == stored);
+    DrawFrames(rig, a, 36, 5000);
+    CHECK(source.exactAsked.size() == 1);
+    CHECK(rig.library.GetSized(a, 36, nullptr, nullptr) == stored);
+    CHECK(rig.pump.GetStats().exactMade == 0);
+    CHECK(rig.host.freed.empty());
+}
+
+static void AStoredPictureNoLargerThanTheSizeNeedsNoCopy()
+{
+    Rig rig;
+    FakeExactSource source;
+    rig.pump.SetSource(&source);
+    const PluginImageId a = rig.Loaded(kA);
+    rig.Tick(2);
+    DrawFrames(rig, a, 200, 700);
+    CHECK(source.exactAsked.size() == 1);
+    source.EndExact(0, ImageDisk::FileOutcome::Same);
+    rig.Tick();
+    DrawFrames(rig, a, 200, 40000);
+    CHECK(source.exactAsked.size() == 1);
+    CHECK(rig.pump.GetStats().exactMade == 0);
+}
+
+static void ARequestTheSourceCannotTakeIsOfferedAgain()
+{
+    Rig rig;
+    FakeExactSource source;
+    rig.pump.SetSource(&source);
+    const PluginImageId a = rig.Loaded(kA);
+    rig.Tick(2);
+    source.exactFull = true;
+    DrawFrames(rig, a, 36, 700);
+    CHECK(source.exactAsked.empty());
+    source.exactFull = false;
+    rig.Tick();
+    CHECK(source.exactAsked.size() == 1);
+}
+
+static void AnExactCopyThatIsRefusedIsFreedByThePump()
+{
+    Rig rig;
+    FakeExactSource source;
+    FakeClearSaver saver;
+    rig.pump.SetSource(&source);
+    rig.pump.SetSaver(&saver);
+    const PluginImageId a = rig.Loaded(kA);
+    rig.Tick(2);
+    DrawFrames(rig, a, 36, 700);
+    CHECK(source.exactAsked.size() == 1);
+
+    // The cache is cleared before the worker is done: the library no longer wants the copy.
+    saver.cleared = 1;
+    rig.Tick();
+    source.EndExact(0, ImageDisk::FileOutcome::Texture, 36, 36);
+    rig.Tick();
+    CHECK(rig.host.Freed(source.lastTexture) == 1);
+    CHECK(rig.pump.GetStats().exactMade == 0);
+    CHECK(rig.library.ExactCount() == 0);
+}
+
+static void ClearingTheCacheDropsTheCopiesAndFreesThem()
+{
+    Rig rig;
+    FakeExactSource source;
+    FakeClearSaver saver;
+    rig.pump.SetSource(&source);
+    rig.pump.SetSaver(&saver);
+    const PluginImageId a = rig.Loaded(kA);
+    rig.Tick(2);
+    const PluginTextureHandle stored = rig.library.Get(a);
+    DrawFrames(rig, a, 36, 700);
+    source.EndExact(0, ImageDisk::FileOutcome::Texture, 36, 36);
+    rig.Tick();
+    const PluginTextureHandle copy = source.lastTexture;
+    CHECK(rig.library.GetSized(a, 36, nullptr, nullptr) == copy);
+
+    saver.cleared = 1;   // the Clear image cache button
+    rig.Tick();
+    CHECK(rig.library.ExactCount() == 0);
+    CHECK(rig.library.GetSized(a, 36, nullptr, nullptr) == stored);
+    rig.Tick();
+    CHECK(rig.host.Freed(copy) == 1);
+    CHECK(rig.host.Freed(stored) == 0);
+    CHECK(rig.library.State(a) == PLUGIN_IMAGE_READY);
+}
+
+static void ADeviceThatGoesTakesTheCopiesWithoutFreeing()
+{
+    Rig rig;
+    FakeExactSource source;
+    rig.pump.SetSource(&source);
+    const PluginImageId a = rig.Loaded(kA);
+    rig.Tick(2);
+    DrawFrames(rig, a, 36, 700);
+    source.EndExact(0, ImageDisk::FileOutcome::Texture, 36, 36);
+    rig.Tick();
+    CHECK(rig.library.ExactCount() == 1);
+
+    rig.host.ready = false;
+    rig.Tick();
+    CHECK(rig.library.ExactCount() == 0);
+    CHECK(rig.library.GetSized(a, 36, nullptr, nullptr) == nullptr);
+    CHECK(rig.host.freed.empty());
+    rig.Tick(3);
+    CHECK(source.exactAsked.size() == 1);
+}
+
+static void TheSummaryLineCountsTheCopiesMade()
+{
+    Rig rig;
+    FakeExactSource source;
+    rig.pump.SetSource(&source);
+    const PluginImageId a = rig.Loaded(kA);
+    rig.Tick(2);
+    DrawFrames(rig, a, 36, 700);
+    source.EndExact(0, ImageDisk::FileOutcome::Texture, 36, 36);
+    rig.Tick();
+    rig.host.clockUs += 61ull * 1000 * 1000;
+    rig.Tick();
+    CHECK(rig.host.SummaryLines() == 1);
+    CHECK(rig.host.logs.back().find("exact=1") != std::string::npos);
+}
+
 int main()
 {
     setvbuf(stdout, nullptr, _IONBF, 0);
@@ -2459,6 +2694,16 @@ int main()
     RunTest("at most one package load per tick in total", AtMostOnePackageLoadPerTickInTotal);
     RunTest("drawn images are not cycled out by newcomers", DrawnImagesAreNotCycledOutByNewcomers);
     RunTest("a not yet image is given up on after a while", ANotYetImageIsGivenUpOnAfterAWhile);
+
+    RunTest("exact: a copy is asked of the source and shown once ready", AnExactCopyIsAskedOfTheSourceAndShownOnceReady);
+    RunTest("exact: no copy without a source", AnExactCopyIsNotAskedForWithoutASource);
+    RunTest("exact: a failed copy keeps the stored draw, no retry per frame", AFailedExactCopyLeavesTheStoredDrawAndIsNotRetriedPerFrame);
+    RunTest("exact: a stored picture no larger than the size needs no copy", AStoredPictureNoLargerThanTheSizeNeedsNoCopy);
+    RunTest("exact: a request the source cannot take is offered again", ARequestTheSourceCannotTakeIsOfferedAgain);
+    RunTest("exact: a refused copy is freed by the pump", AnExactCopyThatIsRefusedIsFreedByThePump);
+    RunTest("exact: clearing the cache drops and frees the copies", ClearingTheCacheDropsTheCopiesAndFreesThem);
+    RunTest("exact: a device that goes takes the copies without freeing", ADeviceThatGoesTakesTheCopiesWithoutFreeing);
+    RunTest("exact: the summary line counts the copies made", TheSummaryLineCountsTheCopiesMade);
 
     printf("\n%d checks, %d failed\n", g_checks, g_failed);
     return g_failed == 0 ? 0 : 1;

@@ -96,6 +96,8 @@
     <ClCompile Include="image_shrink_tests.cpp" />
   </ItemGroup>
   <ItemGroup Label="Loader sources under test">
+    <ClCompile Include="$(CoreDir)UI\image_resample.cpp" />
+    <ClInclude Include="$(CoreDir)UI\image_resample.h" />
     <ClInclude Include="$(CoreDir)UI\image_shrink.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

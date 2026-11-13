@@ -2,12 +2,15 @@
 // stored at, how many levels the chain has, and how many bytes it takes.
 //
 // A console program: no game, no GPU.
+#include "UI/image_resample.h"
 #include "UI/image_shrink.h"
 #include "UI/image_library.h"
 
 #include <atomic>
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
+#include <vector>
 #include <thread>
 
 static int g_checks = 0;
@@ -211,6 +214,94 @@ static void AResetDuringTheSetupDoesNotWaitAndDropsTheLateEnd()
     setup.Reset();
     CHECK(setup.Get() == Setup::Answer::Busy);
     CHECK(setup.Begin(next));
+}
+
+// ---------------------------------------------------------------------------
+// ImageResample
+
+static std::vector<uint8_t> Solid(uint32_t w, uint32_t h, uint8_t r, uint8_t g, uint8_t b, uint8_t a)
+{
+    std::vector<uint8_t> px(static_cast<size_t>(w) * h * 4);
+    for (size_t i = 0; i < px.size(); i += 4)
+    {
+        px[i] = r; px[i + 1] = g; px[i + 2] = b; px[i + 3] = a;
+    }
+    return px;
+}
+
+static void AResampleHasTheAskedSize()
+{
+    const std::vector<uint8_t> src = Solid(256, 128, 10, 20, 30, 255);
+    std::vector<uint8_t> out;
+    ImageResample::Resample(src.data(), 256, 128, 40, 20, out);
+    CHECK(out.size() == 40u * 20u * 4u);
+    ImageResample::Resample(src.data(), 256, 128, 1, 1, out);
+    CHECK(out.size() == 4);
+    ImageResample::Resample(src.data(), 256, 128, 300, 150, out);   // upscaling still gives the size
+    CHECK(out.size() == 300u * 150u * 4u);
+    ImageResample::Resample(src.data(), 256, 128, 0, 20, out);
+    CHECK(out.empty());
+}
+
+static void AResampleToTheSameSizeIsUnchanged()
+{
+    std::vector<uint8_t> src(16 * 16 * 4);
+    for (size_t i = 0; i < src.size(); ++i)
+        src[i] = static_cast<uint8_t>(i * 7);
+    std::vector<uint8_t> out;
+    ImageResample::Resample(src.data(), 16, 16, 16, 16, out);
+    CHECK(out == src);
+}
+
+static void AResampleKeepsAFlatColour()
+{
+    const std::vector<uint8_t> src = Solid(200, 200, 200, 100, 50, 255);
+    std::vector<uint8_t> out;
+    ImageResample::Resample(src.data(), 200, 200, 33, 33, out);
+    bool flat = true;
+    for (size_t i = 0; i < out.size(); i += 4)
+        flat &= std::abs(int(out[i]) - 200) <= 1 && std::abs(int(out[i + 1]) - 100) <= 1 &&
+                std::abs(int(out[i + 2]) - 50) <= 1 && out[i + 3] == 255;
+    CHECK(flat);
+}
+
+// A bright shape on a clear background: the colour at the edge stays the shape's colour (no dark
+// or grey fringe from the clear pixels around it), and the average brightness stays.
+static void AResampleKeepsTheEdgeColourOfAShapeOnClear()
+{
+    constexpr uint32_t N = 128, M = 32;
+    std::vector<uint8_t> src(N * N * 4, 0);   // clear black
+    for (uint32_t y = 32; y < 96; ++y)
+        for (uint32_t x = 32; x < 96; ++x)
+        {
+            uint8_t* p = &src[(y * N + x) * 4];
+            p[0] = 255; p[1] = 200; p[2] = 40; p[3] = 255;
+        }
+    std::vector<uint8_t> out;
+    ImageResample::Resample(src.data(), N, N, M, M, out);
+
+    int edge = 0;
+    for (uint32_t y = 0; y < M; ++y)
+        for (uint32_t x = 0; x < M; ++x)
+        {
+            const uint8_t* p = &out[(y * M + x) * 4];
+            if (p[3] > 20 && p[3] < 235)
+            {
+                ++edge;
+                // Straight colour of a partly covered pixel is still the shape's colour.
+                CHECK(std::abs(int(p[0]) - 255) <= 6);
+                CHECK(std::abs(int(p[1]) - 200) <= 6);
+                CHECK(std::abs(int(p[2]) - 40) <= 10);
+            }
+        }
+    CHECK(edge > 0);
+
+    // Brightness (alpha-weighted red) follows the area of the shape within a small tolerance.
+    double sum = 0;
+    for (size_t i = 0; i < out.size(); i += 4)
+        sum += double(out[i]) * out[i + 3] / 255.0;
+    const double expect = 255.0 * (64.0 * 64.0) * (double(M) * M) / (double(N) * N);
+    CHECK(std::abs(sum - expect) / expect < 0.02);
 }
 
 int main()

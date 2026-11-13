@@ -495,6 +495,7 @@
     <ClInclude Include="UI\image_lookup_host.h" />
     <ClInclude Include="UI\image_pump.h" />
     <ClInclude Include="UI\image_shrink.h" />
+    <ClInclude Include="UI\image_resample.h" />
     <ClInclude Include="UI\image_cache_file.h" />
     <ClInclude Include="UI\image_cache_writer.h" />
     <ClInclude Include="UI\image_cache_reader.h" />
@@ -739,6 +740,9 @@
       <ExcludedFromBuild Condition="'$(Configuration)' != 'Client Debug' And '$(Configuration)' != 'Client Release' And '$(Configuration)' != 'Local SDK Client Debug' And '$(Configuration)' != 'Local SDK Client Release'">true</ExcludedFromBuild>
     </ClCompile>
     <ClCompile Include="UI\image_cache_reader.cpp">
+      <ExcludedFromBuild Condition="'$(Configuration)' != 'Client Debug' And '$(Configuration)' != 'Client Release' And '$(Configuration)' != 'Local SDK Client Debug' And '$(Configuration)' != 'Local SDK Client Release'">true</ExcludedFromBuild>
+    </ClCompile>
+    <ClCompile Include="UI\image_resample.cpp">
       <ExcludedFromBuild Condition="'$(Configuration)' != 'Client Debug' And '$(Configuration)' != 'Client Release' And '$(Configuration)' != 'Local SDK Client Debug' And '$(Configuration)' != 'Local SDK Client Release'">true</ExcludedFromBuild>
     </ClCompile>
     <ClCompile Include="UI\image_cache_care.cpp">

@@ -269,6 +269,92 @@ static void AUniqueNameBeatsAnAssetNameInEitherOrder()
     }
 }
 
+static void AnAssetNameWaitsForTheWholeIndex()
+{
+    // One item at a time: the unique name belongs to an item that is read after the asset name's.
+    {
+        IndexRig rig;
+        rig.items.readCostUs = kItemBudgetUs;
+        rig.items.AddUnnamed("I_Gold", "/Game/UI/T_AssetOwner.T_AssetOwner");
+        rig.items.Add("I_Gold", "/Game/UI/T_NameOwner.T_NameOwner", ItemRead::Icon, "I_Other");
+        rig.items.Add("X_C", "/Game/UI/T_XName.T_XName", ItemRead::Icon, "I_Y");
+        rig.items.AddUnnamed("X", "/Game/UI/T_XAsset.T_XAsset");
+
+        std::string path;
+        rig.Step();
+        CHECK(rig.index.GetState() == ItemIndex::State::Scanning);
+        CHECK(!rig.index.Find("i_gold", path));          // not answered from the asset name yet
+        CHECK(!rig.index.Find("default__i_gold_c", path));
+        rig.Step();
+        CHECK(rig.index.GetState() == ItemIndex::State::Scanning);
+        CHECK(rig.index.Find("i_gold", path) && path == "/Game/UI/T_NameOwner.T_NameOwner");   // a unique name is final at once
+        CHECK(!rig.index.Find("i_gold_c", path));
+        rig.Step();
+        rig.Step();
+        CHECK(rig.index.GetState() == ItemIndex::State::Done);
+        CHECK(rig.index.Find("i_gold", path) && path == "/Game/UI/T_NameOwner.T_NameOwner");
+        CHECK(rig.index.Find("i_gold_c", path) && path == "/Game/UI/T_AssetOwner.T_AssetOwner");
+        CHECK(rig.index.Find("x_c", path) && path == "/Game/UI/T_XName.T_XName");
+        CHECK(rig.index.Find("x", path) && path == "/Game/UI/T_XAsset.T_XAsset");
+    }
+
+    // The asset name is read first, and the unique name of an item not read yet is asked for.
+    {
+        IndexRig rig;
+        rig.items.readCostUs = kItemBudgetUs;
+        rig.items.AddUnnamed("X", "/Game/UI/T_XAsset.T_XAsset");
+        rig.items.Add("X_C", "/Game/UI/T_XName.T_XName", ItemRead::Icon, "I_Y");
+
+        std::string path;
+        rig.Step();
+        CHECK(!rig.index.Find("x_c", path));
+        CHECK(!rig.index.Find("x", path));
+        rig.Step();
+        CHECK(rig.index.Find("x_c", path) && path == "/Game/UI/T_XName.T_XName");
+    }
+
+    // A failed index answers nothing from an asset name.
+    {
+        IndexRig rig;
+        rig.items.AddUnnamed("I_A", "/Game/UI/T_A.T_A");
+        rig.items.items.push_back({ "Item_B", "", ItemRead::Unavailable, "I_B" });
+        rig.Step();
+        CHECK(rig.index.GetState() == ItemIndex::State::Failed);
+        std::string path;
+        CHECK(!rig.index.Find("i_a", path));
+    }
+}
+
+static void AUniqueNameThatLooksLikeAClassOrDefaultObjectIsFoundAsItself()
+{
+    for (int unnamedFirst = 0; unnamedFirst < 2; ++unnamedFirst)
+    {
+        IndexRig rig;
+        if (unnamedFirst)
+        {
+            rig.items.AddUnnamed("Shield", "/Game/UI/T_ShieldAsset.T_ShieldAsset");
+            rig.items.AddUnnamed("Gun", "/Game/UI/T_GunAsset.T_GunAsset");
+        }
+        rig.items.Add("Default__Shield", "/Game/UI/T_ShieldName.T_ShieldName", ItemRead::Icon, "I_Shield");
+        rig.items.Add("Gun_C", "/Game/UI/T_GunName.T_GunName", ItemRead::Icon, "I_Gun");
+        if (!unnamedFirst)
+        {
+            rig.items.AddUnnamed("Shield", "/Game/UI/T_ShieldAsset.T_ShieldAsset");
+            rig.items.AddUnnamed("Gun", "/Game/UI/T_GunAsset.T_GunAsset");
+        }
+        rig.Step();
+
+        // Each is found as itself, never trimmed to the asset it looks like.
+        std::string path;
+        CHECK(rig.index.Find("default__shield", path) && path == "/Game/UI/T_ShieldName.T_ShieldName");
+        CHECK(rig.index.Find("gun_c", path) && path == "/Game/UI/T_GunName.T_GunName");
+        // The asset names are still theirs.
+        CHECK(rig.index.Find("shield", path) && path == "/Game/UI/T_ShieldAsset.T_ShieldAsset");
+        CHECK(rig.index.Find("gun", path) && path == "/Game/UI/T_GunAsset.T_GunAsset");
+        CHECK(rig.index.Find("default__gun_c", path) && path == "/Game/UI/T_GunAsset.T_GunAsset");
+    }
+}
+
 static void TwoUnnamedItemsHaveTheirOwnPictures()
 {
     IndexRig rig;
@@ -315,6 +401,19 @@ static void TheIndexCountsUnnamedItemsAndRepeatedNames()
 
     CHECK(rig.index.UnnamedCount() == 2);
     CHECK(rig.index.RepeatedNameCount() == 2);   // item_x and item_w, each once however many times it came again
+    CHECK(rig.index.RepeatedAssetCount() == 0);
+}
+
+static void TheIndexCountsAssetNamesMetOnMoreThanOneItem()
+{
+    IndexRig rig;
+    rig.items.AddUnnamed("I_A", "/Game/UI/T_A.T_A");
+    rig.items.AddUnnamed("i_a", "/Game/UI/T_B.T_B");
+    rig.items.Add("Item_C", "/Game/UI/T_C.T_C", ItemRead::Icon, "I_A");
+    rig.items.AddUnnamed("I_D", "/Game/UI/T_D.T_D");
+    rig.Step();
+
+    CHECK(rig.index.RepeatedAssetCount() == 1);   // i_a, once however many times it came again
 }
 
 static void TheListIsMadeOnTheFirstStepOnly()
@@ -629,9 +728,12 @@ int main()
     RunTest("an item is found by its asset name, class name and default object name", AnItemIsFoundByItsAssetNameClassNameAndDefaultObjectName);
     RunTest("an item with a unique name is also found by its asset name", AnItemWithAUniqueNameIsAlsoFoundByItsAssetName);
     RunTest("a unique name beats an asset name in either order", AUniqueNameBeatsAnAssetNameInEitherOrder);
+    RunTest("an asset name waits for the whole index", AnAssetNameWaitsForTheWholeIndex);
+    RunTest("a unique name that looks like a class or default object is found as itself", AUniqueNameThatLooksLikeAClassOrDefaultObjectIsFoundAsItself);
     RunTest("two unnamed items have their own pictures", TwoUnnamedItemsHaveTheirOwnPictures);
     RunTest("the texture paths cover the unnamed items", TheTexturePathsCoverTheUnnamedItems);
     RunTest("the index counts unnamed items and repeated names", TheIndexCountsUnnamedItemsAndRepeatedNames);
+    RunTest("the index counts asset names met on more than one item", TheIndexCountsAssetNamesMetOnMoreThanOneItem);
     RunTest("the list is made on the first step only", TheListIsMadeOnTheFirstStepOnly);
     RunTest("an index whose list cannot be made fails once", AnIndexWhoseListCannotBeMadeFailsOnce);
     RunTest("an unavailable read fails the index", AnUnavailableReadFailsTheIndex);

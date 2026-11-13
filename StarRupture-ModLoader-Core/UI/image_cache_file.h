@@ -50,9 +50,11 @@ namespace ImageCache
 	inline constexpr uint32_t kSetListMagic = 0x4C535253;   // "SRSL"
 	inline constexpr uint32_t kNameListMagic = 0x4C4E5253;  // "SRNL"
 
-	// Bumped whenever either file layout or the stored pixels change. It is part of the
-	// folder key, so a new revision starts a new folder.
-	inline constexpr uint32_t kRevision = 2;
+	// Bumped whenever either file layout or the stored pixels change, or the lists
+	// saved in the folder were made by code that no longer builds them the same way
+	// (a set list that leaves out images). It is part of the folder key, so a new
+	// revision starts a new folder.
+	inline constexpr uint32_t kRevision = 3;
 
 	inline constexpr uint32_t kHeaderBytes   = 48;
 	inline constexpr uint32_t kMaxPathLength = 1024;

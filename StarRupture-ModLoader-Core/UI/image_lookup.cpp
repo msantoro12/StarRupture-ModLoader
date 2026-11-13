@@ -87,8 +87,8 @@ namespace ImageLookup
 				m_repeated.insert(key);
 
 			const std::string asset = ImageLibrary::NormalizeItemName(record.asset.c_str());
-			if (!ImageLibrary::IsUnsetItemKey(asset))
-				m_assets.emplace(asset, std::move(path));
+			if (!ImageLibrary::IsUnsetItemKey(asset) && !m_assets.emplace(asset, std::move(path)).second)
+				m_repeatedAssets.insert(asset);
 		}
 		while (nowUs() - begin < budgetUs);
 
@@ -101,10 +101,15 @@ namespace ImageLookup
 		if (ImageLibrary::IsUnsetItemKey(key))
 			return false;
 
-		// A unique name first, so it wins over the asset name of another item.
+		// A unique name first, so it wins over the asset name of another item. The first
+		// item read under a unique name keeps it, so that answer is final at once.
 		auto it = m_items.find(key);
 		if (it == m_items.end())
 		{
+			// An asset name answers only when every item has been read: a unique name that
+			// belongs to an item not read yet would still win over it.
+			if (m_state != State::Done)
+				return false;
 			it = m_assets.find(key);
 			if (it == m_assets.end())
 				it = m_assets.find(AssetNameOf(key));

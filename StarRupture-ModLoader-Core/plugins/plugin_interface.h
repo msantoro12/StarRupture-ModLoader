@@ -3728,6 +3728,11 @@ struct IPluginImages
 {
 	// Any thread. Never waits for the game. The same name or path always gives the same id,
 	// so ask once and keep it. These only hand out the id; Get is what asks for the image.
+	// An item with no unique name (the Ammo item and the building blueprints, for example) is
+	// asked for by the name of its data asset: the asset name, the class name or the default
+	// object's name ("I_X", "I_X_C" or "Default__I_X_C"), in any case. A unique name wins over
+	// an asset name. A name the game never set names no item: "" returns 0 (State is NONE), and
+	// "None" (any case) returns an id that ends as PLUGIN_IMAGE_NO_IMAGE once Get has asked for it.
 	PluginImageId (*Item)(const IPluginSelf* self, const char* uniqueItemName);
 	PluginImageId (*Path)(const IPluginSelf* self, const char* textureObjectPath); // "/Game/.../T_X.T_X"
 

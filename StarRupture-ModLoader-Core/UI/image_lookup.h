@@ -97,17 +97,20 @@ namespace ImageLookup
 		// show. The key is a unique name, or an asset name: "I_X", the class name
 		// "I_X_C" or the default object's name "Default__I_X_C". A unique name wins
 		// over an asset name, and the first item read under a unique name is the
-		// one that is kept. An unset name ("None", empty) is never found.
+		// one that is kept. An asset name is answered once the index is Done, since
+		// until then a unique name of an item not read yet could still claim it. An
+		// unset name ("None", empty) is never found.
 		bool Find(const std::string& key, std::string& texturePath) const;
 
 		// The icon textures known, each once and sorted. What has no image to show,
 		// or only a stand-in, is left out.
 		std::vector<std::string> TexturePaths() const;
 
-		// How many items read so far have no unique name, and how many unique names
-		// were met on more than one item.
+		// How many items read so far have no unique name, how many unique names were
+		// met on more than one item, and how many asset names.
 		size_t UnnamedCount() const { return m_unnamed; }
 		size_t RepeatedNameCount() const { return m_repeated.size(); }
+		size_t RepeatedAssetCount() const { return m_repeatedAssets.size(); }
 
 	private:
 		ItemSource&                                  m_source;
@@ -117,6 +120,7 @@ namespace ImageLookup
 		std::unordered_map<std::string, std::string> m_items;    // by unique name
 		std::unordered_map<std::string, std::string> m_assets;   // by asset name
 		std::unordered_set<std::string>              m_repeated;
+		std::unordered_set<std::string>              m_repeatedAssets;
 	};
 
 	// ---- Textures ------------------------------------------------------------

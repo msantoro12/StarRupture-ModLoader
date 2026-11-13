@@ -491,15 +491,17 @@ namespace ImagePump
 			StepSet(m_buildings, PLUGIN_IMAGE_SET_BUILDINGS, m_buildingsListed, loads, "building");
 	}
 
-	// Reads the next slice of an index. The tick it is whole, one line says how many items have no
-	// unique name and how many unique names were met on more than one item (the first one is kept).
+	// Reads the next slice of an index. The tick the item index is whole, one line says how many items
+	// have no unique name, how many unique names were met on more than one item (the first one is kept)
+	// and how many asset names. A building has no unique name, so its index has nothing to count.
 	void Pump::StepIndex(ImageLookup::ItemIndex& index, const char* what)
 	{
 		const bool wasDone = index.GetState() == ImageLookup::ItemIndex::State::Done;
 		index.Step(ImageLookup::kItemBudgetUs, [this] { return m_host.NowUs(); });
-		if (!wasDone && index.GetState() == ImageLookup::ItemIndex::State::Done)
+		if (!wasDone && &index == &m_items && index.GetState() == ImageLookup::ItemIndex::State::Done)
 			m_host.Log(std::string("[Images] The ") + what + " list is read: " + std::to_string(index.UnnamedCount())
-				+ " without a unique name, " + std::to_string(index.RepeatedNameCount()) + " unique names on more than one " + what);
+				+ " without a unique name, " + std::to_string(index.RepeatedNameCount()) + " unique names on more than one item, "
+				+ std::to_string(index.RepeatedAssetCount()) + " asset names on more than one item");
 	}
 
 	// When the list is whole its images are added to the library as members of the set; when it

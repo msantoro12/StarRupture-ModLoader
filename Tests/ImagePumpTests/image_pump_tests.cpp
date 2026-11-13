@@ -1232,6 +1232,9 @@ static void BothSetsAreListedAndPreloaded()
     CHECK(ReadyCount(rig, 10, 3, kBuildingsSet) == 3);
     CHECK(rig.items.lists == 1);
     CHECK(rig.buildings.lists == 1);
+    // The counts of unique names are the item index's: the building index logs none.
+    CHECK(Logged(rig, "[Images] The item list is read: 0 without a unique name, 0 unique names on more than one item, 0 asset names on more than one item"));
+    CHECK(!Logged(rig, "[Images] The building list"));
 }
 
 static void AnIconTwoItemsShareIsOneMember()
@@ -1917,6 +1920,31 @@ static void AnItemAskedForByAssetNameIsSavedAndServedFromTheList()
     CHECK(later.host.reads.empty() && later.host.loads.empty());
 }
 
+static void AnAssetNameWaitsForTheWholeItemIndex()
+{
+    Rig rig;
+    FakeSaver saver;
+    rig.pump.SetSaver(&saver);
+    rig.items.readCostUs = ImageLookup::kItemBudgetUs;   // one item per tick
+    // The first item read has the asset name I_Gold, the second one has the unique name I_Gold.
+    rig.items.Add("None", kA, "I_Gold");
+    rig.items.Add("I_Gold", kB, "I_Other");
+    rig.host.loaded.insert(kA);
+    rig.host.loaded.insert(kB);
+
+    const PluginImageId gold = rig.Want(rig.library.Item("I_Gold"));
+    rig.Tick(1);
+    CHECK(rig.items.reads.size() == 1);   // the index is half read
+    CHECK(rig.library.State(gold) == PLUGIN_IMAGE_WAITING);   // the asset name of the first item does not answer
+    CHECK(saver.names.empty());
+
+    rig.Tick(6);
+    CHECK(rig.library.State(gold) == PLUGIN_IMAGE_READY);
+    CHECK(rig.library.Canonical(gold) == rig.library.Path(kB));
+    CHECK(saver.names["i_gold"] == kB);
+    CHECK(Logged(rig, "[Images] The item list is read: 1 without a unique name, 0 unique names on more than one item, 0 asset names on more than one item"));
+}
+
 static void ASavedSetListFillsTheSetAndLoadsNoPackage()
 {
     Rig rig;
@@ -2416,7 +2444,8 @@ int main()
     RunTest("an unset item name is no image and starts no read", AnUnsetItemNameIsNoImageAndStartsNoRead);
     RunTest("a none line in a saved list is ignored", ANoneLineInASavedListIsIgnored);
     RunTest("an item asked for by asset name is saved and served from the list", AnItemAskedForByAssetNameIsSavedAndServedFromTheList);
-    RunTest("a saved set list fills the set and loads no package",ASavedSetListFillsTheSetAndLoadsNoPackage);
+    RunTest("an asset name waits for the whole item index", AnAssetNameWaitsForTheWholeItemIndex);
+    RunTest("a saved set list fills the set and loads no package", ASavedSetListFillsTheSetAndLoadsNoPackage);
     RunTest("a set with no saved list is listed from the game", ASetWithNoSavedListIsListedFromTheGame);
     RunTest("files are not held back when the game holds too much", FilesAreNotHeldBackWhenTheGameHoldsTooMuch);
     RunTest("preload asks for several files on a tick", PreloadAsksForSeveralFilesOnATick);

@@ -868,7 +868,7 @@
 //      only), which turns off the feature that lists the key.
 //
 //
-// v76: Image library (hooks->Images, client only, null on server and generic
+// v77: Image library (hooks->Images, client only, null on server and generic
 //      builds). One place in the loader that loads game images -- item icons
 //      first -- when a plugin is about to draw them, shrinks each to one
 //      stored size and keeps the copy for the session. IPluginImages is
@@ -896,15 +896,15 @@
 //      drawn 1:1; until then it returns what Get returns.
 //      UseSets records which sets of images the plugin draws from, for
 //      background preload.
-//      A plugin built for v76 is refused by a loader that ends at 75. A plugin
-//      built against these headers declares 76 by default
-//      (PLUGIN_INTERFACE_VERSION); a plugin that uses nothing from v76 may
+//      A plugin built for v77 is refused by a loader whose maximum is lower. A
+//      plugin built against these headers declares 77 by default
+//      (PLUGIN_INTERFACE_VERSION); a plugin that uses nothing from v77 may
 //      declare an older number, down to 70. LoadFromUTexture2D and the rest of
 //      IPluginImGuiTextures are unchanged.
 //
 #define PLUGIN_INTERFACE_VERSION_MIN 70
-#define PLUGIN_INTERFACE_VERSION_MAX 76
-#define PLUGIN_INTERFACE_VERSION 76
+#define PLUGIN_INTERFACE_VERSION_MAX 77
+#define PLUGIN_INTERFACE_VERSION 77
 
 enum class PluginLogLevel { Trace = 0, Debug = 1, Info = 2, Warn = 3, Error = 4 };
 enum class ConfigValueType { String, Integer, Float, Boolean, Keybind, Choice /* v71 */, Hidden /* v71 */ };
@@ -3696,7 +3696,7 @@ struct IPluginPak
 };
 
 // ---------------------------------------------------------------------------
-// Image library (v76) -- client only
+// Image library (v77) -- client only
 //
 // Retrieved via hooks->Images (nullptr on server/generic). An id names one game
 // image for the whole session. The loader reads the image the first time it is
@@ -3774,16 +3774,16 @@ struct IPluginImages
 	PluginTextureHandle (*GetSized)(PluginImageId id, int pixelSize, int* outWidth, int* outHeight);
 };
 
-static_assert(sizeof(PluginImageId) == 4, "v76 layout");
-static_assert(offsetof(IPluginImages, Item)        ==  0, "v76 layout");
-static_assert(offsetof(IPluginImages, Path)        ==  8, "v76 layout");
-static_assert(offsetof(IPluginImages, FromTexture) == 16, "v76 layout");
-static_assert(offsetof(IPluginImages, Get)         == 24, "v76 layout");
-static_assert(offsetof(IPluginImages, State)       == 32, "v76 layout");
-static_assert(offsetof(IPluginImages, UseSets)     == 40, "v76 layout");
-static_assert(offsetof(IPluginImages, Canonical)   == 48, "v76 layout");
-static_assert(offsetof(IPluginImages, GetSized)    == 56, "v76 layout");
-static_assert(sizeof(IPluginImages)                == 64, "v76 layout");
+static_assert(sizeof(PluginImageId) == 4, "v77 layout");
+static_assert(offsetof(IPluginImages, Item)        ==  0, "v77 layout");
+static_assert(offsetof(IPluginImages, Path)        ==  8, "v77 layout");
+static_assert(offsetof(IPluginImages, FromTexture) == 16, "v77 layout");
+static_assert(offsetof(IPluginImages, Get)         == 24, "v77 layout");
+static_assert(offsetof(IPluginImages, State)       == 32, "v77 layout");
+static_assert(offsetof(IPluginImages, UseSets)     == 40, "v77 layout");
+static_assert(offsetof(IPluginImages, Canonical)   == 48, "v77 layout");
+static_assert(offsetof(IPluginImages, GetSized)    == 56, "v77 layout");
+static_assert(sizeof(IPluginImages)                == 64, "v77 layout");
 
 struct IPluginHooks
 {
@@ -3811,11 +3811,11 @@ struct IPluginHooks
 	IPluginConsole*        Console;         // v63 -- appended at end, do not relocate
 	IPluginGameMenu*       GameMenu;        // v64 -- client only, null on server/generic; appended at end, do not relocate
 	IPluginPak*            Pak;             // v67 -- all builds; appended at end, do not relocate
-	IPluginImages*         Images;          // v76 -- client only, null on server/generic; appended at end, do not relocate
+	IPluginImages*         Images;          // v77 -- client only, null on server/generic; appended at end, do not relocate
 };
 
 static_assert(offsetof(IPluginHooks, Pak)    == 184, "v67 layout");
-static_assert(offsetof(IPluginHooks, Images) == 192, "v76 starts where v67 ended");
+static_assert(offsetof(IPluginHooks, Images) == 192, "v77 starts where v67 ended");
 
 // ---------------------------------------------------------------------------
 // Plugin build target

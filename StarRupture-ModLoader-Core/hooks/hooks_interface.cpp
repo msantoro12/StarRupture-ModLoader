@@ -1899,7 +1899,7 @@ namespace ModLoaderLogger
 		nullptr,             // v64 -- GameMenu; filled in below by GetPluginHooks() on client
 		                     //        builds, and left null on server/generic ones
 		nullptr,             // v67 -- Pak; filled in below by GetPluginHooks() on every build
-		nullptr,             // v76 -- Images; filled in below by GetPluginHooks() on client builds,
+		nullptr,             // v77 -- Images; filled in below by GetPluginHooks() on client builds,
 		                     //        and left null on server/generic ones
 	};
 	static bool g_networkChannelInitialized = false;

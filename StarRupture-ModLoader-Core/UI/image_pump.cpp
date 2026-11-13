@@ -267,7 +267,15 @@ namespace ImagePump
 				m_library.ExactEnded(request.id, request.size, ImageLibrary::ExactEnd::Failed);
 				continue;
 			}
-			if (!m_source->RequestExact(request.id, ImageLibrary::NormalizeObjectPath(request.name.c_str()), request.size))
+			const ImageDisk::Source::ExactAnswer answer =
+				m_source->RequestExact(request.id, ImageLibrary::NormalizeObjectPath(request.name.c_str()), request.size);
+			if (answer == ImageDisk::Source::ExactAnswer::Refused)
+			{
+				// No copy can ever be made for this one: the stored picture is what is drawn, and it is not asked again.
+				m_library.ExactEnded(request.id, request.size, ImageLibrary::ExactEnd::NotNeeded);
+				continue;
+			}
+			if (answer == ImageDisk::Source::ExactAnswer::Busy)
 			{
 				m_library.ExactEnded(request.id, request.size, ImageLibrary::ExactEnd::Retry);
 				break;

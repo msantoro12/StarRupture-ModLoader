@@ -61,6 +61,9 @@ namespace ImageLibrary
 	// A size whose copy could not be made is not asked for again for this long.
 	inline constexpr uint64_t kExactRetryMs = 30 * 1000;
 
+	// A size whose copy was refused for room is offered again no sooner than this.
+	inline constexpr uint64_t kExactRefusedMs = 2000;
+
 	// The most copies one image keeps, and the most kept or being made for all images together.
 	// Their bytes count against the byte cap with the stored copies.
 	inline constexpr uint32_t kExactPerImage = 3;
@@ -125,7 +128,7 @@ namespace ImageLibrary
 	{
 		Retry,       // could not be started now: it is offered again
 		Failed,      // the copy could not be made: the size is not asked for again for kExactRetryMs
-		NotNeeded,   // the stored picture is no larger than the size: the stored picture is what is drawn
+		NotNeeded,   // no copy is wanted or possible (the stored picture is no larger than the size, or has no file): the stored picture is what is drawn
 	};
 
 	// An image that belongs to sets, by the object path it is read from.
@@ -353,7 +356,7 @@ namespace ImageLibrary
 			std::atomic<uint64_t>            lastSeen{ 0 };
 			std::atomic<PluginImageId>       target{ 0 };   // the image this id is an alias of
 			ExactSlot                        exact[kExactPerImage];
-			ExactTrial                       trial[2];
+			ExactTrial                       trial[kExactPerImage];
 
 			// Under the lock.
 			Kind        kind = Kind::Item;
@@ -382,7 +385,7 @@ namespace ImageLibrary
 		void  TagSets(Entry& e, PluginImageId id, uint32_t sets);   // lock held
 		static bool SeenLately(const Entry& e, uint64_t now);
 		void  AskExact(Entry& e, PluginImageId id, uint32_t size);         // not under the lock
-		void  OfferExact(Entry& e, PluginImageId id, uint32_t size);       // lock held
+		bool  OfferExact(Entry& e, PluginImageId id, uint32_t size);       // lock held; whether the copy was queued
 		void  DropExact(Entry& e, PluginImageId id, std::vector<Released>& dropped);   // lock held
 		struct ExactRef { PluginImageId id; uint32_t slot; uint64_t lastDrawn; };
 		std::vector<ExactRef> IdleExact(uint64_t idleMs) const;            // lock held; least recently drawn first
@@ -407,6 +410,7 @@ namespace ImageLibrary
 		std::deque<std::pair<PluginImageId, uint32_t>> m_exactQueue;   // image and size, oldest first
 		uint32_t                          m_exactCount = 0;   // slots pending or ready
 		uint64_t                          m_nextSweepMs = 0;
+		std::atomic<uint32_t>             m_exactWaiting{ 0 };   // offers refused at the count cap since the last sweep
 		std::vector<Released>             m_exactDropped;   // copies that left for room, until the pump takes them
 	};
 

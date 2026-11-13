@@ -182,9 +182,11 @@ namespace ImageDisk
 		// Makes a copy of the stored picture in the file for the path at the size (the longer side, in
 		// pixels): the worker reads and checks the file, resamples level 0 and uploads the result as a
 		// texture of one level. The answer comes through Collect with exactSize set. The file stays
-		// as it is and the listing is not changed, whatever comes of it. False when the worker has no
-		// room or no file is read now: ask again later.
-		virtual bool RequestExact(PluginImageId id, const std::string& key, uint32_t size) { (void)id; (void)key; (void)size; return false; }
+		// as it is and the listing is not changed, whatever comes of it. Busy when the worker has no
+		// room or the folder is still being listed: ask again later. Refused when no copy can ever be
+		// made for the path (a run-time texture has no file) or the files are off: do not ask again.
+		enum class ExactAnswer { Started, Busy, Refused };
+		virtual ExactAnswer RequestExact(PluginImageId id, const std::string& key, uint32_t size) { (void)id; (void)key; (void)size; return ExactAnswer::Refused; }
 		// Appends the requests that have ended since the last call.
 		virtual void Collect(std::vector<FileResult>& out) = 0;
 		// Once after the folder was opened: the saved names and set lists. False before, and after.

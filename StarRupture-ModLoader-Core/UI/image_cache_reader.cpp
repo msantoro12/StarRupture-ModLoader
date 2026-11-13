@@ -147,15 +147,17 @@ namespace ImageCache
 		return Enqueue(std::move(job));
 	}
 
-	bool Reader::RequestExact(PluginImageId id, const std::string& key, uint32_t size)
+	ImageDisk::Source::ExactAnswer Reader::RequestExact(PluginImageId id, const std::string& key, uint32_t size)
 	{
-		if (m_state != State::Ready || size == 0 || IsTransientPath(key))
-			return false;
+		if (m_state == State::Off || size == 0 || IsTransientPath(key))
+			return ExactAnswer::Refused;
+		if (m_state != State::Ready)
+			return ExactAnswer::Busy;
 		Job job;
 		job.id        = id;
 		job.key       = key;
 		job.exactSize = size;
-		return Enqueue(std::move(job));
+		return Enqueue(std::move(job)) ? ExactAnswer::Started : ExactAnswer::Busy;
 	}
 
 	void Reader::Collect(std::vector<ImageDisk::FileResult>& out)
@@ -366,7 +368,7 @@ namespace ImageCache
 		};
 
 		std::vector<uint8_t> bytes;
-		if (ReadAll(path, kMaxFileBytes, bytes) != ReadState::Ok)
+		if (m_folder.empty() || ReadAll(path, kMaxFileBytes, bytes) != ReadState::Ok)
 		{
 			end(ImageDisk::FileOutcome::Failed, nullptr, 0, 0, 0);
 			return;

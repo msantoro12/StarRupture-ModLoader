@@ -65,7 +65,7 @@ namespace ImageCache
 		State Poll(uint64_t nowMs) override;
 		bool  Has(const std::string& key) override;
 		bool  Request(PluginImageId id, const std::string& key) override;
-		bool  RequestExact(PluginImageId id, const std::string& key, uint32_t size) override;
+		ExactAnswer RequestExact(PluginImageId id, const std::string& key, uint32_t size) override;
 		void  Collect(std::vector<ImageDisk::FileResult>& out) override;
 		bool  TakeLists(ImageDisk::Lists& out) override;
 		uint64_t Rejected() const override { return m_rejected; }

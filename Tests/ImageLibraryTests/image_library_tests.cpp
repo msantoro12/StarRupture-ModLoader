@@ -1431,19 +1431,22 @@ static void CopiesCountAgainstTheByteCap()
     CHECK(lib.PublishExact(a, 8, ExactTexture(a, 8), 8, 8, 256, dropped));
     CHECK(lib.BytesKept() == 400 + 400 + 256);
 
-    // A second copy would leave the total over the cap with every stored image drawn lately: it is not made.
+    // A second copy would leave the total over the cap with every stored image drawn lately: it
+    // is asked for, and refused when it is finished, for the pump to free.
     lib.SetNow(1500);
     lib.Get(a);
     lib.Get(a + 1);
-    DrawAt(lib, a, 9, 1500, 1950);
-    CHECK(!lib.TakeExact(request));
+    for (uint64_t t = 1500; t <= 1950; t += 10)
+    {
+        lib.SetNow(t);
+        lib.GetSized(a, 8, nullptr, nullptr);   // the first copy stays in use
+        lib.GetSized(a, 9, nullptr, nullptr);
+    }
+    CHECK(lib.TakeExact(request));
+    CHECK(!lib.PublishExact(a, 9, ExactTexture(a, 9), 9, 9, 324, dropped));
+    CHECK(dropped.empty());
     CHECK(lib.BytesKept() == 400 + 400 + 256);
     CHECK(lib.GetSized(a, 9, nullptr, nullptr) == Texture(a));
-
-    // A copy that comes out over the cap when it is finished is refused: the pump frees it.
-    lib.SetCaps(1100, 100);
-    CHECK(!lib.PublishExact(a, 9, ExactTexture(a, 9), 9, 9, 324, dropped));
-    CHECK(lib.BytesKept() == 400 + 400 + 256);
 }
 
 static void CopiesNotDrawnLatelyGoBeforeStoredImages()
@@ -1467,6 +1470,173 @@ static void CopiesNotDrawnLatelyGoBeforeStoredImages()
     CHECK(lib.State(a) == PLUGIN_IMAGE_READY);
     CHECK(lib.BytesKept() == 400 + 700);
     CHECK(lib.GetSized(a, 8, nullptr, nullptr) == Texture(a));
+}
+
+// A full byte cap does not stop a copy for an image that is being drawn: the pictures not seen
+// lately make room, as they would for a newcomer.
+static void AFullByteCapStillTakesACopyForADrawnImage()
+{
+    Library lib;
+    lib.SetCaps(1000, 100);
+    const PluginImageId drawn = KeptImage(lib, "/Game/UI/T_A.T_A", 1000, 400);
+    const PluginImageId idle  = KeptImage(lib, "/Game/UI/T_B.T_B", 1000, 400);   // preload filled the cap with it
+    CHECK(lib.BytesKept() == 800);
+
+    DrawAt(lib, drawn, 8, 5000, 5450);
+    ExactRequest request;
+    CHECK(lib.TakeExact(request) && request.id == drawn && request.size == 8);
+    std::vector<Released> dropped;
+    CHECK(lib.PublishExact(drawn, 8, ExactTexture(drawn, 8), 8, 8, 256, dropped));
+    CHECK(lib.State(drawn) == PLUGIN_IMAGE_READY);
+    CHECK(lib.State(idle) != PLUGIN_IMAGE_READY);
+    CHECK(dropped.size() == 1 && !dropped[0].exact && dropped[0].handle == Texture(idle));
+    CHECK(lib.BytesKept() == 400 + 256);
+    int w = 0, h = 0;
+    CHECK(lib.GetSized(drawn, 8, &w, &h) == ExactTexture(drawn, 8));
+    CHECK(w == 8 && h == 8);
+}
+
+// Images seen lately are still never evicted for a copy.
+static void ACopyNeverEvictsAnImageSeenLately()
+{
+    Library lib;
+    lib.SetCaps(1000, 100);
+    const PluginImageId a = KeptImage(lib, "/Game/UI/T_A.T_A", 1000, 400);
+    const PluginImageId b = KeptImage(lib, "/Game/UI/T_B.T_B", 1000, 400);
+    for (uint64_t t = 5000; t <= 5450; t += 10)
+    {
+        lib.SetNow(t);
+        lib.Get(b);
+        lib.GetSized(a, 8, nullptr, nullptr);
+    }
+    ExactRequest request;
+    CHECK(lib.TakeExact(request));
+    std::vector<Released> dropped;
+    CHECK(!lib.PublishExact(a, 8, ExactTexture(a, 8), 8, 8, 256, dropped));
+    CHECK(dropped.empty());
+    CHECK(lib.State(a) == PLUGIN_IMAGE_READY && lib.State(b) == PLUGIN_IMAGE_READY);
+}
+
+// At the copy count cap a refused size costs the render thread one lock for an offer, then waits
+// kExactRefusedMs; the room comes from the pump's sweep, which drops a copy not drawn lately.
+static void ARefusedOfferBacksOffAndTheSweepMakesRoom()
+{
+    Library lib;
+    lib.SetCaps(1ull << 40, 4096);
+    std::vector<PluginImageId> ids;
+    for (uint32_t i = 0; i < kExactCountCap + 1; ++i)
+        ids.push_back(KeptImage(lib, ("/Game/UI/T_" + std::to_string(i) + ".T_" + std::to_string(i)).c_str(), 1000, 10));
+    for (uint64_t t = 1000; t <= 1450; t += 10)
+    {
+        lib.SetNow(t);
+        for (uint32_t i = 0; i < kExactCountCap; ++i)
+            lib.GetSized(ids[i], 32, nullptr, nullptr);
+    }
+    std::vector<Released> dropped;
+    ExactRequest request;
+    while (lib.TakeExact(request))
+        CHECK(lib.PublishExact(request.id, request.size, ExactTexture(request.id, request.size), 32, 32, 40, dropped));
+    CHECK(lib.ExactCount() == kExactCountCap);
+
+    // The last image is drawn steadily from 3000; the copies were last drawn at 1450.
+    const PluginImageId last = ids[kExactCountCap];
+    DrawAt(lib, last, 32, 3000, 3400);   // the offer is made at 3400 and refused: no room
+    CHECK(!lib.TakeExact(request));
+    CHECK(lib.ExactCount() == kExactCountCap);
+
+    lib.SetNow(3410);
+    dropped.clear();
+    lib.ReapExact(dropped);
+    CHECK(dropped.size() == 1 && dropped[0].exact);
+    CHECK(lib.ExactCount() == kExactCountCap - 1);
+
+    // Room now, but the size is not offered again until it has been drawn another kExactRefusedMs and a steady stretch.
+    DrawAt(lib, last, 32, 3410, 3400 + kExactRefusedMs - 10);
+    CHECK(!lib.TakeExact(request));
+    DrawAt(lib, last, 32, 3400 + kExactRefusedMs, 3400 + kExactRefusedMs + kExactSteadyMs + 20);
+    CHECK(lib.TakeExact(request) && request.id == last && request.size == 32);
+}
+
+// With every copy drawn lately there is nobody to drop: the sweep leaves them all.
+static void TheSweepKeepsCopiesDrawnLately()
+{
+    Library lib;
+    lib.SetCaps(1ull << 40, 4096);
+    std::vector<PluginImageId> ids;
+    for (uint32_t i = 0; i < kExactCountCap + 1; ++i)
+        ids.push_back(KeptImage(lib, ("/Game/UI/T_" + std::to_string(i) + ".T_" + std::to_string(i)).c_str(), 1000, 10));
+    for (uint64_t t = 1000; t <= 1450; t += 10)
+    {
+        lib.SetNow(t);
+        for (uint32_t i = 0; i < kExactCountCap + 1; ++i)
+            lib.GetSized(ids[i], 32, nullptr, nullptr);
+    }
+    std::vector<Released> dropped;
+    ExactRequest request;
+    while (lib.TakeExact(request))
+        lib.PublishExact(request.id, request.size, ExactTexture(request.id, request.size), 32, 32, 40, dropped);
+    lib.SetNow(1500);
+    lib.ReapExact(dropped);
+    CHECK(dropped.empty());
+    CHECK(lib.ExactCount() == kExactCountCap);
+}
+
+// Three plugins draw one item at 36, 32 and 28 pixels in the same frame: each size gets a copy.
+static void ThreeSizesDrawnTogetherAreAllMade()
+{
+    Library lib;
+    const PluginImageId id = KeptImage(lib, "/Game/UI/T_A.T_A", 1000);
+    for (uint64_t t = 1000; t <= 1500; t += 10)
+    {
+        lib.SetNow(t);
+        lib.GetSized(id, 36, nullptr, nullptr);
+        lib.GetSized(id, 32, nullptr, nullptr);
+        lib.GetSized(id, 28, nullptr, nullptr);
+    }
+    bool got[3] = { false, false, false };
+    ExactRequest request;
+    uint32_t taken = 0;
+    while (lib.TakeExact(request))
+    {
+        ++taken;
+        got[request.size == 36 ? 0 : request.size == 32 ? 1 : 2] |= request.size == 36 || request.size == 32 || request.size == 28;
+    }
+    CHECK(taken == 3);
+    CHECK(got[0] && got[1] && got[2]);
+}
+
+// Three steady sizes and a fourth that changes every frame: the three get copies, the changing one none.
+static void ASizeThatChangesAmongSteadySizesIsNeverMade()
+{
+    Library lib;
+    const PluginImageId id = KeptImage(lib, "/Game/UI/T_A.T_A", 1000);
+    int moving = 40;
+    for (uint64_t t = 1000; t <= 3000; t += 10)
+    {
+        lib.SetNow(t);
+        lib.GetSized(id, 36, nullptr, nullptr);
+        lib.GetSized(id, 32, nullptr, nullptr);
+        lib.GetSized(id, 28, nullptr, nullptr);
+        lib.GetSized(id, moving, nullptr, nullptr);
+        moving = moving >= 90 ? 40 : moving + 1;
+    }
+    uint32_t taken = 0;
+    ExactRequest request;
+    while (lib.TakeExact(request))
+    {
+        ++taken;
+        CHECK(request.size == 36 || request.size == 32 || request.size == 28);
+    }
+    CHECK(taken == 3);
+}
+
+static void TheInterfaceNumberCoversTheSizedEntry()
+{
+    // The table grew from 56 to 64 bytes: a loader with the short table must refuse a plugin built for it.
+    CHECK(PLUGIN_INTERFACE_VERSION == 77);
+    CHECK(PLUGIN_INTERFACE_VERSION_MAX == 77);
+    CHECK(PLUGIN_INTERFACE_VERSION_MIN == 70);
+    CHECK(sizeof(IPluginImages) == 64);
 }
 
 static void EvictingTheStoredPictureTakesItsCopies()
@@ -1740,6 +1910,13 @@ int main()
     RunTest("exact: copies across images are limited", ACopyCountAcrossImagesIsLimited);
     RunTest("exact: copies count against the byte cap", CopiesCountAgainstTheByteCap);
     RunTest("exact: copies not drawn lately go first", CopiesNotDrawnLatelyGoBeforeStoredImages);
+    RunTest("exact: a full byte cap still takes a copy for a drawn image", AFullByteCapStillTakesACopyForADrawnImage);
+    RunTest("exact: a copy never evicts an image seen lately", ACopyNeverEvictsAnImageSeenLately);
+    RunTest("exact: a refused offer backs off and the sweep makes room", ARefusedOfferBacksOffAndTheSweepMakesRoom);
+    RunTest("exact: the sweep keeps copies drawn lately", TheSweepKeepsCopiesDrawnLately);
+    RunTest("exact: three sizes drawn together are all made", ThreeSizesDrawnTogetherAreAllMade);
+    RunTest("exact: a changing size among steady ones is never made", ASizeThatChangesAmongSteadySizesIsNeverMade);
+    RunTest("exact: the interface number covers the sized entry", TheInterfaceNumberCoversTheSizedEntry);
     RunTest("exact: evicting the stored picture takes its copies", EvictingTheStoredPictureTakesItsCopies);
     RunTest("exact: a copy for an evicted image is refused", ACopyFinishedForAnEvictedImageIsRefused);
     RunTest("exact: clearing takes every copy", ClearingTheCacheTakesEveryCopy);

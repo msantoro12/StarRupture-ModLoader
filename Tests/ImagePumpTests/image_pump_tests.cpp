@@ -2367,15 +2367,20 @@ class FakeExactSource : public FakeSource
 public:
     struct Asked { PluginImageId id; std::string key; uint32_t size; };
     std::vector<Asked> exactAsked;
-    bool exactFull = false;
+    bool exactFull = false;     // no room now: the answer is Busy
+    bool exactRefuse = false;   // never possible (a run-time texture): the answer is Refused
+    uint32_t exactCalls = 0;
     PluginTextureHandle lastTexture = nullptr;
 
-    bool RequestExact(PluginImageId id, const std::string& key, uint32_t size) override
+    ExactAnswer RequestExact(PluginImageId id, const std::string& key, uint32_t size) override
     {
+        ++exactCalls;
+        if (exactRefuse)
+            return ExactAnswer::Refused;
         if (exactFull)
-            return false;
+            return ExactAnswer::Busy;
         exactAsked.push_back({ id, key, size });
-        return true;
+        return ExactAnswer::Started;
     }
 
     // The worker ends the request with the outcome.
@@ -2476,6 +2481,29 @@ static void AFailedExactCopyLeavesTheStoredDrawAndIsNotRetriedPerFrame()
     CHECK(rig.library.GetSized(a, 36, nullptr, nullptr) == stored);
     CHECK(rig.pump.GetStats().exactMade == 0);
     CHECK(rig.host.freed.empty());
+}
+
+static void ACopyTheSourceRefusesForGoodIsNotRetried()
+{
+    Rig rig;
+    FakeExactSource source;
+    rig.pump.SetSource(&source);
+    const PluginImageId a = rig.Loaded(kA);
+    rig.Tick(2);
+    const PluginTextureHandle stored = rig.library.Get(a);
+    source.exactRefuse = true;   // a run-time texture: no file to make a copy from
+
+    DrawFrames(rig, a, 36, 700);
+    CHECK(source.exactCalls == 1);
+    CHECK(rig.library.ExactCount() == 0);   // the pending slot is freed
+    CHECK(rig.library.GetSized(a, 36, nullptr, nullptr) == stored);
+
+    // Drawn steadily for a minute: the source is not asked again, nothing is queued.
+    DrawFrames(rig, a, 36, 60000);
+    CHECK(source.exactCalls == 1);
+    CHECK(rig.library.ExactCount() == 0);
+    CHECK(rig.library.GetSized(a, 36, nullptr, nullptr) == stored);
+    CHECK(rig.pump.GetStats().exactMade == 0);
 }
 
 static void AStoredPictureNoLargerThanTheSizeNeedsNoCopy()
@@ -2698,6 +2726,7 @@ int main()
     RunTest("exact: a copy is asked of the source and shown once ready", AnExactCopyIsAskedOfTheSourceAndShownOnceReady);
     RunTest("exact: no copy without a source", AnExactCopyIsNotAskedForWithoutASource);
     RunTest("exact: a failed copy keeps the stored draw, no retry per frame", AFailedExactCopyLeavesTheStoredDrawAndIsNotRetriedPerFrame);
+    RunTest("exact: a copy the source refuses for good is not retried", ACopyTheSourceRefusesForGoodIsNotRetried);
     RunTest("exact: a stored picture no larger than the size needs no copy", AStoredPictureNoLargerThanTheSizeNeedsNoCopy);
     RunTest("exact: a request the source cannot take is offered again", ARequestTheSourceCannotTakeIsOfferedAgain);
     RunTest("exact: a refused copy is freed by the pump", AnExactCopyThatIsRefusedIsFreedByThePump);

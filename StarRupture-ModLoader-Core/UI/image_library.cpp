@@ -253,13 +253,16 @@ namespace ImageLibrary
 			if (state == kExactReady)
 			{
 				const PluginTextureHandle copy = slot.handle.load(std::memory_order_acquire);
-				if (!copy)
+				const uint32_t copyWidth = slot.width.load(std::memory_order_relaxed);
+				const uint32_t copyHeight = slot.height.load(std::memory_order_relaxed);
+				// The slot may have been dropped and made again for another size since size was read.
+				if (!copy || slot.size.load(std::memory_order_acquire) != size)
 					return stored;
 				slot.lastDrawn.store(now, std::memory_order_relaxed);
 				if (width)
-					*width = static_cast<int>(slot.width.load(std::memory_order_relaxed));
+					*width = static_cast<int>(copyWidth);
 				if (height)
-					*height = static_cast<int>(slot.height.load(std::memory_order_relaxed));
+					*height = static_cast<int>(copyHeight);
 				return copy;
 			}
 			if (state == kExactPending || (state == kExactClosed && now < slot.closedUntil.load(std::memory_order_relaxed)))
@@ -281,8 +284,19 @@ namespace ImageLibrary
 
 		if (!trial)
 		{
-			// Takes the cell asked for least recently.
-			trial = &e.trial[e.trial[0].last.load(std::memory_order_relaxed) <= e.trial[1].last.load(std::memory_order_relaxed) ? 0 : 1];
+			// Takes the cell asked for least recently among those not asked for within kExactGapMs: a
+			// size drawn every frame keeps its cell, and a size that is asked for once and changes is
+			// not tracked while every cell is in use.
+			for (ExactTrial& t : e.trial)
+			{
+				const uint64_t last = t.last.load(std::memory_order_relaxed);
+				if (t.size.load(std::memory_order_relaxed) != 0 && (now <= last || now - last <= kExactGapMs))
+					continue;
+				if (!trial || last < trial->last.load(std::memory_order_relaxed))
+					trial = &t;
+			}
+			if (!trial)
+				return;
 			trial->size.store(size, std::memory_order_relaxed);
 			trial->first.store(now, std::memory_order_relaxed);
 			trial->last.store(now, std::memory_order_relaxed);
@@ -298,12 +312,13 @@ namespace ImageLibrary
 		if (now <= first || now - first < kExactSteadyMs)
 			return;
 
+		bool queued;
 		{
 			std::lock_guard<std::mutex> lock(m_lock);
-			OfferExact(e, id, size);
+			queued = OfferExact(e, id, size);
 		}
-		// If it was refused for room it is asked again after another steady stretch, not on every frame.
-		trial->first.store(now, std::memory_order_relaxed);
+		// A refused offer is made again after kExactRefusedMs more of steady asking.
+		trial->first.store(queued ? now : now + kExactRefusedMs, std::memory_order_relaxed);
 	}
 
 	int Library::State(PluginImageId id) const
@@ -816,15 +831,16 @@ namespace ImageLibrary
 	// Takes a slot for a copy of the image at the size and queues it, when the image is kept, the
 	// limits allow it and a copy is not made or under way already. Where there is no free slot the
 	// copy drawn least recently and not drawn lately is replaced.
-	void Library::OfferExact(Entry& e, PluginImageId id, uint32_t size)
+	bool Library::OfferExact(Entry& e, PluginImageId id, uint32_t size)
 	{
 		if (e.state.load(std::memory_order_relaxed) != kReady)
-			return;
+			return false;
 		const uint64_t now = m_now.load(std::memory_order_relaxed);
 
-		// The most a copy can take. Refused when even that does not fit under the byte cap.
-		if (m_bytes + static_cast<uint64_t>(size) * size * ImageShrink::kBytesPerPixel > m_byteCap)
-			return;
+		// Refused when the copy alone does not fit under the byte cap. Whether the rest does is for
+		// PublishExact: Trim makes room there, by the rules that make room for any newcomer.
+		if (static_cast<uint64_t>(size) * size * ImageShrink::kBytesPerPixel > m_byteCap)
+			return false;
 
 		ExactSlot* use = nullptr;
 		ExactSlot* closed = nullptr;
@@ -838,7 +854,7 @@ namespace ImageLibrary
 			else if (slot.size.load(std::memory_order_relaxed) == size)
 			{
 				if (state != kExactClosed || now < slot.closedUntil.load(std::memory_order_relaxed))
-					return;   // made, under way, or lately failed
+					return false;   // made, under way, or lately failed
 				use = &slot;
 			}
 			else if (state == kExactClosed)
@@ -854,16 +870,15 @@ namespace ImageLibrary
 		if (!use)
 			use = empty ? empty : closed ? closed : oldest;
 		if (!use)
-			return;
+			return false;
 
 		// A slot taken from a ready copy makes room for the new one; any other adds to the count.
 		const bool replacing = use->state.load(std::memory_order_relaxed) == kExactReady;
 		if (!replacing && m_exactCount >= kExactCountCap)
 		{
-			const std::vector<ExactRef> idle = IdleExact(kSeenLatelyMs);
-			if (idle.empty())
-				return;
-			DropSlot(Find(idle.front().id)->exact[idle.front().slot], m_exactDropped, idle.front().id);
+			// No scan here: this runs on the render thread. The pump's sweep makes room for the sizes waiting.
+			m_exactWaiting.fetch_add(1, std::memory_order_relaxed);
+			return false;
 		}
 		DropSlot(*use, m_exactDropped, id);
 
@@ -874,6 +889,7 @@ namespace ImageLibrary
 		use->state.store(kExactPending, std::memory_order_release);
 		++m_exactCount;
 		m_exactQueue.push_back({ id, size });
+		return true;
 	}
 
 	bool Library::TakeExact(ExactRequest& out)
@@ -989,6 +1005,16 @@ namespace ImageLibrary
 		m_nextSweepMs = now + kExactSweepMs;
 		for (const ExactRef& ref : IdleExact(kExactIdleMs))
 			DropSlot(Find(ref.id)->exact[ref.slot], dropped, ref.id);
+
+		// At the count cap, copies not drawn lately make room for the sizes that were refused.
+		uint32_t waiting = m_exactWaiting.exchange(0, std::memory_order_relaxed);
+		if (waiting != 0 && m_exactCount >= kExactCountCap)
+			for (const ExactRef& ref : IdleExact(kSeenLatelyMs))
+			{
+				if (waiting-- == 0)
+					break;
+				DropSlot(Find(ref.id)->exact[ref.slot], dropped, ref.id);
+			}
 	}
 
 	void Library::ReleaseExact(std::vector<Released>& dropped)

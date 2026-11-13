@@ -2034,7 +2034,7 @@ static void TestReaderExactCopyIsUploadedAtTheAskedSize()
     FakeUploader uploader;
     Reader reader(SessionOf(temp), uploader, nullptr);
     CHECK(Open(reader));
-    CHECK(reader.RequestExact(8, KeyOf(info), 32));
+    CHECK(reader.RequestExact(8, KeyOf(info), 32) == ImageDisk::Source::ExactAnswer::Started);
     const std::vector<ImageDisk::FileResult> got = Results(reader, 1);
     CHECK(got.size() == 1);
     if (got.size() == 1)
@@ -2062,7 +2062,7 @@ static void TestReaderExactCopyNoSmallerThanTheStoredPictureIsSame()
     FakeUploader uploader;
     Reader reader(SessionOf(temp), uploader, nullptr);
     CHECK(Open(reader));
-    CHECK(reader.RequestExact(8, KeyOf(info), 64));
+    CHECK(reader.RequestExact(8, KeyOf(info), 64) == ImageDisk::Source::ExactAnswer::Started);
     const std::vector<ImageDisk::FileResult> got = Results(reader, 1);
     CHECK(got.size() == 1 && got[0].exactSize == 64 && got[0].outcome == ImageDisk::FileOutcome::Same);
     CHECK(uploader.calls == 0);
@@ -2078,7 +2078,7 @@ static void TestReaderExactCopyWithNoFileFailsAndDeletesNothing()
     FakeUploader uploader;
     Reader reader(SessionOf(temp), uploader, nullptr);
     CHECK(Open(reader));
-    CHECK(reader.RequestExact(8, "/game/ui/t_other.t_other", 32));
+    CHECK(reader.RequestExact(8, "/game/ui/t_other.t_other", 32) == ImageDisk::Source::ExactAnswer::Started);
     const std::vector<ImageDisk::FileResult> got = Results(reader, 1);
     CHECK(got.size() == 1 && got[0].exactSize == 32 && got[0].outcome == ImageDisk::FileOutcome::Failed);
     CHECK(uploader.calls == 0);
@@ -2099,7 +2099,7 @@ static void TestReaderExactCopyOfABadFileFailsAndKeepsTheFile()
     FakeUploader uploader;
     Reader reader(SessionOf(temp), uploader, nullptr);
     CHECK(Open(reader));
-    CHECK(reader.RequestExact(8, KeyOf(info), 32));
+    CHECK(reader.RequestExact(8, KeyOf(info), 32) == ImageDisk::Source::ExactAnswer::Started);
     const std::vector<ImageDisk::FileResult> got = Results(reader, 1);
     CHECK(got.size() == 1 && got[0].exactSize == 32 && got[0].outcome == ImageDisk::FileOutcome::Failed);
     CHECK(uploader.calls == 0);
@@ -2118,13 +2118,30 @@ static void TestReaderExactCopyUploadFailure()
     uploader.fail = true;
     Reader reader(SessionOf(temp), uploader, nullptr);
     CHECK(Open(reader));
-    CHECK(reader.RequestExact(8, KeyOf(info), 32));
+    CHECK(reader.RequestExact(8, KeyOf(info), 32) == ImageDisk::Source::ExactAnswer::Started);
     const std::vector<ImageDisk::FileResult> got = Results(reader, 1);
     CHECK(got.size() == 1 && got[0].exactSize == 32 && got[0].outcome == ImageDisk::FileOutcome::Failed);
     CHECK(got[0].texture == nullptr);
     CHECK(uploader.calls == 1);
     CHECK(reader.Rejected() == 0);
     CHECK(temp.Files().size() == 1);
+    reader.Stop();
+}
+
+static void TestReaderExactCopyOfATransientTextureIsRefusedForGood()
+{
+    TempFolder temp;
+    Info info;
+    WriteFileIn(temp, FileName(KeyOf(MakeInfo())), Valid(&info));
+
+    FakeUploader uploader;
+    Reader reader(SessionOf(temp), uploader, nullptr);
+    CHECK(Open(reader));
+    // A run-time texture has no file: no later ask can change that, so the answer is not "busy".
+    CHECK(reader.RequestExact(8, "/engine/transient.texture2d_12", 32) == ImageDisk::Source::ExactAnswer::Refused);
+    CHECK(reader.RequestExact(8, "/memory/untitled_1.texture", 32) == ImageDisk::Source::ExactAnswer::Refused);
+    CHECK(reader.RequestExact(8, KeyOf(info), 0) == ImageDisk::Source::ExactAnswer::Refused);
+    CHECK(uploader.calls == 0);
     reader.Stop();
 }
 
@@ -2203,6 +2220,7 @@ int main()
     RunTest("an exact copy with no file fails and deletes nothing", TestReaderExactCopyWithNoFileFailsAndDeletesNothing);
     RunTest("an exact copy of a bad file fails and keeps the file", TestReaderExactCopyOfABadFileFailsAndKeepsTheFile);
     RunTest("an exact copy whose upload fails ends as failed", TestReaderExactCopyUploadFailure);
+    RunTest("an exact copy of a transient texture is refused for good", TestReaderExactCopyOfATransientTextureIsRefusedForGood);
 
     printf("\n%d checks, %d failed\n", g_checks, g_failed);
     return g_failed == 0 ? 0 : 1;

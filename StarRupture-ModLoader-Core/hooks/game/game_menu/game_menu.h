@@ -123,6 +123,13 @@ namespace Hooks::GameMenu
 	// widgets are. Game thread only; no pointer outlives the call.
 	bool ReadMenuHover(SDK::APlayerController* pc);
 
+	// Writes an INFO line, and one per layer, whenever what the local player's
+	// UI layers hold changes, or the UI state, the controller's cursor flag or
+	// whether the menu layer was read does: each widget's class, bIsActive,
+	// visibility and whether it is the layer's displayed one. Nothing while the
+	// layers stay the same. Game thread only; no pointer outlives the call.
+	void LogLayerChanges(SDK::APlayerController* pc, uint64_t uiState, bool cursorFlag, bool menuReadRan);
+
 	// The last published answer of ReadMenuHover, for the window thread that
 	// decides which widgets take the mouse. Set once per game tick, so it can
 	// be a frame old. Safe from any thread.

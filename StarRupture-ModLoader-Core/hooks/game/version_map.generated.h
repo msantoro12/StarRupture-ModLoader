@@ -1857,7 +1857,11 @@ inline constexpr std::array<Index, 215> kFields = {{
 	{ "WidgetBlueprintLibrary_SetInputMode_GameOnly", 291, 1 },
 }};
 
-inline constexpr std::array<AbsentField, 1> kAbsentFields = {{
+inline constexpr std::array<AbsentField, 5> kAbsentFields = {{
 	{ "ACrAPHelper::SnappedActors", 129402 },
+	{ "FHotbarArray::SlotsArray", 127004 },
+	{ "FHotbarInternalSlotData::SlotType", 127004 },
+	{ "UCrHotbarLocalPlayerSubsystem::CurrentHotbarIndex", 127004 },
+	{ "UCrHotbarLocalPlayerSubsystem::Hotbars", 127004 },
 }};
 }

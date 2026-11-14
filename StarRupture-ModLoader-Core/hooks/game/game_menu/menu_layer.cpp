@@ -245,7 +245,6 @@ namespace Hooks::GameMenu
 	{
 		// Game thread only, so plain statics. A run that changes every tick
 		// stops logging after kMaxLines.
-		constexpr int32_t kMaxWidgets = 16;
 		constexpr int     kMaxLines   = 300;
 		static std::vector<LayerEntry> s_last;
 		static std::vector<LayerEntry> s_now;

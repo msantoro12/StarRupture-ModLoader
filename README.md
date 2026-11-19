@@ -599,9 +599,9 @@ Plugins that declare they take their game data from the version map (`PLUGIN_MAP
 run on any listed build. A plugin that does not declare it loads only on the build it was compiled
 against, and shows **Incompatible** on the others.
 
-On a client build with `[AutoUpdate] Enabled` on, the loader can also read a newer version map from a signed
-file, so a new game build can be supported without a loader update. None is published yet. A server
-build never reads one.
+On a client build with `[AutoUpdate] Enabled` on, the loader checks at every start whether a newer version
+map is out, as a signed file, and uses it on that start, so a new game build can be supported without a
+loader update. If the check fails, the copy it kept last time is used. A server build never reads one.
 How the version map is chosen, how the feed is fetched, signed and cached, how CI publishes it and what
 each failure looks like is in [VersionMap.md](VersionMap.md).
 
@@ -611,7 +611,7 @@ using it: a function must be found exactly once and be the kind of place it is e
 must sit in the right part of the game's code or data, and a class member and its size are taken from the
 game itself. A member or size that nothing in the game can confirm waits for that build's rows. A plugin or
 feature that needs something that did not check out is switched off, and a window at the main menu says
-so. At a later start, once the version map has rows for the build, they are used instead; with
+so. Once the version map has rows for the build, the check at the start finds them and they are used instead, on that start; with
 `[AutoUpdate] Enabled=0` that takes a loader update. The loader marks the session in `[UnknownBuild]`
 `Session` and clears it on a clean exit. If a session ends any other way (a crash, a hang or a forced
 close), the next start on that build runs without mods until `Retry=1` is added under `[UnknownBuild]`.

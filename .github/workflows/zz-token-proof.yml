@@ -1,0 +1,41 @@
+name: zz-token-proof
+on:
+  push:
+    branches: [zz-token-proof]
+
+jobs:
+  write:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: zz-token-proof-20261119
+    steps:
+      - uses: actions/checkout@v4
+      - name: release list
+        run: gh release list --repo $GITHUB_REPOSITORY --json tagName,isDraft,isPrerelease || echo "exit=$?"
+      - name: api releases
+        run: gh api repos/$GITHUB_REPOSITORY/releases --jq '[.[] | {tag_name, draft}]' || echo "exit=$?"
+      - name: api releases/tags
+        run: gh api repos/$GITHUB_REPOSITORY/releases/tags/$TAG || echo "exit=$?"
+      - name: release-check find
+        run: node .github/scripts/release-check.mjs find --repo $GITHUB_REPOSITORY --tag $TAG || echo "exit=$?"
+
+  read:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: zz-token-proof-20261119
+    steps:
+      - uses: actions/checkout@v4
+      - name: release list
+        run: gh release list --repo $GITHUB_REPOSITORY --json tagName,isDraft,isPrerelease || echo "exit=$?"
+      - name: api releases
+        run: gh api repos/$GITHUB_REPOSITORY/releases --jq '[.[] | {tag_name, draft}]' || echo "exit=$?"
+      - name: api releases/tags
+        run: gh api repos/$GITHUB_REPOSITORY/releases/tags/$TAG || echo "exit=$?"
+      - name: release-check find
+        run: node .github/scripts/release-check.mjs find --repo $GITHUB_REPOSITORY --tag $TAG || echo "exit=$?"

@@ -230,3 +230,5 @@ jobs:
           echo "and commit the result with your change. For an older build also pass -SdkClient <Game-SDK Client folder at the pinned commit> -Cl <CL>"
           echo "(the commit is in tools\\layout-table-pins.json). Use the same two repos this job did: starrupture-ci at $CI_SHA and the Plugin SDK at $PLUGIN_SDK_SHA."
           echo "The classes that changed are listed above."
+
+# rehearsal: unchanged inputs, the job must pass

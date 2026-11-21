@@ -186,14 +186,19 @@ the other the running game. It covers:
 - The loader's CL-130045 table on a 130045 game (nothing changed) and on a 127004 game, where
   `UCrEnviroWaveTimerSubsystem::TimerActor` and `ACrCrafter::CraftComponent` sit at the older offsets:
   both count as changes without a per-build rule and none with it, and the verdict is not a safe-off.
-- The same CL-130045 table against the real 127004 layout of every class it lists (the loader's table
-  from v1.26.1, kept in `fixtures/layout_table_loader_127004.h`): the same two members differ and
-  nothing else, so a 127004 game has no changed class. The v1.26.1 table against a 130045 game, the
-  other way round, finds `TimerActor` as a changed class.
+- The same CL-130045 table against the real 127004 layout of the classes and members the loader's table
+  from v1.26.1 lists (kept in `fixtures/layout_table_loader_127004.h`; the tables list more since): the
+  same two members differ and nothing else, so a 127004 game has no changed class. The v1.26.1 table
+  against a 130045 game, the other way round, finds `TimerActor` as a changed class.
 - One table per game build: which table a running CL picks (its own, else the newest, whether the CL sits
   between two tables, above the newest, below the oldest or is 0), that the list of tables is strictly
   increasing, that each table's class and row counts are what its header says, and that a 127004 run selects
-  the 127004 table, which finds nothing changed on the real 127004 layout and needs no per-build rule.
+  the 127004 table, which finds nothing changed on the real 127004 layout and needs no per-build rule. The
+  two tables list the same classes except the ones only the 130045 SDK has, and no class a plugin keeps
+  compiled in differs between them except in per-build members, and that comparison saw at least one such
+  class. Members that moved between the builds in other classes (the loader's own, the menu layer, the
+  version-map keys) are only counted, not asserted: each build is compared with its own table, and a move
+  there only matters to a build that has no table of its own.
 - The `UObject::ProcessEvent` check: a stub virtual table whose slot holds the function the map resolved
   passes; one that holds another function adds one line to the result, is a found change with no class
   named, and gives a safe-off verdict; a different function in the next slot does not matter.

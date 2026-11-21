@@ -23,10 +23,10 @@
     it needs Node.js. Its format and the checks the loader makes are described
     in ci\LAYOUT-TABLE.md there.
 
-    Every table in core\ lists the same classes. The class list follows the
-    loader's sources, which have grown since those tables were made, so a run on
-    today's sources lists more classes than the tables hold; widen the tables
-    together or not at all.
+    Every table in core\ lists the same classes, except those only a newer
+    SDK has. The class list follows the loader's sources: a source that names
+    a new SDK type adds a class to every table, so regenerate all of them
+    together, each against its own Game-SDK commit.
 
     The classes come from the loader's own sources (every SDK type they name)
     plus their reflected base classes. A UClass keeps only the members those
@@ -111,6 +111,7 @@ $out = Join-Path $core "core\layout_table_$Cl.generated.h"
     --consumer "core=$core" `
     --consumer "ui-menus=$(Join-Path $core 'hooks\game\game_menu\menu_layer.cpp')" `
     --consumer "keys=$(Join-Path $core 'hooks\game\version_map.generated.h')" `
+    --consumer "keys=$(Join-Path $core 'hooks\game\version_map.server.h')" `
     --consumer "keys=$(Join-Path $core 'hooks\game\scan_patterns.h')" `
     --plugin-sdk $PluginSdk
 if ($LASTEXITCODE -ne 0) { throw "layout-table.mjs failed (exit $LASTEXITCODE)" }

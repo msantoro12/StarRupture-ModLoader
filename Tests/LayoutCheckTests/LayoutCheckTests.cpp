@@ -99,6 +99,31 @@ namespace
         return nullptr;
     }
 
+    // The classes of `table` that `reference` also lists, each with only the
+    // members `reference` lists for it (matched by reflection path and member name).
+    std::vector<LayoutCheck::TableClass> OnlyWhatIn(const std::vector<LayoutCheck::TableClass>& table,
+        const std::vector<LayoutCheck::TableClass>& reference)
+    {
+        std::vector<LayoutCheck::TableClass> kept;
+        for (const LayoutCheck::TableClass& c : table)
+            for (const LayoutCheck::TableClass& r : reference)
+                if (std::string(c.path) == r.path)
+                {
+                    LayoutCheck::TableClass copy = c;
+                    copy.rows.clear();
+                    for (const LayoutCheck::TableRow& row : c.rows)
+                        for (const LayoutCheck::TableRow& listed : r.rows)
+                            if (std::string(row.name) == listed.name)
+                            {
+                                copy.rows.push_back(row);
+                                break;
+                            }
+                    kept.push_back(copy);
+                    break;
+                }
+        return kept;
+    }
+
     void SameBuildMatches()
     {
         std::printf("127004 SDK on a 127004 game\n");
@@ -482,14 +507,16 @@ namespace
 
     // The new table checked against the layout a 127004 game really has. The
     // 127004 side is the loader's own table of v1.26.1, which was made from the
-    // 127004 SDK, so this is the real 127004 layout of every class the table lists.
+    // 127004 SDK, so this is the real 127004 layout of every class that table
+    // lists. The current table lists more classes and members than v1.26.1's
+    // did, so the comparison is of the classes and members both have.
     void NewTableOnARealLayoutOf127004()
     {
         std::printf("The 130045 table on the 127004 layout\n");
-        const std::vector<LayoutCheck::TableClass> table = kLoaderTable();
         const std::vector<LayoutCheck::TableClass> old = kLoaderTable127004();
+        const std::vector<LayoutCheck::TableClass> table = OnlyWhatIn(kLoaderTable(), old);
         Check(SrLayoutTable127004Loader::kBuiltCL == 127004 && SrLayoutTable_130045::kBuiltCL == 130045, "the two tables are the 127004 and 130045 ones");
-        Check(table.size() == old.size(), "both list the same classes");
+        Check(table.size() == old.size(), "the table lists every class v1.26.1's table did");
 
         const auto game = AsGame(old);
         const auto find = [&game](const LayoutCheck::TableClass& c) -> const LayoutCheck::LiveStruct*
@@ -1204,7 +1231,9 @@ namespace
         };
         const LayoutCheck::TableEntry& chosen = kTables[LayoutCheck::SelectTable(kTables, 127004)];
         Check(chosen.cl == 127004, "a 127004 run selects the 127004 table");
-        const std::vector<LayoutCheck::TableClass> chosenTable = chosen.read();
+        // v1.26.1's table lists fewer classes and members than the table does
+        // now, so only those have a real 127004 layout to compare with.
+        const std::vector<LayoutCheck::TableClass> chosenTable = OnlyWhatIn(chosen.read(), kLoaderTable127004());
         const LayoutCheck::Result own = LayoutCheck::Compare(chosenTable, find127004);
         Check(own.mismatched == 0 && own.missing == 0 && own.checked == own.classes && own.lines.empty()
             && !LayoutCheck::FoundChanges(own) && !LayoutCheck::Decide(chosenTable, own).safeOff,
@@ -1215,39 +1244,72 @@ namespace
         Check(newestOnNewest.lines.empty() && !LayoutCheck::FoundChanges(newestOnNewest),
             "a 130045 run against the 130045 table finds nothing changed");
 
-        // The check skips the per-build members, so a 127004 game checked
-        // against its own table and a 130045 game against the newest agree on
-        // everything the loader reads only while the two compiled tables differ
-        // in those members alone. A regeneration that moves any other row
-        // fails here, so it is looked at before it ships.
+        // The check skips the per-build members, and a build is compared with
+        // its own table, so a member that moved between the two builds is not a
+        // changed class on either. What a 127004 game and a 130045 game
+        // do not share is what the loader reads at one compiled offset, so
+        // look at the classes whose layout a plugin keeps compiled in
+        // (plugin-sdk): they must not differ between the tables except in
+        // per-build members. A regeneration that moves one fails here, so it
+        // is looked at before it ships. Other classes legitimately differ
+        // (the tables list the same classes the sources name, and a game update
+        // moves members); they are only counted.
         const std::vector<LayoutCheck::TableClass> older = kTables[0].read();
-        Check(older.size() == newest.size(), "the two tables list the same classes");
-        int otherDifferences = 0;
+        std::map<std::string, const LayoutCheck::TableClass*> newestByPath;
+        for (const LayoutCheck::TableClass& c : newest)
+            newestByPath[c.path] = &c;
+        int onlyInOlder = 0;
         int perBuildDifferences = 0;
-        for (size_t i = 0; i < older.size() && i < newest.size(); ++i)
+        int pluginDifferences = 0;
+        int otherDifferences = 0;
+        int pluginClassesCompared = 0;
+        for (const LayoutCheck::TableClass& a : older)
         {
-            const LayoutCheck::TableClass& a = older[i];
-            const LayoutCheck::TableClass& b = newest[i];
-            if (std::string(a.path) != b.path || a.sizeOf != b.sizeOf || a.alignOf != b.alignOf || a.rows.size() != b.rows.size())
+            const auto found = newestByPath.find(a.path);
+            if (found == newestByPath.end())
             {
-                ++otherDifferences;
+                ++onlyInOlder;
                 continue;
             }
-            for (size_t r = 0; r < a.rows.size(); ++r)
+            const LayoutCheck::TableClass& b = *found->second;
+            const bool pluginReads = std::find(b.consumers.begin(), b.consumers.end(), LayoutCheck::kConsumerPluginSdk) != b.consumers.end();
+            if (pluginReads)
+                ++pluginClassesCompared;
+            const auto note = [&](bool perBuild)
             {
-                const LayoutCheck::TableRow& ra = a.rows[r];
-                const LayoutCheck::TableRow& rb = b.rows[r];
-                if (std::string(ra.name) == rb.name && ra.offset == rb.offset && ra.size == rb.size && ra.boolMask == rb.boolMask)
-                    continue;
-                if (std::string(ra.name) == rb.name && PerBuildRule(b, rb))
+                if (perBuild)
                     ++perBuildDifferences;
+                else if (pluginReads)
+                    ++pluginDifferences;
                 else
                     ++otherDifferences;
+            };
+            if (a.sizeOf != b.sizeOf || a.alignOf != b.alignOf || a.kind != b.kind)
+                note(false);
+            for (const LayoutCheck::TableRow& ra : a.rows)
+            {
+                const LayoutCheck::TableRow* rb = nullptr;
+                for (const LayoutCheck::TableRow& candidate : b.rows)
+                    if (std::string(candidate.name) == ra.name)
+                        rb = &candidate;
+                if (rb && ra.offset == rb->offset && ra.size == rb->size && ra.boolMask == rb->boolMask)
+                    continue;
+                note(rb && PerBuildRule(b, *rb));
+            }
+            for (const LayoutCheck::TableRow& rb : b.rows)
+            {
+                const bool inOlder = std::any_of(a.rows.begin(), a.rows.end(),
+                    [&rb](const LayoutCheck::TableRow& ra) { return std::string(ra.name) == rb.name; });
+                if (!inOlder)
+                    note(false);
             }
         }
-        std::printf("  info: the tables differ in %d per-build member(s) and %d other place(s)\n", perBuildDifferences,
-            otherDifferences);
-        Check(otherDifferences == 0, "the 127004 and 130045 tables differ only in per-build members");
+        std::printf("  info: %d class(es) only in the 127004 table; %d plugin-sdk class(es) compared; the tables differ in %d per-build "
+                    "member(s), %d place(s) in plugin-sdk classes and %d place(s) elsewhere\n",
+            onlyInOlder, pluginClassesCompared, perBuildDifferences, pluginDifferences, otherDifferences);
+        Check(onlyInOlder == 0, "the 130045 table lists every class the 127004 table does");
+        Check(pluginClassesCompared > 0, "the plugin-sdk comparison saw classes, so the check below is not empty");
+        Check(pluginDifferences == 0, "the tables differ in no class a plugin keeps compiled in, except in per-build members");
     }
 }
 

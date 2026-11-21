@@ -365,3 +365,5 @@ jobs:
           echo "Fix: run .\\tools\\Update-LayoutTable.ps1 -Server -Generator <path to starrupture-ci>\\ci\\layout-table.mjs -PluginSdk <path to Plugin SDK>\\tools\\rule3-allow.json"
           echo "and commit the result with your change. Use the same two repos this job did: starrupture-ci at $CI_SHA and the Plugin SDK at $PLUGIN_SDK_SHA."
           echo "The classes that changed are listed above."
+
+# rehearsal: a change that triggers the workflow on an unchanged tree

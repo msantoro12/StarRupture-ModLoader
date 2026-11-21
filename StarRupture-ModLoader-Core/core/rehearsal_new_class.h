@@ -1,2 +1,2 @@
 // rehearsal
-struct RehearsalUse { class UCrInteriorsMapperWorldSubsystem* p; };
+struct RehearsalUse { SDK::UCrInteriorsMapperWorldSubsystem* p; };

@@ -412,7 +412,7 @@ jobs:
           if ("${{ steps.tag.outputs.IS_PREVIEW }}" -eq 'true') {
             $flags += '--prerelease'
           }
-          gh release create $tag @assets @flags
+          gh release create $tag --target ${{ github.sha }} @assets @flags
 
       - name: Upload Client build to Nexus Mods
         if: ${{ steps.tag.outputs.IS_PREVIEW != 'true' }}

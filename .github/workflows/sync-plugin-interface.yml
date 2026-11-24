@@ -8,6 +8,10 @@ on:
       - 'StarRupture-ModLoader-Core/plugins/plugin_interface.h'
       - 'StarRupture-ModLoader-Core/plugins/known_gobjects.generated.h'
 
+concurrency:
+  group: sync-plugin-sdk-next
+  cancel-in-progress: false
+
 jobs:
   sync:
     runs-on: ubuntu-latest
@@ -32,8 +36,8 @@ jobs:
       - name: Select the next branch
         run: |
           cd sdk
-          if git ls-remote --exit-code --heads origin next > /dev/null; then
-            git fetch origin next
+          if git ls-remote --exit-code --heads origin refs/heads/next > /dev/null; then
+            git fetch origin refs/heads/next:refs/remotes/origin/next
             git checkout -B next origin/next
           else
             git checkout -b next

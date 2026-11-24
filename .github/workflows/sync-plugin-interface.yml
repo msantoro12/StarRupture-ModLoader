@@ -25,6 +25,20 @@ jobs:
           token: ${{ secrets.SDK_REPO_PAT }}
           path: sdk
 
+      # Pushes go to the SDK's `next` branch, not its main. The SDK main only
+      # moves when the loader is released (sync-plugin-sdk in release.yml), so
+      # a plugin built from SDK main always targets an interface a released
+      # loader accepts.
+      - name: Select the next branch
+        run: |
+          cd sdk
+          if git ls-remote --exit-code --heads origin next > /dev/null; then
+            git fetch origin next
+            git checkout -B next origin/next
+          else
+            git checkout -b next
+          fi
+
       - name: Copy updated headers
         run: |
           mkdir -p sdk/include
@@ -39,4 +53,4 @@ jobs:
           git add include/plugin_interface.h include/known_gobjects.generated.h
           git diff --cached --quiet && echo "No changes." && exit 0
           git commit -m "Update plugin headers from modloader $(cd .. && git rev-parse --short HEAD)"
-          git push
+          git push origin next

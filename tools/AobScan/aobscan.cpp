@@ -77,7 +77,7 @@
 
 #include "core/version_check.h"
 #include "hooks/game/scan_patterns.h"
-#include "hooks/game/version_map.generated.h"
+#include "hooks/game/version_map_built.h"
 #include "memory_scanner/image_info.h"
 #include "memory_scanner/scan_validation.h"
 #include "memory_scanner/version_feed.h"
@@ -451,10 +451,9 @@ int wmain(int argc, wchar_t** argv)
 
 	if (plugin)
 	{
-#if defined(MODLOADER_CLIENT_BUILD)
-		// The loader reads fields from reflection on the client only.
+		// The loader reads fields from the game's reflection, on the client and
+		// on the server; the exe's PDB stands in for it here.
 		AobScan::UseLayoutForFields(path);
-#endif
 		return AobScan::ScanPlugin(module, plugin, json, verbose, session.get(), symbols);
 	}
 

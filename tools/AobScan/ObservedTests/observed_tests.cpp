@@ -8,7 +8,7 @@
 #include "../carry.h"
 #include "../observed.h"
 #include "../plugin_scan.h"
-#include "hooks/game/version_map.generated.h"
+#include "hooks/game/version_map_built.h"
 #include "memory_scanner/image_info.h"
 
 #include <cstdint>
@@ -193,11 +193,17 @@ int main()
 			"the row's offset and follow come with its pattern");
 	}
 
-	// No row for this build: the registry's request.
+	// No row for this build: the registry's request, and an older build's row
+	// that lands nowhere changes nothing.
 	UseMap({ Row(widget, 127004, kMapRow) });
-	TestDoubles::g_rvas = { { kRegistry, 0x1000 }, { kMapRow, 0x2000 } };
+	TestDoubles::g_rvas = { { kRegistry, 0x1000 } };
 	seen = Observe(widget, kNew, r);
 	Check(r.Succeeded() && seen.found && !seen.fromMap && seen.pattern == kRegistry, "no row for the build: the registry's pattern");
+
+	// The latest other build's row that lands elsewhere disagrees with the registry: the loader refuses.
+	TestDoubles::g_rvas = { { kRegistry, 0x1000 }, { kMapRow, 0x2000 } };
+	seen = Observe(widget, kNew, r);
+	Check(!r.Succeeded(), "no row for the build, the latest row elsewhere: the loader refuses");
 
 	// The build the code was written for: the code's pattern stands in for the row's.
 	UseMap({ Row(widget, VersionMap::kBuiltCL, kMapRow) });
@@ -244,13 +250,21 @@ int main()
 		const VersionMap::Exe next{ 128786 + 1000, 0x33333333, 0x03000000 };
 		constexpr const char* kOlder = "48 89 5C 24 08 57 48 83 EC 20";
 
-		UseMap({ Row(widget, VersionMap::kBuiltCL, kRegistry), Row(widget, 128786, kMapRow) });
+		UseMap({ Row(widget, 127004, kRegistry), Row(widget, 128786, kMapRow) });
 		TestDoubles::g_rvas = { { kMapRow, 0x98B4480 } };
 		seen = Observe(widget, next, r);
 		Check(r.Succeeded() && r.address == Base() + 0x98B4480, "the loader resolves a new build through the latest row");
 		Check(seen.found && seen.fromMap && seen.pattern == kMapRow,
 			"a new build: the latest other build's row that decided the address");
 
+		// The built CL's row, newest of the other builds: the code's pattern stands in for it.
+		UseMap({ Row(widget, 128786, kMapRow), Row(widget, VersionMap::kBuiltCL, kMapRow) });
+		TestDoubles::g_rvas = { { kRegistry, 0x98B4480 } };
+		seen = Observe(widget, next, r);
+		Check(r.Succeeded() && seen.found && !seen.fromMap && seen.pattern == kRegistry,
+			"a new build: the built CL's row is the code's pattern, not the row's");
+
+		UseMap({ Row(widget, 127004, kRegistry), Row(widget, 128786, kMapRow) });
 		TestDoubles::g_rvas = { { kRegistry, 0x98B4480 }, { kMapRow, 0x98B4480 } };
 		seen = Observe(widget, next, r);
 		Check(r.Succeeded() && seen.found && !seen.fromMap && seen.pattern == kRegistry,

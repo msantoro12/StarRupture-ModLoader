@@ -317,7 +317,7 @@ int main()
 			}
 		}
 		Check(fieldsOnBuild, "table: every field row is for CL 127004 and has a size");
-		Check(members == 95 && sizes == 20, "table: 95 member rows and 20 size rows");
+		Check(members == 96 && sizes == 20, "table: 96 member rows and 20 size rows");
 		Check(sizesWellFormed, "table: a size row is a class key at offset 0 with no bool mask");
 		Check(masksWellFormed, "table: a bool mask is 0xFF (a bool) or one bit (a bit field)");
 
@@ -373,7 +373,7 @@ int main()
 			refusedOtherCL    += !Key(index.key, kOtherCL, {}, kind).Succeeded();
 			refusedNoCL       += !Key(index.key, kNoCL, {}, kind).Succeeded();
 		}
-		Check(n == 36 && served == n, "guard 2, LookUp: every key serves its RVA on the server exe");
+		Check(n == 37 && served == n, "guard 2, LookUp: every key serves its RVA on the server exe");
 		// A key is served as the kind it was recorded with, and no other.
 		Check(!Key("GWorld", kServer).Succeeded() && !Key("UCrSaveSubsystem::GetSaveData", kServer, {}, Kind::Data).Succeeded(),
 			"guard 2, LookUp: a global is not served as a function start, nor a function start as data");
@@ -525,7 +525,7 @@ int main()
 			// A native member whose own row disagrees with the table's is refused on the server exe.
 			notServedOwnRow += !isSize && !Field(index.key, flags, row.size, { OwnRow(127004, row.offset + 8, row.size) }, kServer, v, e);
 		}
-		Check(members == 95 && sizes == 20, "guard 4, RowsFor: the table's keys are 95 members and 20 sizes");
+		Check(members == 96 && sizes == 20, "guard 4, RowsFor: the table's keys are 96 members and 20 sizes");
 		Check(served == members + sizes, "guard 4, RowsFor: every member and size row is served on the server exe, with its offset, size and bool mask");
 		Check(notServed == members + sizes, "guard 4, RowsFor: no table row is served on an exe that is not the server's");
 		Check(notServedOwnRow == members, "guard 4, RowsFor: a member whose own row disagrees with the table's is refused on the server exe");

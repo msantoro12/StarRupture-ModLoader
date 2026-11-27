@@ -281,7 +281,7 @@ int main()
 		Check(map.builds.size() == 1 && map.builds[0].gameCL == 127004 && map.builds[0].imageStamp == 0x2E3595FF
 			&& map.builds[0].imageSize == 0x0E2A8000, "table: one build, the server exe (CL 127004, stamp 2E3595FF, size 0E2A8000)");
 		Check(!map.functions.empty() && map.functions.size() == VersionMap::kServerFunctionRows.size(), "table: every function row is in the map");
-		Check(map.functions.size() == 37, "table: 34 function starts, 2 data globals and the loader's GObjects row");
+		Check(map.functions.size() == 38, "table: 35 function starts, 2 data globals and the loader's GObjects row");
 		bool allOnServer = true, allAddress = true;
 		int starts = 0, data = 0, scoped = 0;
 		for (const VersionMap::MapFunctionRow& f : map.functions)
@@ -295,10 +295,10 @@ int main()
 		}
 		Check(allOnServer, "table: every function row names the server exe");
 		Check(allAddress, "table: every function row is an address with no pattern (a start or a global, with a fingerprint only on the loader's key)");
-		Check(starts == 28 && data == 2 && scoped == 1, "table: 28 function starts, GNames and GWorld as data, and one scoped key");
+		Check(starts == 35 && data == 2 && scoped == 1, "table: 35 function starts, GNames and GWorld as data, and one scoped key");
 
 		// Field rows: every one is on the build, no absent rows, and a size row is a class key (no "::") at offset 0.
-		Check(map.fields.size() == VersionMap::kServerFields.size() && map.fields.size() == 115, "table: every field row is in the map (95 members, 20 sizes)");
+		Check(map.fields.size() == VersionMap::kServerFields.size() && map.fields.size() == 116, "table: every field row is in the map (96 members, 20 sizes)");
 		Check(map.absentFields.empty(), "table: no absent rows");
 		int members = 0, sizes = 0;
 		bool fieldsOnBuild = true, sizesWellFormed = true, masksWellFormed = true;
